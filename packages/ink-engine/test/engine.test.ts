@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   decodePage,
   encodePage,
+  eraseStroke,
   gunzip,
   gzip,
   hitItem,
@@ -182,5 +183,41 @@ describe('serialize', () => {
 
   it('rejects unknown versions', () => {
     expect(() => decodePage('{"v":2,"items":[]}')).toThrow()
+  })
+})
+
+describe('partial erase', () => {
+  let n = 0
+  const id = () => `p${n++}`
+  const line = stroke('l', [
+    [0, 0],
+    [100, 0],
+  ])
+
+  it('cuts a stroke in two where the eraser touches', () => {
+    const pieces = eraseStroke(line, 50, 0, 5, id)
+    expect(pieces).toHaveLength(2)
+    const [a, b] = pieces as Stroke[]
+    expect(Math.max(...(a as Stroke).points.filter((_, i) => i % 3 === 0))).toBeLessThan(45)
+    expect(Math.min(...(b as Stroke).points.filter((_, i) => i % 3 === 0))).toBeGreaterThan(55)
+    expect(a?.color).toBe('#000')
+  })
+
+  it('returns null when the eraser misses', () => {
+    expect(eraseStroke(line, 50, 40, 5, id)).toBeNull()
+  })
+
+  it('trims an end and removes a fully covered stroke', () => {
+    expect(eraseStroke(line, 0, 0, 5, id)).toHaveLength(1)
+    expect(eraseStroke(stroke('d', [[5, 5]]), 5, 5, 5, id)).toEqual([])
+  })
+
+  it('splice swaps an item for its pieces in one undo step', () => {
+    const ed = new PageEditor({ v: 1, items: [line, stroke('z', [[1, 1]])] })
+    ed.splice(new Map([['l', eraseStroke(line, 50, 0, 5, id) as Stroke[]]]))
+    expect(ed.items.map((i) => i.id).slice(-1)).toEqual(['z'])
+    expect(ed.items).toHaveLength(3)
+    ed.undo()
+    expect(ed.items.map((i) => i.id)).toEqual(['l', 'z'])
   })
 })

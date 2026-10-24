@@ -114,6 +114,7 @@ export function PageView(props: Props) {
             onPointerMove={(e) => ctl.pointerMove(e.nativeEvent)}
             onPointerUp={() => ctl.pointerUp()}
             onPointerCancel={() => ctl.pointerUp()}
+            onPointerLeave={() => ctl.pointerLeave()}
           />
         </>
       )}

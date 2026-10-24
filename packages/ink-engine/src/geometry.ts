@@ -1,4 +1,4 @@
-import type { Item, Rect } from './model'
+import type { Item, Rect, Stroke } from './model'
 
 export function itemBounds(item: Item): Rect {
   if (item.kind !== 'stroke') return { x: item.x, y: item.y, w: item.w, h: item.h }
@@ -130,4 +130,54 @@ export function scaleItem<T extends Item>(item: T, ox: number, oy: number, s: nu
     h: item.h * s,
   }
   return item.kind === 'text' ? { ...moved, size: (item as { size: number }).size * s } : moved
+}
+
+/**
+ * Erases the part of a stroke within `radius` of (x, y), like rubbing out pencil.
+ * Returns null when nothing was touched, otherwise the surviving pieces (possibly none).
+ * Long segments are subdivided first so the cut lands where the eraser is.
+ */
+export function eraseStroke(
+  stroke: Stroke,
+  x: number,
+  y: number,
+  radius: number,
+  makeId: () => string,
+): Stroke[] | null {
+  if (!hitItem(stroke, x, y, radius)) return null
+  const reach = radius + stroke.width / 2
+  const reachSq = reach * reach
+  const step = Math.max(0.5, radius / 2)
+  const p = stroke.points
+  const pieces: number[][] = []
+  let run: number[] = []
+  const visit = (px: number, py: number, t: number) => {
+    const dx = px - x
+    const dy = py - y
+    if (dx * dx + dy * dy <= reachSq) {
+      if (run.length) pieces.push(run)
+      run = []
+    } else run.push(px, py, t)
+  }
+  visit(p[0] as number, p[1] as number, p[2] as number)
+  for (let i = 3; i < p.length; i += 3) {
+    const ax = p[i - 3] as number
+    const ay = p[i - 2] as number
+    const at = p[i - 1] as number
+    const bx = p[i] as number
+    const by = p[i + 1] as number
+    const bt = p[i + 2] as number
+    // Only densify segments that pass near the eraser; the rest keep their points.
+    const near = distToSegmentSq(x, y, ax, ay, bx, by) <= reachSq
+    const n = near ? Math.ceil(Math.hypot(bx - ax, by - ay) / step) : 1
+    for (let k = 1; k <= n; k++) {
+      const f = k / n
+      visit(ax + (bx - ax) * f, ay + (by - ay) * f, at + (bt - at) * f)
+    }
+  }
+  if (run.length) pieces.push(run)
+  // A lone point would render as a stray dot; drop it.
+  return pieces
+    .filter((pts) => pts.length >= 6)
+    .map((points) => ({ ...stroke, id: makeId(), points }))
 }

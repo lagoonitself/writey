@@ -13,6 +13,7 @@ import {
 } from '../lib/db'
 import { pdfPageSizes } from '../lib/pdf'
 import { navigate } from '../lib/router'
+import { BackIcon, DownIcon, PlusIcon, TrashIcon, UpIcon } from './icons'
 import { PageView } from './PageView'
 import { Toolbar } from './Toolbar'
 import { DEFAULT_TOOLS, type PageHandle, type SaveState, TOOL_KEYS, type ToolState } from './tools'
@@ -312,11 +313,15 @@ export function NotebookView({ id }: { id: string }) {
 
   const active = activeId ? handles.get(activeId) : undefined
   const states = Object.values(saveStates)
-  const saveLabel = states.includes('error')
-    ? 'Not saved, retrying…'
-    : states.includes('saving') || states.includes('dirty')
-      ? 'Saving…'
-      : 'Saved'
+  const saveKind = busy
+    ? 'saving'
+    : states.includes('error')
+      ? 'error'
+      : states.includes('saving') || states.includes('dirty')
+        ? 'saving'
+        : 'saved'
+  const saveLabel =
+    busy ?? { error: 'Not saved, retrying…', saving: 'Saving…', saved: 'Saved' }[saveKind]
   const scale = zoom * BASE_SCALE
 
   if (error) {
@@ -333,8 +338,9 @@ export function NotebookView({ id }: { id: string }) {
   return (
     <div className="notebook">
       <header className="notebook-header">
-        <button type="button" className="ghost" onClick={goBack} title="All notebooks">
-          ← Notebooks
+        <button type="button" className="back" onClick={goBack} title="All notebooks">
+          <BackIcon size={18} />
+          <span>Notebooks</span>
         </button>
         <input
           className="title-input"
@@ -344,37 +350,27 @@ export function NotebookView({ id }: { id: string }) {
           onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
           aria-label="Notebook title"
         />
-        <span className={`save-state${saveLabel.startsWith('Not') ? ' error' : ''}`}>
-          {busy ?? saveLabel}
+        <span className={`save-state ${saveKind}`} role="status">
+          <span className="save-dot" aria-hidden="true" />
+          {saveLabel}
         </span>
       </header>
-      <Toolbar
-        tools={tools}
-        onTools={setTools}
-        onColor={(c) => active?.recolor(c)}
-        canUndo={active?.canUndo() ?? false}
-        canRedo={active?.canRedo() ?? false}
-        onUndo={() => active?.undo()}
-        onRedo={() => active?.redo()}
-        onInsertImage={insertImage}
-        onImportPdf={importPdf}
-        zoom={zoom}
-        onZoom={setZoom}
-      />
       <div className="notebook-body">
         <nav className="page-list" aria-label="Pages">
           {pages.map((p, i) => (
             <div key={p.id} className={`page-list-item${p.id === activeId ? ' on' : ''}`}>
               <button
                 type="button"
-                className="page-list-open"
+                className="page-thumb"
+                style={{ aspectRatio: `${p.width} / ${p.height}` }}
                 onClick={() => {
                   setActiveId(p.id)
                   scrollToPage(p.id)
                 }}
+                aria-label={`Page ${i + 1}`}
               >
-                {i + 1}
-                {p.background.kind === 'pdf' && <small> PDF</small>}
+                <span>{i + 1}</span>
+                {p.background.kind === 'pdf' && <small>PDF</small>}
               </button>
               <span className="page-list-actions">
                 <button
@@ -382,44 +378,73 @@ export function NotebookView({ id }: { id: string }) {
                   onClick={() => move(p, -1)}
                   disabled={i === 0}
                   title="Move up"
+                  aria-label="Move page up"
                 >
-                  ↑
+                  <UpIcon size={14} />
                 </button>
                 <button
                   type="button"
                   onClick={() => move(p, 1)}
                   disabled={i === pages.length - 1}
                   title="Move down"
+                  aria-label="Move page down"
                 >
-                  ↓
+                  <DownIcon size={14} />
                 </button>
-                <button type="button" onClick={() => deletePage(p)} title="Delete page">
-                  ×
+                <button
+                  type="button"
+                  onClick={() => deletePage(p)}
+                  title="Delete page"
+                  aria-label="Delete page"
+                >
+                  <TrashIcon size={14} />
                 </button>
               </span>
             </div>
           ))}
-          <button type="button" className="add-page" onClick={addPage} disabled={!notebook}>
-            + Page
+          <button
+            type="button"
+            className="add-page"
+            onClick={addPage}
+            disabled={!notebook}
+            title="Add a page after this one"
+            aria-label="Add page"
+          >
+            <PlusIcon size={18} />
           </button>
         </nav>
-        <div className="pages-scroll" ref={scrollRef}>
-          <div className="pages">
-            {pages.map((p, i) => (
-              <PageView
-                key={p.id}
-                page={p}
-                number={i + 1}
-                scale={scale}
-                tools={tools}
-                active={p.id === activeId}
-                handles={handles}
-                onActivate={setActiveId}
-                onHistory={bumpHistory}
-                onSaveState={onSaveState}
-                onRequestTool={(tool) => setTools({ ...tools, tool })}
-              />
-            ))}
+        <div className="desk">
+          <Toolbar
+            tools={tools}
+            onTools={setTools}
+            onColor={(c) => active?.recolor(c)}
+            canUndo={active?.canUndo() ?? false}
+            canRedo={active?.canRedo() ?? false}
+            onUndo={() => active?.undo()}
+            onRedo={() => active?.redo()}
+            onInsertImage={insertImage}
+            onImportPdf={importPdf}
+            zoom={zoom}
+            onZoom={setZoom}
+          />
+          <div className="pages-scroll" ref={scrollRef}>
+            <div className="pages">
+              {pages.map((p, i) => (
+                <PageView
+                  key={p.id}
+                  page={p}
+                  number={i + 1}
+                  scale={scale}
+                  tools={tools}
+                  active={p.id === activeId}
+                  handles={handles}
+                  onActivate={setActiveId}
+                  onHistory={bumpHistory}
+                  onSaveState={onSaveState}
+                  onRequestTool={(tool) => setTools({ ...tools, tool })}
+                />
+              ))}
+            </div>
           </div>
         </div>
       </div>

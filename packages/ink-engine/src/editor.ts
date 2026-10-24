@@ -61,6 +61,15 @@ export class PageEditor {
     this.commit(this._items.map((i) => byId.get(i.id) ?? i))
   }
 
+  /**
+   * Replaces each listed item with zero or more items in its place, as one undo step.
+   * Used by the eraser, which splits strokes into pieces.
+   */
+  splice(changes: ReadonlyMap<string, readonly Item[]>): void {
+    if (changes.size === 0) return
+    this.commit(this._items.flatMap((i) => changes.get(i.id) ?? [i]))
+  }
+
   undo(): void {
     const prev = this.undoStack.pop()
     if (!prev) return

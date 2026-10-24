@@ -2,8 +2,10 @@ import type { Session } from '@supabase/supabase-js'
 import { useEffect, useState } from 'react'
 import { usePath } from './lib/router'
 import { supabase, supabaseConfigured } from './lib/supabase'
-import { Library } from './notebook/Library'
+import { GoogleIcon } from './notebook/icons'
+import { Library, Wordmark } from './notebook/Library'
 import { NotebookView } from './notebook/NotebookView'
+import { Scribble } from './Scribble'
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -21,7 +23,7 @@ export function App() {
   if (!supabaseConfigured) {
     return (
       <Centered>
-        <h1>Writey</h1>
+        <Wordmark big />
         <p className="muted">
           Supabase isn't configured. Copy <code>apps/web/.env.example</code> to{' '}
           <code>.env.local</code> and fill it in.
@@ -29,7 +31,12 @@ export function App() {
       </Centered>
     )
   }
-  if (loading) return <Centered>Loading…</Centered>
+  if (loading)
+    return (
+      <Centered>
+        <span className="loader" role="status" aria-label="Loading" />
+      </Centered>
+    )
   return session ? <Signed session={session} /> : <SignIn />
 }
 
@@ -54,14 +61,21 @@ function SignIn() {
     if (error) setError(error.message)
   }
   return (
-    <Centered>
-      <h1>Writey</h1>
-      <p className="muted">Your notebook that writes back.</p>
-      <button type="button" onClick={signIn}>
-        Continue with Google
-      </button>
-      {error && <p className="error">{error}</p>}
-    </Centered>
+    <main className="signin">
+      <Scribble />
+      <div className="signin-card">
+        <h1>
+          <Wordmark big />
+        </h1>
+        <p className="tagline">Your notebook that writes back.</p>
+        <button type="button" className="google" onClick={signIn}>
+          <GoogleIcon />
+          Continue with Google
+        </button>
+        {error && <p className="error">{error}</p>}
+      </div>
+      <p className="scribble-hint">Go on, scribble anywhere.</p>
+    </main>
   )
 }
 

@@ -1,6 +1,7 @@
 import {
   drawItems,
   drawStroke,
+  eraseStroke,
   hitItem,
   type Item,
   itemInLasso,
@@ -23,17 +24,18 @@ import { renderPdfPage } from '../lib/pdf'
 import { clipboard, type PageHandle, type SaveState, type ToolId, type ToolState } from './tools'
 
 const MAX_CANVAS_PIXELS = 16_000_000
-const ERASER_PX = 7
+const ERASER_PX = 9
 const HANDLE_PX = 12
 const SAVE_DELAY_MS = 1500
 const RETRY_DELAY_MS = 5000
-const SELECTION_COLOR = '#2b59c3'
+const SELECTION_COLOR = '#2f4bf0'
 
 type LiveStroke = { tool: StrokeTool; color: string; width: number; points: number[] }
 
 type Gesture =
   | { type: 'draw'; live: LiveStroke; t0: number }
-  | { type: 'erase'; hit: Set<string> }
+  /** `items` is the page as erased so far; `origin` maps each cut piece to the stroke it came from. */
+  | { type: 'erase'; items: Item[]; origin: Map<string, string>; touched: Set<string> }
   | { type: 'lasso'; poly: number[] }
   | { type: 'move'; x0: number; y0: number; dx: number; dy: number }
   | { type: 'scale'; ox: number; oy: number; d0: number; s: number }
@@ -77,6 +79,8 @@ export class PageController {
   private images = new Map<string, HTMLImageElement | null>()
   private cancelBackground: (() => void) | null = null
   private wetFrame = 0
+  /** Where the eraser ring is drawn, in page units. */
+  private hover: [number, number] | null = null
 
   private loaded = false
   private version = 0
@@ -289,7 +293,9 @@ export class PageController {
 
   private redrawInk(): void {
     const ctx = this.context(this.ink)
-    if (ctx) drawItems(ctx, this.editor.items, { images: this.image, skip: this.hidden })
+    const g = this.gesture
+    const items = g?.type === 'erase' ? g.items : this.editor.items
+    if (ctx) drawItems(ctx, items, { images: this.image, skip: this.hidden })
   }
 
   private requestWet(): void {
@@ -305,6 +311,7 @@ export class PageController {
     if (!ctx) return
     const g = this.gesture
     if (g?.type === 'draw') drawStroke(ctx, g.live, { live: true })
+    if (this.hover) this.drawEraserRing(ctx, this.hover[0], this.hover[1], g?.type === 'erase')
     if (g?.type === 'lasso' && g.poly.length >= 4) {
       ctx.save()
       ctx.beginPath()
@@ -313,7 +320,7 @@ export class PageController {
         ctx.lineTo(g.poly[i] as number, g.poly[i + 1] as number)
       }
       ctx.closePath()
-      ctx.fillStyle = 'rgba(43, 89, 195, 0.06)'
+      ctx.fillStyle = 'rgba(47, 75, 240, 0.06)'
       ctx.fill()
       ctx.setLineDash([4 / this.scale, 4 / this.scale])
       ctx.lineWidth = 1 / this.scale
@@ -334,6 +341,19 @@ export class PageController {
     if (g?.type === 'move' || g?.type === 'scale') drawItems(ctx, selected, { images: this.image })
     ctx.restore()
     this.drawSelectionBox(ctx, this.transformedBox(box))
+  }
+
+  private drawEraserRing(ctx: CanvasRenderingContext2D, x: number, y: number, pressed: boolean) {
+    const px = 1 / this.scale
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(x, y, ERASER_PX * px, 0, Math.PI * 2)
+    ctx.fillStyle = pressed ? 'rgba(255, 92, 122, 0.18)' : 'rgba(255, 255, 255, 0.6)'
+    ctx.fill()
+    ctx.lineWidth = 1.5 * px
+    ctx.strokeStyle = pressed ? '#ff5c7a' : 'rgba(22, 23, 29, 0.55)'
+    ctx.stroke()
+    ctx.restore()
   }
 
   private transformedBox(b: Rect): Rect {
@@ -404,7 +424,13 @@ export class PageController {
         break
       }
       case 'eraser':
-        this.gesture = { type: 'erase', hit: new Set() }
+        this.gesture = {
+          type: 'erase',
+          items: [...this.editor.items],
+          origin: new Map(),
+          touched: new Set(),
+        }
+        this.hover = [x, y]
         this.eraseAt(x, y)
         break
       case 'lasso':
@@ -447,6 +473,14 @@ export class PageController {
 
   pointerMove(e: PointerEvent): void {
     const g = this.gesture
+    const erasing = this.tools.tool === 'eraser' || (e.pointerType === 'pen' && e.buttons & 32)
+    if (erasing || g?.type === 'erase') {
+      this.hover = this.toPage(e)
+      this.requestWet()
+    } else if (this.hover) {
+      this.hover = null
+      this.requestWet()
+    }
     if (!g) return
     const coalesced = e.getCoalescedEvents?.()
     const events = coalesced && coalesced.length > 0 ? coalesced : [e]
@@ -485,11 +519,17 @@ export class PageController {
       case 'draw':
         this.editor.add([{ kind: 'stroke', id: newId(), ...g.live, author: 'user' }])
         break
-      case 'erase':
-        this.hidden.clear()
-        if (g.hit.size) this.editor.remove(g.hit)
+      case 'erase': {
+        const changes = new Map<string, Item[]>()
+        for (const id of g.touched) changes.set(id, [])
+        for (const item of g.items) {
+          const from = g.origin.get(item.id)
+          if (from) changes.get(from)?.push(item)
+        }
+        if (changes.size) this.editor.splice(changes)
         else this.redrawInk()
         break
+      }
       case 'lasso': {
         const hits = this.editor.items.filter((i) => itemInLasso(i, g.poly))
         this.selection = new Set(hits.map((i) => i.id))
@@ -517,14 +557,39 @@ export class PageController {
     if (g?.type !== 'erase') return
     const r = ERASER_PX / this.scale
     let changed = false
-    for (const item of this.editor.items) {
-      if (!g.hit.has(item.id) && hitItem(item, x, y, r)) {
-        g.hit.add(item.id)
-        this.hidden.add(item.id)
-        changed = true
+    const next: Item[] = []
+    for (const item of g.items) {
+      if (this.hidden.has(item.id)) {
+        next.push(item)
+        continue
       }
+      const from = g.origin.get(item.id) ?? item.id
+      if (item.kind === 'stroke') {
+        const pieces = eraseStroke(item, x, y, r, newId)
+        if (!pieces) {
+          next.push(item)
+          continue
+        }
+        for (const piece of pieces) g.origin.set(piece.id, from)
+        next.push(...pieces)
+      } else if (!hitItem(item, x, y, r)) {
+        next.push(item)
+        continue
+      }
+      // Text and images go as a whole.
+      g.touched.add(from)
+      changed = true
     }
-    if (changed) this.redrawInk()
+    if (!changed) return
+    g.items = next
+    this.redrawInk()
+  }
+
+  /** Hides the eraser ring when the pointer leaves the page. */
+  pointerLeave(): void {
+    if (!this.hover || this.gesture?.type === 'erase') return
+    this.hover = null
+    this.requestWet()
   }
 
   // -------------------------------------------------------------------------

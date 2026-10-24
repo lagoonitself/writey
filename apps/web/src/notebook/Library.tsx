@@ -4,6 +4,16 @@ import { useEffect, useState } from 'react'
 import { createNotebook, listNotebooks, renameNotebook, trashNotebook } from '../lib/db'
 import { navigate } from '../lib/router'
 import { supabase } from '../lib/supabase'
+import { EditIcon, PlusIcon, TrashIcon } from './icons'
+
+const COVERS = ['#2f4bf0', '#f0304f', '#ffb020', '#0f9d6b', '#7a5cff', '#16171d']
+
+/** A stable cover color per notebook, so each one is recognizable at a glance. */
+function coverFor(id: string): string {
+  let h = 0
+  for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+  return COVERS[h % COVERS.length] as string
+}
 
 export function Library({ session }: { session: Session }) {
   const [notebooks, setNotebooks] = useState<NotebookRow[] | null>(null)
@@ -40,38 +50,83 @@ export function Library({ session }: { session: Session }) {
     setNotebooks((prev) => prev?.filter((n) => n.id !== nb.id) ?? null)
   }
 
+  const name =
+    (session.user.user_metadata?.full_name as string | undefined)?.split(' ')[0] ??
+    session.user.email?.split('@')[0]
+
   return (
     <div className="library">
       <header className="library-header">
-        <h1>Writey</h1>
-        <span className="muted">{session.user.email}</span>
+        <Wordmark />
+        <span className="user-email">{session.user.email}</span>
         <button type="button" className="ghost" onClick={() => supabase.auth.signOut()}>
           Sign out
         </button>
       </header>
+      <p className="hello">Hi {name}, what are we writing today?</p>
       {error && <p className="error">{error}</p>}
       <div className="notebook-grid">
         <button type="button" className="notebook-card new" onClick={create} disabled={creating}>
-          {creating ? 'Creating…' : '+ New notebook'}
+          <span className="new-plus">
+            <PlusIcon size={28} />
+          </span>
+          {creating ? 'Opening a fresh one…' : 'New notebook'}
         </button>
-        {notebooks?.map((nb) => (
-          <div key={nb.id} className="notebook-card">
+        {notebooks?.map((nb, i) => (
+          <div
+            key={nb.id}
+            className="notebook-card"
+            style={{ '--cover': coverFor(nb.id), '--i': i } as React.CSSProperties}
+          >
             <button type="button" className="notebook-open" onClick={() => navigate(`/n/${nb.id}`)}>
-              <span className="notebook-title">{nb.title}</span>
-              <span className="muted">{new Date(nb.created_at).toLocaleDateString()}</span>
+              <span className="notebook-label">
+                <span className="notebook-title">{nb.title}</span>
+                <span className="notebook-date">
+                  {new Date(nb.created_at).toLocaleDateString(undefined, {
+                    month: 'short',
+                    day: 'numeric',
+                    year: 'numeric',
+                  })}
+                </span>
+              </span>
             </button>
             <span className="notebook-actions">
-              <button type="button" className="ghost" onClick={() => rename(nb)}>
-                Rename
+              <button
+                type="button"
+                onClick={() => rename(nb)}
+                title="Rename"
+                aria-label={`Rename ${nb.title}`}
+              >
+                <EditIcon size={15} />
               </button>
-              <button type="button" className="ghost" onClick={() => remove(nb)}>
-                Delete
+              <button
+                type="button"
+                onClick={() => remove(nb)}
+                title="Delete"
+                aria-label={`Delete ${nb.title}`}
+              >
+                <TrashIcon size={15} />
               </button>
             </span>
           </div>
         ))}
       </div>
-      {notebooks === null && !error && <p className="muted">Loading…</p>}
+      {notebooks === null && !error && <p className="muted loading">Fetching your notebooks…</p>}
+      {notebooks?.length === 0 && (
+        <p className="empty-hint">Start your first notebook. It's a blank page waiting for you.</p>
+      )}
     </div>
+  )
+}
+
+/** The logo: the name with a hand-drawn underline that writes itself in. */
+export function Wordmark({ big = false }: { big?: boolean }) {
+  return (
+    <span className={`wordmark${big ? ' big' : ''}`}>
+      Writey
+      <svg viewBox="0 0 120 14" aria-hidden="true">
+        <path d="M3 9c18-5 40-7 62-5 16 1.5 30 3 52-1" pathLength={1} />
+      </svg>
+    </span>
   )
 }

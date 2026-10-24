@@ -13,12 +13,13 @@ export type ToolState = {
 }
 
 export const PEN_PRESETS: PenStyle[] = [
-  { color: '#1a1a1a', width: 1.6 },
-  { color: '#2b59c3', width: 1.6 },
-  { color: '#c0392b', width: 1.6 },
+  { color: '#16171d', width: 1.6 },
+  { color: '#2f4bf0', width: 1.6 },
+  { color: '#f0304f', width: 1.6 },
+  { color: '#0f9d6b', width: 1.6 },
 ]
 export const PEN_WIDTHS = [1, 1.6, 2.6, 4]
-export const HIGHLIGHTER_COLORS = ['#ffe94d', '#8ef0a0', '#ffb3d1', '#9ad7ff']
+export const HIGHLIGHTER_COLORS = ['#ffe14a', '#7ff0a6', '#ffa8cb', '#8fd3ff']
 
 export const DEFAULT_TOOLS: ToolState = {
   tool: 'pen',
