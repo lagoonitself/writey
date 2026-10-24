@@ -11,7 +11,11 @@
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
   },
+  // Page ink blobs and uploaded PDFs/images.
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "writey" }],
   "vars": {
-    "SUPABASE_URL": "https://ksnpzfgcxjallzucvuhr.supabase.co"
+    "SUPABASE_URL": "https://ksnpzfgcxjallzucvuhr.supabase.co",
+    // Public by design (it also ships in the web bundle). RLS protects the data.
+    "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_ga-uXWG_WWoxz5jrl4y6hQ_UcZ7JNgo"
   }
 }

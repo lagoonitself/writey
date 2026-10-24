@@ -14,6 +14,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it works.
 | --------------------- | -------------------------------------------- |
 | `apps/web`            | React app (Vite)                             |
 | `apps/worker`         | Cloudflare Worker: API + hosts the built app |
+| `packages/ink-engine` | Page model, hit-testing, undo, ink rendering |
 | `packages/shared`     | Types shared by web and worker               |
 | `supabase/migrations` | Database schema and row-level security       |
 
@@ -27,7 +28,7 @@ cp apps/web/.env.example apps/web/.env.local   # fill in Supabase URL + publisha
 pnpm dev                                        # web on :5173, worker on :8787
 ```
 
-Set `SUPABASE_URL` in `apps/worker/wrangler.jsonc` to your project URL.
+Set `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` in `apps/worker/wrangler.jsonc` to your project, and apply `supabase/migrations` in order. Deploying needs an R2 bucket named `writey` (`wrangler dev` simulates it locally).
 
 | Command          | Does                                    |
 | ---------------- | --------------------------------------- |

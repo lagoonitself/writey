@@ -1,0 +1,18 @@
+{
+  "name": "@writey/ink-engine",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "5.0.5"
+  },
+  "dependencies": {
+    "perfect-freehand": "1.2.3"
+  }
+}

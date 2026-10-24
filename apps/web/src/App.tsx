@@ -1,8 +1,9 @@
 import type { Session } from '@supabase/supabase-js'
-import type { MeResponse } from '@writey/shared'
 import { useEffect, useState } from 'react'
-import { api } from './lib/api'
+import { usePath } from './lib/router'
 import { supabase, supabaseConfigured } from './lib/supabase'
+import { Library } from './notebook/Library'
+import { NotebookView } from './notebook/NotebookView'
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null)
@@ -29,7 +30,17 @@ export function App() {
     )
   }
   if (loading) return <Centered>Loading…</Centered>
-  return session ? <Home session={session} /> : <SignIn />
+  return session ? <Signed session={session} /> : <SignIn />
+}
+
+function Signed({ session }: { session: Session }) {
+  const path = usePath()
+  const notebookId = /^\/n\/([0-9a-f-]{36})$/i.exec(path)?.[1]
+  return notebookId ? (
+    <NotebookView key={notebookId} id={notebookId} />
+  ) : (
+    <Library session={session} />
+  )
 }
 
 function SignIn() {
@@ -37,6 +48,7 @@ function SignIn() {
   const signIn = async () => {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
+      // Must match the Supabase redirect allow list, which holds origins only.
       options: { redirectTo: window.location.origin },
     })
     if (error) setError(error.message)
@@ -49,34 +61,6 @@ function SignIn() {
         Continue with Google
       </button>
       {error && <p className="error">{error}</p>}
-    </Centered>
-  )
-}
-
-function Home({ session }: { session: Session }) {
-  const [me, setMe] = useState<MeResponse | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    api<MeResponse>('/me')
-      .then(setMe)
-      .catch((e: Error) => setError(e.message))
-  }, [])
-
-  return (
-    <Centered>
-      <h1>Writey</h1>
-      <p>Signed in as {session.user.email}</p>
-      <p className="muted">
-        {me
-          ? `Server verified you (${me.userId.slice(0, 8)}…)`
-          : error
-            ? `Server check failed: ${error}`
-            : 'Checking with server…'}
-      </p>
-      <button type="button" onClick={() => supabase.auth.signOut()}>
-        Sign out
-      </button>
     </Centered>
   )
 }
