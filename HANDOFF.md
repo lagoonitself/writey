@@ -43,21 +43,24 @@ The owner wants **both** outputs (chat and handwriting). Writey picks one from w
 | D10 | Page model                  | Notebooks with fixed pages (A4); PDFs import page by page. No infinite canvas.                                                                                                                                         |
 | D11 | AI providers (thinking)     | **OpenRouter** (user key), **OpenCode Zen** (user key), **ChatGPT plan** via official "Sign in with ChatGPT". Nothing else.                                                                                             |
 | D12 | Default model               | **DeepSeek V4.1 Flash** (native vision) via OpenRouter, changeable in settings.                                                                                                                                        |
-| D13 | Voice (**changed**)         | **No Gemini Live, no cloud voice.** Speech-to-text runs **locally** (faster-whisper on the owner's GPU) inside **Writey Helper**, a small local Python server. TTS: Fish Audio (cloud) first, local later. Text box always available. |
-| D14 | Addressing Writey           | Wake word **"Writey"** (openWakeWord, custom model) **plus push-to-talk** (key or pen-tablet button). Fuzzy transcript match as backup.                                                                                 |
+| D13 | Voice (**changed**)         | **No Gemini Live, no cloud voice, no browser-run models.** Speech-to-text and text-to-speech run as **local models in Python** (Writey Helper) on the owner's GPU. Text box always available. |
+| D14 | Addressing Writey           | Say **"Writey …"**, detected by fuzzy match in the transcript (Silero VAD gates it, so a silent room transcribes nothing), **or** hold **push-to-talk** (key or pen-tablet button). An openWakeWord model is added only if misses are common. |
 | D15 | ChatGPT sign-in             | Official open-source flow = loopback login (`127.0.0.1`) with tokens stored locally, so it lives **in the Helper**. A hosted website flow would need an OpenAI client ID (waitlist). OpenRouter/Zen keys are stored encrypted in Supabase. |
 | D16 | Stack                       | React + TS + Vite; custom canvas engine; one Cloudflare Worker (Hono) for API + static hosting; Supabase (Postgres + Google auth); R2 for files.                                                                        |
 | D17 | Diagrams                    | AI writes a diagram **spec** (axes, plot, arrow, rect, spring…) and Writey draws it hand-drawn style. Phase 5.                                                                                                          |
 | D18 | Name / license              | Product and repo are **Writey**. **MIT**.                                                                                                                                                                              |
-| D19 | Speech models               | **English only.** STT: **NVIDIA Parakeet TDT 0.6B v2** (English, fastest, no Whisper-style hallucination in silence), via ONNX; fallback faster-whisper distil-large-v3. TTS: **Fish Audio OpenAudio S1-mini** (0.5B, local; weights are CC BY-NC-SA, non-commercial); fallback Kokoro-82M. Gate: **Silero VAD** (speech only, not any sound). |
+| D19 | Speech models               | **English only.** STT: **NVIDIA Parakeet TDT 0.6B v2** (English, fastest, no Whisper-style hallucination in silence) via onnx-asr; fallback faster-whisper distil-large-v3. TTS: **Fish Audio OpenAudio S1-mini** (0.5B, local; weights are CC BY-NC-SA, non-commercial); fallback Kokoro-82M. Gate: **Silero VAD** (speech only, not any sound). |
 | D20 | OpenCode                    | Means **OpenCode Zen** only.                                                                                                                                                                                           |
-| D21 | Browser ↔ Helper (proposed) | Browser owns mic (`echoCancellation`), VAD, playback, 30 s transcript buffer and trigger check. Helper is an inference server on `127.0.0.1`: speech segments → text, text → audio, ChatGPT proxy. Writey's own speech is appended to the transcript as text, never re-transcribed. Desktop wrapper (Electron/Tauri) later. **Awaiting owner OK.** |
+| D21 | Browser ↔ Helper            | **Approved.** Browser owns mic (`echoCancellation`), Silero VAD, playback, 30 s transcript and trigger check. Helper is a local model server on `127.0.0.1:47823`: WS `/stt` (speech segment → text), `/tts` (text → audio), ChatGPT sign-in + proxy. Writey's own speech is appended to the transcript as text, never re-transcribed. Desktop wrapper (Electron/Tauri) later. |
 
 ### Superseded
 
 - ~~Gemini Live as voice tier 1~~ → dropped (D13).
 - ~~Plain local files instead of a cloud DB (personal-use idea)~~ → Supabase + R2, because the project went open-source and multi-user.
 - ~~ChatGPT tokens in the database~~ → Helper-only until a hosted client ID exists (D15).
+- ~~Fish Audio cloud API for TTS~~ → Fish S1-mini running locally (D19).
+- ~~Voice models in the browser (Moonshine/Whisper WebGPU, Kokoro.js) or a Chrome extension~~ → rejected; the owner wants local Python models (an extension can't run models better than a page, and ChatGPT sign-in needs a local server anyway).
+- ~~openWakeWord as the primary trigger~~ → transcript match + push-to-talk (D14).
 
 ## 4. Owner's setup
 
@@ -76,16 +79,17 @@ The owner wants **both** outputs (chat and handwriting). Writey picks one from w
 
 ## 6. Next up (in order)
 
+**The owner said to wait for their go before building.** Docs are current as of 2026-10-24.
+
 1. **Math handwriting spike** (§5.5): render ~20 typical formulas with single-stroke glyphs and judge them. This is the biggest risk, so do it before Phase 3.
 2. **Phase 2 — Ask by typing:** encrypted provider keys (OpenRouter, OpenCode Zen), context capture with line labels, PLAN/PRODUCE calls, chat panel with KaTeX, cancel/stop, error messages, vision check. Build an **eval set** of 20–30 real handwritten pages and test DeepSeek on them.
 3. **Phase 3 — Writey writes:** InkScript, layout, handwriting renderer, ghost preview + accept, check-my-work marks.
-4. **Phase 4 — Writey Helper:** push-to-talk, wake word, VAD, Whisper, optional TTS, and Sign in with ChatGPT in the same process.
+4. **Phase 4 — Voice + Helper:** browser voice client (mic, Silero VAD, transcript, trigger, push-to-talk) + Python Helper (Parakeet STT, Fish S1-mini TTS) + Sign in with ChatGPT, all in one Helper process. Measure S1-mini latency/VRAM first.
 5. **Phase 5 — Diagrams.**
 
 ## 7. Open questions for the owner
 
-1. OK the browser ↔ Helper split (D21)?
-2. Delete the leftover e2e test user `writey-e2e@test.invalid` in Supabase? (Awaiting OK.)
+1. Delete the leftover e2e test user `writey-e2e@test.invalid` in Supabase? (Awaiting OK.)
 
 ## 8. Gotchas
 

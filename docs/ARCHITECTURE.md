@@ -6,7 +6,7 @@
 
 Status: **v0.2** (2026-10-24). Open-source, multi-user, $0 hosting; users bring their own AI keys.
 
-v0.2 changes: Gemini Live dropped (voice is local only, via Writey Helper); ChatGPT sign-in settled as Helper-only; push-to-talk added; ChatGPT merged into the Helper phase. Running decisions log: [HANDOFF.md](../HANDOFF.md).
+v0.2 changes: Gemini Live dropped (voice is local only, via Writey Helper); ChatGPT sign-in settled as Helper-only; push-to-talk added; ChatGPT merged into the Helper phase. v0.3: voice runs on local Python models (Parakeet STT, Fish S1-mini TTS); the browser owns mic, VAD and playback, the Helper only runs models. Running decisions log: [HANDOFF.md](../HANDOFF.md).
 
 ---
 
@@ -20,8 +20,8 @@ v0.2 changes: Gemini Live dropped (voice is local only, via Writey Helper); Chat
 | Database + auth          | Supabase free tier: Postgres + Google login.                                                                   |
 | File storage             | Cloudflare R2 free tier (10 GB): PDFs, images, page ink blobs.                                                 |
 | AI providers (thinking)  | **OpenRouter** (user key), **OpenCode Zen** (user key), **ChatGPT plan** (Sign in with ChatGPT). Nothing else. |
-| Voice                    | **Writey Helper** (local Python: wake word, Whisper STT, optional TTS) plus a **text box** (always available). No cloud voice. |
-| Talking to Writey        | Say "Writey, …" (wake word) **or** hold a push-to-talk key / pen-tablet button.                                |
+| Voice                    | **Local models via Writey Helper** (Python): Parakeet TDT 0.6B v2 speech-to-text, Fish OpenAudio S1-mini text-to-speech. Browser owns mic, VAD, playback. Plus a **text box**. No cloud voice. English only. |
+| Talking to Writey        | Say "Writey, …" (detected in the transcript) **or** hold a push-to-talk key / pen-tablet button.               |
 | Default reasoning model  | DeepSeek V4.1 Flash (native vision) via OpenRouter, user-changeable.                                           |
 | Assistant name / trigger | "Writey".                                                                                                      |
 | AI output                | Chat panel **or** handwritten ink on the page, chosen by intent. Both link to each other.                      |
@@ -41,11 +41,11 @@ flowchart LR
     UI["React UI<br/>notebooks, toolbar, chat panel"]
     ENG["Ink engine<br/>canvas, tools, pages"]
     HELP["Help engine<br/>context capture, routing,<br/>prompting, output rendering"]
-    VOICE["Voice client<br/>Helper socket, transcript,<br/>trigger handling"]
+    VOICE["Voice client<br/>mic + echo cancel, Silero VAD,<br/>30 s transcript, trigger, playback"]
   end
 
   subgraph Local["User's PC (optional)"]
-    HELPER["Writey Helper (Python)<br/>wake word + VAD + Whisper + TTS<br/>ChatGPT sign-in + proxy"]
+    HELPER["Writey Helper (Python)<br/>Parakeet STT + Fish TTS<br/>ChatGPT sign-in + proxy"]
   end
 
   subgraph CF["Cloudflare (free)"]
@@ -326,9 +326,19 @@ Consequence: ChatGPT (and voice) need the Helper installed; OpenRouter and OpenC
 
 ## 7. Voice
 
-All voice is **local**. No audio leaves the PC; only the transcript text goes to the reasoning model.
+All voice is **local**: models run on the user's PC in Writey Helper. No audio leaves the PC; only transcript text goes to the reasoning model. English only.
 
-### 7.1 Interface
+### 7.1 Who does what
+
+| Browser (voice client in `apps/web`)                                                          | Writey Helper (Python, `127.0.0.1:47823`)                     |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Mic via `getUserMedia({ echoCancellation, noiseSuppression })`, 16 kHz mono in an AudioWorklet | **STT:** speech segment (PCM) in → text out (Parakeet)        |
+| **Silero VAD** (ONNX in a Web Worker): only speech segments are sent; silent room = nothing   | **TTS:** text in → audio out (Fish S1-mini), streamed         |
+| 30-second rolling transcript (yours + Writey's replies as text)                                | **ChatGPT:** loopback sign-in, token storage, Responses proxy |
+| Trigger check ("Writey …"), push-to-talk, listening toggle, mic indicator                     | Health / model status, first-run model download               |
+| Plays TTS audio through the page, so Chrome's echo canceller removes it from the mic          |                                                               |
+
+Why this split: Chrome's echo cancellation stops Writey hearing itself for free; no Python audio-device code; one mic permission and indicator; the Helper is stateless (restart anytime); the help engine and transcript already live in the browser.
 
 ```ts
 interface VoiceSource {
@@ -340,35 +350,41 @@ interface VoiceSource {
 }
 ```
 
-Two sources: **Writey Helper** (when running and paired) and the **text box** (always available: Ctrl+K, or click the Writey button). If the Helper isn't running, the app shows "Voice off — start Writey Helper" and the text box.
+Sources: **Helper voice** (when running and paired) and the **text box** (always available: Ctrl+K, or click the Writey button). If the Helper isn't running, the app shows "Voice off — start Writey Helper" and the text box.
 
-### 7.2 Writey Helper (local Python, free)
+### 7.2 Pipeline
+
+1. Mic frames → Silero VAD. No speech → nothing happens (no transcription, no network).
+2. Speech starts → buffer the segment; speech ends (~300 ms silence) → send the segment over the WebSocket.
+3. Helper runs Parakeet (well under 100 ms on GPU) → returns text.
+4. Browser appends it to the 30 s transcript and checks the trigger:
+   - **Push-to-talk** held → always a request.
+   - Sentence contains **"Writey"** near the start (fuzzy: "righty", "ready", "writy") → request.
+   - Low-confidence match → "Did you mean Writey?" chip instead of acting.
+5. Request → help engine (§5) with the utterance + the 30 s transcript + page context.
+6. If voice replies are on, the status line / short answer → Helper TTS → played in the page. Writey's spoken text is appended to the transcript **as text**; it is never re-transcribed.
+7. You start speaking while Writey talks → playback stops (barge-in).
+
+### 7.3 Writey Helper (local Python, free)
 
 ```
 apps/helper/
   writey_helper/
-    server.py        FastAPI + WebSocket on 127.0.0.1:47823
-    audio.py         mic capture (sounddevice), 16 kHz ring buffer
-    wake.py          openWakeWord, custom-trained "Writey" model
-    vad.py           Silero VAD — only speech segments go on
-    stt.py           faster-whisper large-v3-turbo, int8, CUDA (~2 GB of 8 GB VRAM); CPU fallback: small/base int8
-    trigger.py       fuzzy "Writey" match on transcripts (backup to wake.py)
-    tts.py           Fish Audio (cloud key) first; local TTS later; optional, off by default
-    chatgpt.py       Sign in with ChatGPT (loopback) + Responses proxy
-  pyproject.toml     installed with `uv`; one command to run; models download on first run
+    server.py        FastAPI: WS /stt, POST /tts (streamed audio), /chatgpt/*, GET /health
+    stt.py           Parakeet TDT 0.6B v2 via onnx-asr (ONNX Runtime CUDA; CPU fallback). Fallback model: faster-whisper distil-large-v3
+    tts.py           Fish Audio OpenAudio S1-mini (local, CUDA). Fallback: Kokoro-82M
+    chatgpt.py       Sign in with ChatGPT (loopback 127.0.0.1:1455) + Responses proxy
+    pairing.py       one-time pairing code, origin allow-list
+    models.py        download + cache model weights on first run, report status
+  pyproject.toml     installed with `uv`; one command to run (`uv run writey-helper`)
 ```
 
-- **Ways to address Writey:**
-  1. **Push-to-talk:** hold a key (or a pen-tablet button mapped to that key). Most reliable; no wake word needed.
-  2. **Wake word "Writey":** openWakeWord runs on every audio frame (cheap, CPU). On a hit, VAD + Whisper capture the request.
-  3. **Backup:** if the wake model misses, fuzzy matching on transcripts catches "Writey" at the start of a sentence ("righty", "ready" variants). Low-confidence matches show a "Did you mean Writey?" chip instead of acting.
-- **Pipeline:** mic → wake word / push-to-talk → VAD → Whisper → transcript to the browser → help engine. A 30-second rolling transcript buffer goes along with each request.
-- **Echo:** while TTS is speaking, mic input is gated (or echo-cancelled) so Writey never triggers itself. Speaking over it stops playback (barge-in).
-- **Listening toggle** in the toolbar, auto-paused after 10 minutes of silence; a mic indicator shows whenever the mic is open.
-- **Security:** binds to 127.0.0.1 only. Accepts the Writey site's origin plus a pairing code shown once in the app. Chrome asks once for Local Network Access permission.
-- **Later:** a no-wake-word "study mode" (listens to everything, responds when you sound stuck) is opt-in and not in v1. The Helper can be packaged into a desktop app (Tauri/Electron) later without rewrites.
+- **Models:** Parakeet TDT 0.6B v2 (English-only, fastest, more accurate than Whisper large-v3, doesn't invent text in silence; ~2 GB VRAM). Fish OpenAudio S1-mini (0.5B; weights are CC BY-NC-SA, non-commercial; users download them on first run). Measure S1-mini latency and VRAM early; Kokoro-82M is the light fallback.
+- **Security:** binds to 127.0.0.1 only. Accepts the Writey site's origin plus a pairing token (shown once in the app, stored in the browser). Chrome asks once for Local Network Access permission.
+- **Listening toggle** in the toolbar, auto-paused after 10 minutes of silence; mic indicator whenever the mic is open.
+- **Later:** an openWakeWord "Writey" model if transcript matching misses too often; opt-in "study mode" (responds when you sound stuck); packaging the Helper + app as a desktop app (Electron/Tauri) with no change to this split.
 
-### 7.3 Text box
+### 7.4 Text box
 
 Same help engine, typed instead of spoken. Ctrl+K opens it at the pen position.
 
@@ -433,7 +449,7 @@ Each phase ends with something usable.
 | **1b. Math spike**   | Render ~20 typical formulas with the single-stroke handwriting renderer (§5.5) and judge quality.                                                                                               | next       |
 | **2. Ask by typing** | Provider settings (OpenRouter, OpenCode Zen) with encrypted keys, context capture with line labels, PLAN/PRODUCE, chat panel with KaTeX, cancel, errors, vision check. Model eval set (20–30 real pages). | next       |
 | **3. Writey writes** | InkScript, layout engine, handwriting renderer, ghost preview and accept, check-my-work marks.                                                                                                  |            |
-| **4. Helper**        | Writey Helper: push-to-talk, wake word, VAD, Whisper, optional TTS, **and** Sign in with ChatGPT + Responses adapter (same process).                                                            |            |
+| **4. Helper**        | Browser voice client (mic, VAD, transcript, trigger, push-to-talk) + Writey Helper (Parakeet STT, Fish TTS) **and** Sign in with ChatGPT + Responses adapter (same process).                    |            |
 | **5. Diagrams**      | Diagram spec, renderer, plots, SVG export.                                                                                                                                                      |            |
 | **v1.x / v2**        | Exports, shape snapping, paper styles, study mode, sharing, personal handwriting style, iPad.                                                                                                   |            |
 
@@ -446,9 +462,10 @@ Each phase ends with something usable.
 | Handwritten math looks bad              | Spike in Phase 1; outline-font fallback; tune jitter.                                                                 |
 | Vision model misreads messy handwriting | Test DeepSeek V4.1 Flash on real samples early; model is swappable per user; line labels reduce the precision needed. |
 | Model places marks in the wrong spot    | Line labels (set-of-marks) instead of pixel coordinates.                                                              |
-| "Writey" misheard                       | Push-to-talk, openWakeWord custom model, fuzzy transcript match, confirm chip.                                        |
+| "Writey" misheard                       | Push-to-talk, fuzzy transcript match, confirm chip; add an openWakeWord model only if misses are common.              |
 | Writey hears its own TTS                | Mic gated / echo-cancelled while speaking; barge-in stops playback.                                                   |
-| Helper on PCs without an NVIDIA GPU     | CPU fallback with a smaller Whisper model; push-to-talk works everywhere.                                             |
+| Helper on PCs without an NVIDIA GPU     | Parakeet ONNX on CPU (slower, still usable) or Kokoro TTS; push-to-talk works everywhere.                             |
+| STT + TTS + canvas share an 8 GB GPU    | Parakeet ~2 GB; measure S1-mini early; fall back to Kokoro-82M if too slow or too big.                                |
 | ChatGPT plan terms for hosted apps      | Helper-only until a hosted client ID is granted.                                                                      |
 | Free-tier pauses or limits              | Section 10; nothing stored only in the DB that can't be recovered.                                                    |
 | Pen latency                             | Wet-ink canvas, coalesced events, desynchronized context.                                                             |
@@ -457,6 +474,6 @@ Each phase ends with something usable.
 
 ## 13. Open questions
 
-1. **Browser ↔ Helper split** (HANDOFF D21): browser owns mic/VAD/playback, Helper does inference only. Pending owner OK; §7.2 gets rewritten once approved.
+None right now.
 
-Resolved: English only; STT Parakeet TDT 0.6B v2, TTS Fish OpenAudio S1-mini (HANDOFF D19); "OpenCode" = OpenCode Zen; no Gemini (voice is local only); ChatGPT is Helper-only; license is MIT; product and repo name are "Writey".
+Resolved: voice via local Python models with the browser ↔ Helper split (§7, HANDOFF D21); browser-only voice rejected; English only; STT Parakeet TDT 0.6B v2, TTS Fish OpenAudio S1-mini (HANDOFF D19); "OpenCode" = OpenCode Zen; no Gemini (voice is local only); ChatGPT is Helper-only; license is MIT; product and repo name are "Writey".

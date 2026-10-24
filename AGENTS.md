@@ -12,8 +12,9 @@ If these disagree, `HANDOFF.md` wins (it's the newest record). Fix the other fil
 
 These are decided. Don't propose alternatives unless the owner asks:
 
-- **No Gemini Live, no cloud voice.** Speech-to-text is local (faster-whisper) in Writey Helper.
-- Thinking providers are **only** OpenRouter, OpenCode Zen and ChatGPT (Sign in with ChatGPT via the Helper).
+- **No Gemini Live, no cloud voice, no browser-run voice models.** STT (Parakeet TDT 0.6B v2) and TTS (Fish OpenAudio S1-mini) run locally in the Python Writey Helper. The browser owns mic, VAD, playback and the transcript (HANDOFF D21).
+- English only for speech.
+- Thinking providers are **only** OpenRouter, OpenCode Zen and ChatGPT (Sign in with ChatGPT via the Helper). "OpenCode" means OpenCode Zen.
 - Default model: DeepSeek V4.1 Flash via OpenRouter.
 - Chat vs ink is chosen by intent (see HANDOFF D3). AI ink is a ghost preview with Accept.
 - Chrome on desktop with a pen tablet first; iPad later.
