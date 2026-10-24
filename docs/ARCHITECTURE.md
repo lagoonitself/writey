@@ -457,7 +457,6 @@ Each phase ends with something usable.
 
 ## 13. Open questions
 
-1. **"OpenCode" provider:** OpenCode Zen only, OpenCode Go (subscription), or the local `opencode` server as a provider (that would live in the Helper)?
-2. **Speech language:** English only, or mixed with Hindi/Telugu? Decides the Whisper model.
+1. **Browser ↔ Helper split** (HANDOFF D21): browser owns mic/VAD/playback, Helper does inference only. Pending owner OK; §7.2 gets rewritten once approved.
 
-Resolved: no Gemini (voice is local only); ChatGPT is Helper-only; license is MIT; product and repo name are "Writey".
+Resolved: English only; STT Parakeet TDT 0.6B v2, TTS Fish OpenAudio S1-mini (HANDOFF D19); "OpenCode" = OpenCode Zen; no Gemini (voice is local only); ChatGPT is Helper-only; license is MIT; product and repo name are "Writey".

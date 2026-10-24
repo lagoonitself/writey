@@ -49,6 +49,9 @@ The owner wants **both** outputs (chat and handwriting). Writey picks one from w
 | D16 | Stack                       | React + TS + Vite; custom canvas engine; one Cloudflare Worker (Hono) for API + static hosting; Supabase (Postgres + Google auth); R2 for files.                                                                        |
 | D17 | Diagrams                    | AI writes a diagram **spec** (axes, plot, arrow, rect, spring…) and Writey draws it hand-drawn style. Phase 5.                                                                                                          |
 | D18 | Name / license              | Product and repo are **Writey**. **MIT**.                                                                                                                                                                              |
+| D19 | Speech models               | **English only.** STT: **NVIDIA Parakeet TDT 0.6B v2** (English, fastest, no Whisper-style hallucination in silence), via ONNX; fallback faster-whisper distil-large-v3. TTS: **Fish Audio OpenAudio S1-mini** (0.5B, local; weights are CC BY-NC-SA, non-commercial); fallback Kokoro-82M. Gate: **Silero VAD** (speech only, not any sound). |
+| D20 | OpenCode                    | Means **OpenCode Zen** only.                                                                                                                                                                                           |
+| D21 | Browser ↔ Helper (proposed) | Browser owns mic (`echoCancellation`), VAD, playback, 30 s transcript buffer and trigger check. Helper is an inference server on `127.0.0.1`: speech segments → text, text → audio, ChatGPT proxy. Writey's own speech is appended to the transcript as text, never re-transcribed. Desktop wrapper (Electron/Tauri) later. **Awaiting owner OK.** |
 
 ### Superseded
 
@@ -81,9 +84,8 @@ The owner wants **both** outputs (chat and handwriting). Writey picks one from w
 
 ## 7. Open questions for the owner
 
-1. **"OpenCode":** OpenCode Zen only, OpenCode Go (subscription), or the local `opencode` server as a provider (via the Helper)?
-2. **Speech language:** English only, or mixed with Hindi/Telugu? This decides the Whisper model.
-3. Delete the leftover e2e test user `writey-e2e@test.invalid` in Supabase? (Awaiting OK.)
+1. OK the browser ↔ Helper split (D21)?
+2. Delete the leftover e2e test user `writey-e2e@test.invalid` in Supabase? (Awaiting OK.)
 
 ## 8. Gotchas
 
