@@ -12,6 +12,6 @@
     "run_worker_first": ["/api/*"]
   },
   "vars": {
-    "SUPABASE_URL": "https://REPLACE_ME.supabase.co"
+    "SUPABASE_URL": "https://ksnpzfgcxjallzucvuhr.supabase.co"
   }
 }
