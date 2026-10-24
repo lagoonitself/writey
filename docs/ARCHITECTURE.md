@@ -4,7 +4,9 @@
 > Say "Writey, what's next?" and it continues your work in handwriting on the page.
 > Say "Writey, why does this work?" and it explains in a side chat.
 
-Status: **draft v0.1** (2026-10-24). Open-source, multi-user, $0 hosting; users bring their own AI keys.
+Status: **v0.2** (2026-10-24). Open-source, multi-user, $0 hosting; users bring their own AI keys.
+
+v0.2 changes: Gemini Live dropped (voice is local only, via Writey Helper); ChatGPT sign-in settled as Helper-only; push-to-talk added; ChatGPT merged into the Helper phase. Running decisions log: [HANDOFF.md](../HANDOFF.md).
 
 ---
 
@@ -18,7 +20,8 @@ Status: **draft v0.1** (2026-10-24). Open-source, multi-user, $0 hosting; users 
 | Database + auth          | Supabase free tier: Postgres + Google login.                                                                   |
 | File storage             | Cloudflare R2 free tier (10 GB): PDFs, images, page ink blobs.                                                 |
 | AI providers (thinking)  | **OpenRouter** (user key), **OpenCode Zen** (user key), **ChatGPT plan** (Sign in with ChatGPT). Nothing else. |
-| Voice                    | Three tiers: **Gemini Live** (cloud), **Writey Helper** (local Python, free), **text box** (always available). |
+| Voice                    | **Writey Helper** (local Python: wake word, Whisper STT, optional TTS) plus a **text box** (always available). No cloud voice. |
+| Talking to Writey        | Say "Writey, …" (wake word) **or** hold a push-to-talk key / pen-tablet button.                                |
 | Default reasoning model  | DeepSeek V4.1 Flash (native vision) via OpenRouter, user-changeable.                                           |
 | Assistant name / trigger | "Writey".                                                                                                      |
 | AI output                | Chat panel **or** handwritten ink on the page, chosen by intent. Both link to each other.                      |
@@ -38,11 +41,11 @@ flowchart LR
     UI["React UI<br/>notebooks, toolbar, chat panel"]
     ENG["Ink engine<br/>canvas, tools, pages"]
     HELP["Help engine<br/>context capture, routing,<br/>prompting, output rendering"]
-    VOICE["Voice client<br/>mic, trigger detection,<br/>Gemini Live socket"]
+    VOICE["Voice client<br/>Helper socket, transcript,<br/>trigger handling"]
   end
 
   subgraph Local["User's PC (optional)"]
-    HELPER["Writey Helper (Python)<br/>VAD + Whisper + TTS<br/>ChatGPT sign-in + proxy"]
+    HELPER["Writey Helper (Python)<br/>wake word + VAD + Whisper + TTS<br/>ChatGPT sign-in + proxy"]
   end
 
   subgraph CF["Cloudflare (free)"]
@@ -57,7 +60,6 @@ flowchart LR
 
   OR["OpenRouter"]
   OZ["OpenCode Zen"]
-  GL["Gemini Live"]
   OA["OpenAI Responses API<br/>(ChatGPT plan)"]
 
   UI --- ENG
@@ -70,7 +72,6 @@ flowchart LR
   UI --> AUTH
   W --> OR
   W --> OZ
-  VOICE <--> GL
   VOICE <--> HELPER
   HELP --> HELPER
   HELPER --> OA
@@ -309,18 +310,28 @@ Research findings (Oct 2026):
 - The **hosted website** flow needs an OpenAI-issued client ID (waitlist / limited trial).
 - Images and function tools are supported. Hosted tools, `previous_response_id` and audio input are not.
 
-**Design:** the ChatGPT provider lives in **Writey Helper**. The Helper runs the loopback sign-in, keeps the tokens on the user's PC (owner-only file permissions, refreshed hourly), and proxies Responses API calls from the browser. That stays inside the self-serve open-source flow.
+**Decision:** the ChatGPT provider lives in **Writey Helper**. The Helper runs the loopback sign-in, keeps the tokens on the user's PC (owner-only file permissions, refreshed hourly), and proxies Responses API calls from the browser. That stays inside the self-serve open-source flow.
 
-> **Pending decision.** You wanted all credentials in the database. Copying ChatGPT tokens into Supabase and calling OpenAI from the Cloudflare Worker would make this a hosted integration, which per OpenAI's docs needs a requested client ID. Recommendation: Helper-only now, apply for a hosted client ID later, then switch to database storage.
+Consequence: ChatGPT (and voice) need the Helper installed; OpenRouter and OpenCode Zen work from the website alone. Moving ChatGPT tokens into Supabase and calling OpenAI from the Worker would be a hosted integration that needs an OpenAI-issued client ID. Revisit only if one is granted.
+
+### 6.4 Model capabilities, errors, cancel
+
+- **Vision check.** The help engine sends images, so the reasoning model must accept image input. Model pickers mark text-only models. If a text-only model is chosen, a two-step path runs: a vision model transcribes the focus region line by line to text/LaTeX (cached per line), then the chosen model reasons over that text.
+- **Errors** are mapped to plain messages: bad key (401), out of credits (402), rate limit (429), request too large, model not found. Never a silent failure.
+- **Usage:** tokens and cost (OpenRouter returns cost) are saved in `ai_messages.usage` and shown per request.
+- **Cancel:** a stop button and "Writey, stop" abort the stream end to end (browser `AbortController` → Worker → provider, or → Helper for ChatGPT).
+- **OpenRouter connect:** a "Connect OpenRouter" button uses OpenRouter's OAuth PKCE flow instead of pasting a key.
 
 ---
 
 ## 7. Voice
 
-### 7.1 Three tiers, one interface
+All voice is **local**. No audio leaves the PC; only the transcript text goes to the reasoning model.
+
+### 7.1 Interface
 
 ```ts
-interface VoiceTier {
+interface VoiceSource {
   start(): Promise<void>
   stop(): void
   onTranscript(cb: (t: { text: string; final: boolean }) => void): void
@@ -329,45 +340,35 @@ interface VoiceTier {
 }
 ```
 
-The app picks the best available tier: **Gemini Live** if the user added a Gemini key, then **Writey Helper** if it's running, then the **text box**. The text box (Ctrl+K, or click the Writey button) is always available too.
+Two sources: **Writey Helper** (when running and paired) and the **text box** (always available: Ctrl+K, or click the Writey button). If the Helper isn't running, the app shows "Voice off — start Writey Helper" and the text box.
 
-### 7.2 Tier 1: Gemini Live (cloud)
-
-- **Session start:** the Worker mints a short-lived **ephemeral token** from the user's stored Gemini key. The browser connects straight to Gemini Live, so audio never passes through our servers.
-- **Audio:** an AudioWorklet captures the mic as 16 kHz mono PCM and streams it.
-- **System instruction:** "You are Writey's voice. Stay silent unless the user addresses Writey. Never solve problems yourself; call `writey_help`. Narrate status briefly."
-- **Tool:** `writey_help({utterance, mode_hint?, target: 'recent'|'selection'|'page'})`. The browser runs the help engine (section 5) and returns `{status, summary}`, which Gemini can speak.
-- **Voice replies off:** spoken output is muted and the model is told to keep replies to a word. Status shows on screen instead.
-- **Long sessions:** context-window compression and session resumption are enabled so a long study session doesn't hit limits or grow in cost.
-- **Listening toggle** in the toolbar, auto-paused after 10 minutes of silence. A visible mic indicator shows whenever audio is streaming.
-- **Cost** at published rates ($0.005/min listening, $0.018/min speaking): about **$0.30–0.50 per hour** of open-mic study, plus about $0.002 per DeepSeek help call. Gemini also has a rate-limited free tier.
-
-> **Pending decision.** Gemini is a fourth key, used only for voice. Your three providers stay the only ones used for thinking.
-
-### 7.3 Tier 2: Writey Helper (local Python, free)
+### 7.2 Writey Helper (local Python, free)
 
 ```
 apps/helper/
   writey_helper/
     server.py        FastAPI + WebSocket on 127.0.0.1:47823
     audio.py         mic capture (sounddevice), 16 kHz ring buffer
+    wake.py          openWakeWord, custom-trained "Writey" model
     vad.py           Silero VAD — only speech segments go on
-    stt.py           faster-whisper large-v3-turbo, int8, CUDA (~2 GB of your 8 GB VRAM)
-    trigger.py       fuzzy "Writey" match on transcripts
-    tts.py           Kokoro (local) or Fish Audio (cloud key), optional
+    stt.py           faster-whisper large-v3-turbo, int8, CUDA (~2 GB of 8 GB VRAM); CPU fallback: small/base int8
+    trigger.py       fuzzy "Writey" match on transcripts (backup to wake.py)
+    tts.py           Fish Audio (cloud key) first; local TTS later; optional, off by default
     chatgpt.py       Sign in with ChatGPT (loopback) + Responses proxy
-  pyproject.toml     installed with `uv` / `pipx`; one command to run
+  pyproject.toml     installed with `uv`; one command to run; models download on first run
 ```
 
-- **Pipeline:** mic → VAD → Whisper (only while you're speaking) → transcript stream to the browser → trigger check → help engine. A 30-second rolling transcript buffer goes along with each request.
-- **"Writey" detection:** Whisper may hear "Writey" as "righty" or "ready". Mitigations:
-  - Whisper's `hotwords` / initial prompt biased toward "Writey"
-  - fuzzy matching on phonetic variants at the _start_ of a sentence
-  - a confidence threshold, below which the app shows a small "Did you mean Writey?" chip instead of acting
-- **Security:** binds to 127.0.0.1 only. It accepts the Writey site's origin plus a pairing code shown once in the app. Chrome will ask once for permission for the site to reach a local device ("Local Network Access").
-- If the Helper isn't running, the app shows "Voice off — install Writey Helper or add a Gemini key" and the text box.
+- **Ways to address Writey:**
+  1. **Push-to-talk:** hold a key (or a pen-tablet button mapped to that key). Most reliable; no wake word needed.
+  2. **Wake word "Writey":** openWakeWord runs on every audio frame (cheap, CPU). On a hit, VAD + Whisper capture the request.
+  3. **Backup:** if the wake model misses, fuzzy matching on transcripts catches "Writey" at the start of a sentence ("righty", "ready" variants). Low-confidence matches show a "Did you mean Writey?" chip instead of acting.
+- **Pipeline:** mic → wake word / push-to-talk → VAD → Whisper → transcript to the browser → help engine. A 30-second rolling transcript buffer goes along with each request.
+- **Echo:** while TTS is speaking, mic input is gated (or echo-cancelled) so Writey never triggers itself. Speaking over it stops playback (barge-in).
+- **Listening toggle** in the toolbar, auto-paused after 10 minutes of silence; a mic indicator shows whenever the mic is open.
+- **Security:** binds to 127.0.0.1 only. Accepts the Writey site's origin plus a pairing code shown once in the app. Chrome asks once for Local Network Access permission.
+- **Later:** a no-wake-word "study mode" (listens to everything, responds when you sound stuck) is opt-in and not in v1. The Helper can be packaged into a desktop app (Tauri/Electron) later without rewrites.
 
-### 7.4 Tier 3: text box
+### 7.3 Text box
 
 Same help engine, typed instead of spoken. Ctrl+K opens it at the pen position.
 
@@ -382,7 +383,6 @@ One Worker serves the built React app (static assets) and these routes:
 | `POST /api/ai/:provider/stream`             | Check the Supabase JWT, decrypt the key, forward the body to an allow-listed provider URL, stream the response back. The body passes through unparsed to stay within the free plan's CPU limit. |
 | `GET /api/ai/:provider/models`              | Model list (cached 1 h).                                                                                                                                                                        |
 | `PUT/GET/DELETE /api/credentials/:provider` | Save, inspect or delete encrypted keys.                                                                                                                                                         |
-| `POST /api/voice/gemini-token`              | Mint a Gemini Live ephemeral token.                                                                                                                                                             |
 | `PUT/GET /api/pages/:id/content`            | Page ink blobs in R2, with version check.                                                                                                                                                       |
 | `POST /api/assets` → signed R2 upload       | PDF and image uploads (size-limited).                                                                                                                                                           |
 
@@ -419,7 +419,6 @@ provider_credentials (id, owner_id, provider, label, ciphertext bytea, iv bytea,
 | Supabase free           | Pauses after 7 days with no activity; 500 MB DB | One-click unpause. Ink lives in R2, so the DB stays small. |
 | Cloudflare Workers free | 100k requests/day, ~10 ms CPU per request       | Passthrough proxy, debounced saves.                        |
 | R2 free                 | 10 GB storage, 1M writes/month                  | Gzipped pages are small; saves are debounced.              |
-| Gemini Live             | Paid per minute (free tier is rate-limited)     | Listening toggle plus auto-pause.                          |
 
 ---
 
@@ -427,16 +426,16 @@ provider_credentials (id, owner_id, provider, label, ciphertext bytea, iv bytea,
 
 Each phase ends with something usable.
 
-| Phase                | Delivers                                                                                                                                               |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **0. Foundations**   | Monorepo, Supabase project with Google login, Worker deployed on workers.dev, CI.                                                                      |
-| **1. Notebook**      | Ink engine, v1 tools, pages, notebooks, save/load, PDF and image import. **Spike:** handwriting math renderer quality. A full notebook app without AI. |
-| **2. Ask by typing** | Provider settings (OpenRouter, OpenCode Zen) with encrypted keys, context capture with line labels, PLAN/PRODUCE, chat panel with KaTeX.               |
-| **3. Writey writes** | InkScript, layout engine, handwriting renderer, ghost preview and accept, check-my-work marks.                                                         |
-| **4. Voice**         | Writey Helper (VAD, Whisper, trigger, TTS), then Gemini Live with tool hand-off, listening toggle.                                                     |
-| **5. Diagrams**      | Diagram spec, renderer, plots, SVG export.                                                                                                             |
-| **6. ChatGPT plan**  | Sign in with ChatGPT via the Helper, Responses adapter.                                                                                                |
-| **v1.x / v2**        | Partial eraser, exports, shape snapping, paper styles, sharing, personal handwriting style, iPad.                                                      |
+| Phase                | Delivers                                                                                                                                                                                        | Status     |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| **0. Foundations**   | Monorepo, Supabase project with Google login, Worker deployed on workers.dev, CI.                                                                                                               | ✅ shipped |
+| **1. Notebook**      | Ink engine, v1 tools, pages, notebooks, save/load, PDF and image import. A full notebook app without AI.                                                                                        | ✅ shipped |
+| **1b. Math spike**   | Render ~20 typical formulas with the single-stroke handwriting renderer (§5.5) and judge quality.                                                                                               | next       |
+| **2. Ask by typing** | Provider settings (OpenRouter, OpenCode Zen) with encrypted keys, context capture with line labels, PLAN/PRODUCE, chat panel with KaTeX, cancel, errors, vision check. Model eval set (20–30 real pages). | next       |
+| **3. Writey writes** | InkScript, layout engine, handwriting renderer, ghost preview and accept, check-my-work marks.                                                                                                  |            |
+| **4. Helper**        | Writey Helper: push-to-talk, wake word, VAD, Whisper, optional TTS, **and** Sign in with ChatGPT + Responses adapter (same process).                                                            |            |
+| **5. Diagrams**      | Diagram spec, renderer, plots, SVG export.                                                                                                                                                      |            |
+| **v1.x / v2**        | Exports, shape snapping, paper styles, study mode, sharing, personal handwriting style, iPad.                                                                                                   |            |
 
 ---
 
@@ -447,8 +446,9 @@ Each phase ends with something usable.
 | Handwritten math looks bad              | Spike in Phase 1; outline-font fallback; tune jitter.                                                                 |
 | Vision model misreads messy handwriting | Test DeepSeek V4.1 Flash on real samples early; model is swappable per user; line labels reduce the precision needed. |
 | Model places marks in the wrong spot    | Line labels (set-of-marks) instead of pixel coordinates.                                                              |
-| "Writey" misheard                       | Hotwords, fuzzy matching, confirm chip.                                                                               |
-| Gemini Live cost creep in long sessions | Context compression, auto-pause, usage shown in settings.                                                             |
+| "Writey" misheard                       | Push-to-talk, openWakeWord custom model, fuzzy transcript match, confirm chip.                                        |
+| Writey hears its own TTS                | Mic gated / echo-cancelled while speaking; barge-in stops playback.                                                   |
+| Helper on PCs without an NVIDIA GPU     | CPU fallback with a smaller Whisper model; push-to-talk works everywhere.                                             |
 | ChatGPT plan terms for hosted apps      | Helper-only until a hosted client ID is granted.                                                                      |
 | Free-tier pauses or limits              | Section 10; nothing stored only in the DB that can't be recovered.                                                    |
 | Pen latency                             | Wet-ink canvas, coalesced events, desynchronized context.                                                             |
@@ -457,7 +457,7 @@ Each phase ends with something usable.
 
 ## 13. Open questions
 
-1. **Gemini key for voice:** OK to add it as a voice-only fourth key? (§7.2)
-2. **ChatGPT tokens:** Helper-only now, database later once a hosted client ID is granted? (§6.3)
-3. **License:** MIT or AGPL? AGPL forces hosted forks to publish their changes, while MIT is maximally permissive.
-4. **Name:** is "Writey" also the product name and repo name?
+1. **"OpenCode" provider:** OpenCode Zen only, OpenCode Go (subscription), or the local `opencode` server as a provider (that would live in the Helper)?
+2. **Speech language:** English only, or mixed with Hindi/Telugu? Decides the Whisper model.
+
+Resolved: no Gemini (voice is local only); ChatGPT is Helper-only; license is MIT; product and repo name are "Writey".

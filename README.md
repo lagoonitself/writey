@@ -6,7 +6,7 @@ Say **"Writey, why does this work?"** and it explains in a side chat.
 
 Open source (MIT). Bring your own AI keys: OpenRouter, OpenCode Zen or your ChatGPT plan.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it works.
+See [HANDOFF.md](HANDOFF.md) for decisions and current state, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it works.
 
 ## Layout
 
