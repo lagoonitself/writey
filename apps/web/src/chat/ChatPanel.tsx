@@ -3,7 +3,7 @@ import type { PageRow } from '@writey/shared'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { askWritey, HelpFailure } from '../help/engine'
 import { appendMessages, clearThread, loadThread, type StoredMessage, turnsOf } from '../lib/ai'
-import { CloseIcon, SendIcon, SparkleIcon, StopIcon, TrashIcon } from '../notebook/icons'
+import { CloseIcon, SendIcon, StopIcon, TrashIcon } from '../notebook/icons'
 import type { PageHandle } from '../notebook/tools'
 import { type AiState, usable } from '../settings/useAiState'
 import { renderMarkdown } from './markdown'
@@ -178,7 +178,6 @@ export default function ChatPanel(p: Props) {
     <aside className="chat" aria-label="Ask Writey">
       <header className="chat-header">
         <span className="chat-title">
-          <SparkleIcon size={18} />
           Writey
           {threadPage && <small>Page {p.pageNumber}</small>}
         </span>
@@ -188,7 +187,7 @@ export default function ChatPanel(p: Props) {
           onClick={p.onSettings}
           title={`${PROVIDER_LABEL[ai.settings.provider]} · ${ai.settings.model}`}
         >
-          {modelName}
+          <span>{modelName || PROVIDER_LABEL[ai.settings.provider]}</span>
         </button>
         <button
           type="button"
@@ -237,13 +236,13 @@ export default function ChatPanel(p: Props) {
               </>
             ) : (
               <>
-                <p className="chat-empty-title">Connect an AI first.</p>
+                <p className="chat-empty-title">Connect your AI first.</p>
                 <p className="muted">
-                  Writey uses your own {PROVIDER_LABEL[ai.settings.provider]} account. It takes a
-                  minute.
+                  Writey thinks with your own account. Continue with ChatGPT, or connect OpenRouter.
+                  It takes a minute.
                 </p>
                 <button type="button" className="primary" onClick={p.onSettings}>
-                  Open settings
+                  Connect an account
                 </button>
               </>
             )}

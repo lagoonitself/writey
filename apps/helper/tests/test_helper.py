@@ -18,7 +18,6 @@ from writey_helper.chatgpt import (
     pkce_pair,
     sanitize_request,
 )
-from writey_helper.pairing import Pairing
 from writey_helper.server import create_app
 from writey_helper.store import Store
 
@@ -82,25 +81,20 @@ def openai() -> FakeOpenAI:
 
 
 @pytest.fixture
-def chatgpt(store: Store, openai: FakeOpenAI):
-    opened: list[str] = []
-    c = ChatGPT(
+def chatgpt(store: Store, openai: FakeOpenAI) -> ChatGPT:
+    return ChatGPT(
         store,
         httpx.AsyncClient(transport=httpx.MockTransport(openai.handler)),
-        open_browser=lambda url: opened.append(url) or True,
         verify_id_token=verify,
     )
-    c.opened = opened  # type: ignore[attr-defined]
-    return c
 
 
 def query(url: str) -> dict[str, str]:
     return {k: v[0] for k, v in parse_qs(urlsplit(url).query).items()}
 
 
-async def sign_in(c: ChatGPT, openai: FakeOpenAI, scope: str = SCOPES) -> dict[str, str]:
-    await c.start_login()
-    q = query(c.opened[-1])  # type: ignore[attr-defined]
+async def sign_in(c: ChatGPT, openai: FakeOpenAI, scope: str = SCOPES, switching: bool = False) -> dict[str, str]:
+    q = query(await c.start_login(switching=switching))
     openai.token_responses.append(tokens(scope))
     ok, _ = await c.handle_callback({"state": q["state"], "code": "abc", "client_id": "oaiapp_123"})
     assert ok
@@ -124,18 +118,6 @@ def test_sanitize_forces_plan_rules() -> None:
     assert clean == {"model": "m", "input": [], "store": False, "stream": True}
     with pytest.raises(ChatGPTError):
         sanitize_request({"model": "m"})
-
-
-def test_pairing_codes_are_single_use_and_lock_after_failures(store: Store) -> None:
-    p = Pairing(store)
-    code = p.code
-    token = p.pair(code, ORIGIN)
-    assert token and p.check(token)
-    assert p.pair(code, ORIGIN) is None  # used up
-    for _ in range(5):
-        p.pair("000000" if p.code != "000000" else "111111", ORIGIN)
-    assert p.locked and p.pair(p.code, ORIGIN) is None
-    assert "hash" in json.dumps(store.read("pairing")) and token not in json.dumps(store.read("pairing"))
 
 
 # --------------------------------------------------------------------- sign-in
@@ -171,8 +153,7 @@ async def test_first_sign_in_registers_and_saves_tokens(chatgpt: ChatGPT, openai
 async def test_reauth_reuses_the_issued_client_and_hints(chatgpt: ChatGPT, openai: FakeOpenAI) -> None:
     await sign_in(chatgpt, openai)
     await chatgpt.logout()
-    await chatgpt.start_login()
-    q = query(chatgpt.opened[-1])  # type: ignore[attr-defined]
+    q = query(await chatgpt.start_login())
     assert q["client_id"] == "oaiapp_123"
     assert "agent_name_hint" not in q
     assert q["login_hint"] == "me@example.com"
@@ -181,8 +162,7 @@ async def test_reauth_reuses_the_issued_client_and_hints(chatgpt: ChatGPT, opena
 
 
 async def test_callback_rejects_wrong_state_and_handles_cancel(chatgpt: ChatGPT) -> None:
-    await chatgpt.start_login()
-    q = query(chatgpt.opened[-1])  # type: ignore[attr-defined]
+    q = query(await chatgpt.start_login())
     ok, _ = await chatgpt.handle_callback({"state": "forged", "code": "x", "client_id": "oaiapp_1"})
     assert not ok and chatgpt.pending is not None  # a forged callback doesn't cancel the real one
     ok, message = await chatgpt.handle_callback({"state": q["state"], "error": "access_denied"})
@@ -192,8 +172,7 @@ async def test_callback_rejects_wrong_state_and_handles_cancel(chatgpt: ChatGPT)
 
 
 async def test_registration_without_issued_client_is_incomplete(chatgpt: ChatGPT) -> None:
-    await chatgpt.start_login()
-    q = query(chatgpt.opened[-1])  # type: ignore[attr-defined]
+    q = query(await chatgpt.start_login())
     ok, _ = await chatgpt.handle_callback({"state": q["state"], "code": "x", "client_id": DYNAMIC_CLIENT})
     assert not ok
     await chatgpt.close()
@@ -209,13 +188,35 @@ async def test_missing_plan_scope_keeps_sign_in_but_disables_usage(chatgpt: Chat
 
 
 async def test_callback_listener_serves_the_redirect(chatgpt: ChatGPT, openai: FakeOpenAI) -> None:
-    await chatgpt.start_login()
-    q = query(chatgpt.opened[-1])  # type: ignore[attr-defined]
+    q = query(await chatgpt.start_login())
     openai.token_responses.append(tokens())
     async with httpx.AsyncClient() as real:
         res = await real.get(q["redirect_uri"], params={"state": q["state"], "code": "abc", "client_id": "oaiapp_9"})
     assert res.status_code == 200 and "signed in" in res.text
     assert chatgpt.status()["signed_in"]
+
+
+async def test_callback_sends_you_back_to_writey(chatgpt: ChatGPT, openai: FakeOpenAI) -> None:
+    q = query(await chatgpt.start_login(return_to=f"{ORIGIN}/n/abc?x=1"))
+    openai.token_responses.append(tokens())
+    async with httpx.AsyncClient() as real:
+        res = await real.get(q["redirect_uri"], params={"state": q["state"], "code": "abc", "client_id": "oaiapp_9"})
+        assert res.status_code == 303
+        assert res.headers["location"] == f"{ORIGIN}/n/abc?x=1&chatgpt=connected"
+        q = query(await chatgpt.start_login(return_to=f"{ORIGIN}/"))
+        res = await real.get(q["redirect_uri"], params={"state": q["state"], "error": "access_denied"})
+    back = query(res.headers["location"])
+    assert back["chatgpt"] == "error" and "cancelled" in back["chatgpt_error"]
+
+
+async def test_switching_accounts_registers_again_and_revokes_the_old_one(
+    chatgpt: ChatGPT, openai: FakeOpenAI, store: Store
+) -> None:
+    await sign_in(chatgpt, openai)
+    q = await sign_in(chatgpt, openai, switching=True)
+    assert q["client_id"] == DYNAMIC_CLIENT and "login_hint" not in q
+    assert any(r.url.path == "/revoke" for r in openai.requests)
+    assert (store.read("chatgpt") or {})["refresh_token"] == "rt-1"
 
 
 # --------------------------------------------------------------------- tokens
@@ -272,36 +273,43 @@ def server(store: Store, openai: FakeOpenAI):
     app = create_app(
         store=store,
         http=httpx.AsyncClient(transport=httpx.MockTransport(openai.handler)),
-        open_browser=lambda url: True,
         origins=frozenset({ORIGIN}),
         port=47823,
     )
     with TestClient(app, base_url="http://127.0.0.1:47823") as client:
-        yield client, app.state.pairing  # type: ignore[attr-defined]
+        yield client
 
 
-def test_server_guards_host_origin_and_pairing(server) -> None:
-    client, pairing = server
+def test_server_guards_host_and_origin(server) -> None:
+    client = server
     assert client.get("/health", headers={"host": "evil.example:47823"}).status_code == 403
-    assert client.get("/health", headers=HOST).json()["paired"] is False
+    health = client.get("/health", headers=HOST).json()
+    assert health["ok"] is True and health["api"] == 2
 
     pre = client.options("/chatgpt/status", headers={**HOST, "origin": ORIGIN})
     assert pre.status_code == 204
     assert pre.headers["access-control-allow-private-network"] == "true"
     assert pre.headers["access-control-allow-origin"] == ORIGIN
-    assert client.options("/pair", headers={**HOST, "origin": "https://evil.example"}).status_code == 403
+    assert client.options("/chatgpt/status", headers={**HOST, "origin": "https://evil.example"}).status_code == 403
+    assert client.get("/chatgpt/status", headers={**HOST, "origin": "https://evil.example"}).status_code == 403
+    assert client.get("/chatgpt/status", headers=HOST).status_code == 403  # no origin
 
-    assert client.post("/pair", json={"code": "nope"}, headers={**HOST, "origin": ORIGIN}).status_code == 400
-    assert client.post("/pair", json={"code": pairing.code}, headers={**HOST, "origin": "https://evil.example"}).status_code == 403
-    assert client.get("/chatgpt/status", headers={**HOST, "origin": ORIGIN}).json() == {"error": "not_paired"}
-
-    token = client.post("/pair", json={"code": pairing.code}, headers={**HOST, "origin": ORIGIN}).json()["token"]
-    auth = {**HOST, "origin": ORIGIN, "authorization": f"Bearer {token}"}
+    auth = {**HOST, "origin": ORIGIN}
     status = client.get("/chatgpt/status", headers=auth)
     assert status.status_code == 200 and status.json()["signed_in"] is False
     assert status.headers["access-control-allow-origin"] == ORIGIN
     res = client.post("/chatgpt/responses", json={"model": "m", "input": []}, headers=auth)
     assert res.status_code == 401 and res.json()["error"] == "signed_out"
+
+
+def test_connect_redirects_to_openai_only_for_writey_pages(server) -> None:
+    client = server
+    res = client.get("/chatgpt/connect", params={"return_to": f"{ORIGIN}/n/1"}, headers=HOST, follow_redirects=False)
+    assert res.status_code == 303
+    assert res.headers["location"].startswith("https://auth.openai.com/api/accounts/authorize?")
+    for bad in ("https://evil.example/", f"https://user@{ORIGIN.removeprefix('http://')}/", "javascript:alert(1)"):
+        res = client.get("/chatgpt/connect", params={"return_to": bad}, headers=HOST, follow_redirects=False)
+        assert res.status_code == 400
 
 
 async def test_responses_proxy_streams_with_plan_rules(chatgpt: ChatGPT, openai: FakeOpenAI) -> None:

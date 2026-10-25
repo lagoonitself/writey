@@ -12,11 +12,10 @@ import hmac
 import html
 import secrets
 import time
-import webbrowser
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 import jwt
@@ -35,8 +34,8 @@ DYNAMIC_CLIENT = "dynamic_agent_client"
 AGENT_NAME = "Writey"
 CALLBACK_PATH = "/auth/callback"
 CALLBACK_PORT = 1455
-LOGIN_TIMEOUT_S = 600
-REFRESH_MARGIN_S = 120
+LOGIN_TIMEOUT_S = 300
+REFRESH_MARGIN_S = 60
 
 # Rejected by plan usage (preview limitations), so stripped before forwarding.
 FORBIDDEN_PARAMS = frozenset(
@@ -101,6 +100,10 @@ class PendingLogin:
     #: dynamic_agent_client for a first registration, else the issued client id.
     client_id: str
     registering: bool
+    #: Where the browser goes once sign-in finishes (a Writey page), or None.
+    return_to: str | None = None
+    #: "Use another account": replace the saved account only once the new sign-in works.
+    switching: bool = False
     started: float = field(default_factory=time.time)
 
     @property
@@ -150,6 +153,16 @@ def sanitize_request(body: Any) -> dict[str, Any]:
     return clean
 
 
+def back_to_writey(return_to: str, ok: bool, message: str) -> str:
+    """The Writey page to land on, with the outcome in its query string."""
+    u = urlsplit(return_to)
+    q = [(k, v) for k, v in parse_qsl(u.query) if k not in ("chatgpt", "chatgpt_error")]
+    q.append(("chatgpt", "connected" if ok else "error"))
+    if not ok:
+        q.append(("chatgpt_error", message))
+    return urlunsplit((u.scheme, u.netloc, u.path, urlencode(q), ""))
+
+
 def callback_page(message: str, ok: bool) -> str:
     color = "#0f9d6b" if ok else "#e0263f"
     return (
@@ -168,12 +181,10 @@ class ChatGPT:
         self,
         store: Store,
         http: httpx.AsyncClient,
-        open_browser: Callable[[str], bool] = webbrowser.open,
         verify_id_token: VerifyIdToken | None = None,
     ) -> None:
         self.store = store
         self.http = http
-        self.open_browser = open_browser
         self.pending: PendingLogin | None = None
         self.last_error: str | None = None
         self._server: asyncio.Server | None = None
@@ -207,10 +218,12 @@ class ChatGPT:
 
     # ------------------------------------------------------------------ sign-in
 
-    async def start_login(self) -> None:
+    async def start_login(self, return_to: str | None = None, switching: bool = False) -> str:
+        """Gets ready for OpenAI's callback and returns the URL to send the browser to."""
         await self.close()
         r = self._record()
-        registering = not r.get("client_id")
+        # Another account registers afresh, so the old client id and hints don't apply.
+        registering = switching or not r.get("client_id")
         verifier, challenge = pkce_pair()
         port = await self._listen()
         self.pending = PendingLogin(
@@ -220,19 +233,18 @@ class ChatGPT:
             redirect_uri=f"http://127.0.0.1:{port}{CALLBACK_PATH}",
             client_id=DYNAMIC_CLIENT if registering else r["client_id"],
             registering=registering,
+            return_to=return_to,
+            switching=switching,
         )
         self.last_error = None
-        url = authorize_url(
+        # The URL can carry an ID token hint, so it goes straight to the browser, never to logs.
+        return authorize_url(
             self.pending,
             host_id=self.store.host_id(),
             challenge=challenge,
             id_token_hint=None if registering else r.get("id_token"),
             login_hint=None if registering else r.get("email"),
         )
-        # The URL can carry an ID token hint, so it goes straight to the browser, never to logs.
-        if not self.open_browser(url):
-            await self.close()
-            raise ChatGPTError("no_browser", "Couldn't open a browser on this computer.", 500)
 
     async def _listen(self) -> int:
         # 1455 is OpenAI's example port; later sign-ins may use any free port.
@@ -257,14 +269,20 @@ class ChatGPT:
                 pass
             parts = line.decode("latin-1").split(" ")
             url = urlsplit(parts[1] if len(parts) > 1 else "/")
+            location = None
             if url.path != CALLBACK_PATH:
                 status, ok, message = "404 Not Found", False, "Not found."
             else:
+                return_to = self.pending.return_to if self.pending else None
                 ok, message = await self.handle_callback(dict(parse_qsl(url.query)))
                 status = "200 OK" if ok else "400 Bad Request"
+                if return_to:
+                    # Straight back to the Writey page the sign-in started from.
+                    status, location = "303 See Other", back_to_writey(return_to, ok, message)
             body = callback_page(message, ok).encode()
+            extra = f"Location: {location}\r\n" if location else ""
             writer.write(
-                f"HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n"
+                f"HTTP/1.1 {status}\r\n{extra}Content-Type: text/html; charset=utf-8\r\n"
                 f"Content-Length: {len(body)}\r\nCache-Control: no-store\r\n"
                 "Connection: close\r\n\r\n".encode()
                 + body
@@ -319,7 +337,9 @@ class ChatGPT:
             return self._fail(e.message)
 
         prev = self._record()
-        if not p.registering and prev.get("subject") and claims["sub"] != prev["subject"]:
+        if p.switching:
+            await self._revoke(prev)
+        elif not p.registering and prev.get("subject") and claims["sub"] != prev["subject"]:
             return self._fail(
                 "That's a different ChatGPT account. In Writey, choose “Use another account”, "
                 "then sign in again."
@@ -345,7 +365,7 @@ class ChatGPT:
         )
         if PLAN_SCOPE not in scopes:
             self.last_error = (
-                "ChatGPT plan usage isn't enabled for Writey. Sign in again and allow it, "
+                "ChatGPT plan usage isn't enabled for Writey. Sign in again and allow 'Use your ChatGPT plan', "
                 "or use an OpenRouter or OpenCode Zen key."
             )
         return True, "You're signed in to ChatGPT. You can close this tab and go back to Writey."
@@ -409,14 +429,14 @@ class ChatGPT:
             if PLAN_SCOPE not in (r.get("scopes") or []):
                 raise ChatGPTError(
                     "plan_usage_disabled",
-                    "ChatGPT plan usage isn't enabled for Writey. Sign in again and allow it.",
+                    "ChatGPT plan usage isn't enabled for Writey. Sign in again and allow 'Use your ChatGPT plan'.",
                     403,
                 )
             fresh = float(r.get("expires_at", 0)) - time.time() > REFRESH_MARGIN_S
             if fresh and r.get("access_token") and not force:
                 return str(r["access_token"])
             if not r.get("refresh_token"):
-                raise ChatGPTError("session_expired", "Your ChatGPT sign-in has expired. Sign in again.", 401)
+                raise ChatGPTError("session_expired", "Your ChatGPT sign-in ended. Sign in again.", 401)
             return await self._refresh(r)
 
     async def _refresh(self, r: dict[str, Any]) -> str:
@@ -430,12 +450,12 @@ class ChatGPT:
                 }
             )
         except ChatGPTError as e:
-            if e.code in TERMINAL_REFRESH_ERRORS:
+            if e.code in TERMINAL_REFRESH_ERRORS or e.status == 401:
                 for k in ("access_token", "refresh_token", "expires_at"):
                     r.pop(k, None)
                 self.store.write(RECORD, r)
                 raise ChatGPTError(
-                    "session_expired", "Your ChatGPT sign-in has expired. Sign in again.", 401
+                    "session_expired", "Your ChatGPT sign-in ended. Sign in again.", 401
                 ) from e
             raise
         r["access_token"] = tokens["access_token"]
@@ -447,23 +467,26 @@ class ChatGPT:
         self.store.write(RECORD, r)
         return str(r["access_token"])
 
+    async def _revoke(self, r: dict[str, Any]) -> bool | None:
+        if not r.get("refresh_token"):
+            return None
+        try:
+            endpoint = (await self._discover())["revocation_endpoint"]
+            res = await self.http.post(
+                endpoint,
+                data={
+                    "token": r["refresh_token"],
+                    "token_type_hint": "refresh_token",
+                    "client_id": r["client_id"],
+                },
+            )
+            return res.status_code == 200
+        except (httpx.HTTPError, KeyError):
+            return False
+
     async def logout(self, forget: bool = False) -> dict[str, Any]:
         r = self._record()
-        revoked: bool | None = None
-        if r.get("refresh_token"):
-            try:
-                endpoint = (await self._discover())["revocation_endpoint"]
-                res = await self.http.post(
-                    endpoint,
-                    data={
-                        "token": r["refresh_token"],
-                        "token_type_hint": "refresh_token",
-                        "client_id": r["client_id"],
-                    },
-                )
-                revoked = res.status_code == 200
-            except (httpx.HTTPError, KeyError):
-                revoked = False
+        revoked = await self._revoke(r)
         if forget:
             self.store.delete(RECORD)
         elif r:

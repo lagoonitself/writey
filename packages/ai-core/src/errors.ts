@@ -78,14 +78,16 @@ export function describeChatgptError(status: number, body: string, code?: string
   const c = code ?? d.code
   switch (c) {
     case 'helper_offline':
-      return { message: 'Writey Helper isn’t running. Start it, then try again.', settings: true }
-    case 'not_paired':
-      return { message: 'Pair Writey with the Helper again in Settings.', settings: true }
+      return {
+        message:
+          'Writey Helper isn’t running on this computer, so ChatGPT can’t answer. Settings shows how to start it.',
+        settings: true,
+      }
     case 'signed_out':
     case 'session_expired':
     case 'subscription_sharing_invalid_user':
       return {
-        message: 'Your ChatGPT sign-in has expired. Sign in again in Settings.',
+        message: 'Your ChatGPT sign-in ended. Sign in again in Settings.',
         settings: true,
       }
     case 'plan_usage_disabled':

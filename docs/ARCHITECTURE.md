@@ -320,7 +320,7 @@ Consequence: ChatGPT (and voice) need the Helper installed; OpenRouter and OpenC
 - **OAuth details:** PKCE S256, `state` and `nonce`. Scopes are `openid profile email offline_access resource.invoke chatgpt.tokens.use.direct`, with `resource=https://api.openai.com/v1`. The callback listens on `http://127.0.0.1:1455/auth/callback`, falling back to any free port. Codes are exchanged at `/api/accounts/oauth/token`. The ID token is verified against OpenAI's JWKS (issuer, audience = issued client id, nonce).
 - **Tokens:** they live in the Helper's per-user folder (atomic, owner-only writes). The access token lasts 1 h and the rotating refresh token 30 days; refreshes are serialized. Sign-out revokes the refresh token at the discovery `revocation_endpoint` and keeps the registration.
 - **Inference:** `POST https://api.openai.com/v1/responses` with `store:false` and `stream:true`. System text goes in `instructions`, and images as `input_image`. The Helper strips forbidden parameters (`temperature`, `max_output_tokens`, …). Only `response.completed` counts as success. Plan-usage error codes map to plain messages, with a **Manage usage** link (https://chatgpt.com/settings/usage).
-- **Browser ↔ Helper:** the browser pairs once with a six-digit code the Helper shows, and gets a token (only its hash is stored). Every request needs that token, an allowed `Origin` and `Host: 127.0.0.1:47823` (which blocks DNS rebinding). Preflights send `Access-Control-Allow-Private-Network`. The website contacts 127.0.0.1 only after pairing, or when you click to connect, so other users never see Chrome's local-network prompt.
+- **Browser ↔ Helper:** no pairing. "Continue with ChatGPT" is a plain link: the tab goes to the Helper's `GET /chatgpt/connect?return_to=…` (only Writey pages are accepted as `return_to`), which 303s to OpenAI; OpenAI calls back to `127.0.0.1:1455`, and the Helper 303s the tab back to Writey with `?chatgpt=connected` (or `=error`). Other endpoints need an allowed `Origin` and `Host: 127.0.0.1:47823` (which blocks DNS rebinding); browsers always send `Origin` on these cross-origin calls. Preflights send `Access-Control-Allow-Private-Network`. The website contacts 127.0.0.1 only after you first click Continue with ChatGPT, so other users never see Chrome's local-network prompt. `/health` reports an `api` level so Writey can ask for an update when the Helper is too old.
 - **UI rules followed:** the button says "Continue with ChatGPT". A one-time "You’re using your ChatGPT plan" notice appears, and "Using ChatGPT plan · Manage usage" shows next to the composer.
 
 ### 6.4 Model capabilities, errors, cancel
@@ -359,7 +359,7 @@ interface VoiceSource {
 }
 ```
 
-Sources: **Helper voice** (when running and paired) and the **text box** (always available: Ctrl+K, or click the Writey button). If the Helper isn't running, the app shows "Voice off — start Writey Helper" and the text box.
+Sources: **Helper voice** (when running) and the **text box** (always available: Ctrl+K, or click the Writey button). If the Helper isn't running, the app shows "Voice off — start Writey Helper" and the text box.
 
 ### 7.2 Pipeline
 
@@ -383,13 +383,13 @@ apps/helper/
     stt.py           Parakeet TDT 0.6B v2 via onnx-asr (ONNX Runtime CUDA; CPU fallback). Fallback model: faster-whisper distil-large-v3
     tts.py           Fish Audio OpenAudio S1-mini (local, CUDA). Fallback: Kokoro-82M
     chatgpt.py       Sign in with ChatGPT (dynamic registration, loopback 127.0.0.1:1455) + Responses proxy  ✅
-    pairing.py       one-time pairing code, origin allow-list
+    autostart.py     `writey-helper install`: start hidden at Windows sign-in (HKCU Run key)
     models.py        download + cache model weights on first run, report status
   pyproject.toml     installed with `uv`; one command to run (`uv run writey-helper`)
 ```
 
 - **Models:** Parakeet TDT 0.6B v2 (English-only, fastest, more accurate than Whisper large-v3, doesn't invent text in silence; ~2 GB VRAM). Fish OpenAudio S1-mini (0.5B; weights are CC BY-NC-SA, non-commercial; users download them on first run). Measure S1-mini latency and VRAM early; Kokoro-82M is the light fallback.
-- **Security:** binds to 127.0.0.1 only. Accepts the Writey site's origin plus a pairing token (shown once in the app, stored in the browser). Chrome asks once for Local Network Access permission.
+- **Security:** binds to 127.0.0.1 only and answers only the Writey site's origins (Host and Origin checks). Chrome asks once for Local Network Access permission.
 - **Listening toggle** in the toolbar, auto-paused after 10 minutes of silence; mic indicator whenever the mic is open.
 - **Later:** an openWakeWord "Writey" model if transcript matching misses too often; opt-in "study mode" (responds when you sound stuck); packaging the Helper + app as a desktop app (Electron/Tauri) with no change to this split.
 

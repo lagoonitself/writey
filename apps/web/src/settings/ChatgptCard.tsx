@@ -1,216 +1,114 @@
 import { CHATGPT_USAGE_URL } from '@writey/ai-core'
 import { useEffect, useRef, useState } from 'react'
-import { saveAiSettings } from '../lib/ai'
-import { chatgptLogin, chatgptLogout, HELPER_URL, HelperError, pairHelper } from '../lib/helper'
-import { type AiState, probeHelper, usable } from './useAiState'
+import {
+  chatgptLogout,
+  connectChatgpt,
+  HELPER_COMMAND,
+  HELPER_SETUP_FILE,
+  helperState,
+} from '../lib/helper'
+import { ChatgptIcon, DownloadIcon } from '../notebook/icons'
+import { ProviderMark } from './ProviderMark'
+import { type AiState, chatgptReturn, probeHelper } from './useAiState'
 
-/** Runs the Helper straight from GitHub with uv; no clone or install step. */
-const HELPER_COMMAND =
-  'uvx --from "git+https://github.com/lagoonitself/writey#subdirectory=apps/helper" writey-helper'
+const POLL_MS = 2000
+const isWindows = /Windows/i.test(navigator.userAgent)
 
-const SIGN_IN_TIMEOUT_MS = 600_000
+let returnErrorShown = false
 
-function helperMessage(e: unknown): string {
-  const code = e instanceof HelperError ? e.code : ''
-  if (code === 'helper_offline') {
-    return 'Writey can’t reach the Helper. Is it running? If Chrome asks about devices on your local network, allow it.'
-  }
-  if (code === 'bad_code') return 'That code doesn’t match. Check the Helper window.'
-  if (code === 'locked') return 'Too many wrong codes. Restart the Helper to get a new one.'
-  if (code === 'not_paired') return 'The Helper doesn’t know this browser yet. Pair again.'
-  return (e as Error).message
+/** The sign-in error the Helper sent back with, shown once. */
+function takeReturnError(): string | null {
+  const error = returnErrorShown ? null : (chatgptReturn?.error ?? null)
+  setTimeout(() => {
+    returnErrorShown = true
+  }, 0)
+  return error
 }
 
 /**
- * Sign in with ChatGPT, which lives in Writey Helper (HANDOFF D15): start the Helper,
- * pair this browser once, then "Continue with ChatGPT" opens OpenAI's sign-in.
+ * Sign in with ChatGPT (HANDOFF D15, D25). "Continue with ChatGPT" sends this tab through
+ * Writey Helper to OpenAI and back. OpenAI only allows that sign-in from apps on your own
+ * computer (a 127.0.0.1 callback), so the first time, the Helper gets installed.
  */
-export function ChatgptCard({ ai, onChange }: { ai: AiState; onChange(next: AiState): void }) {
-  const [code, setCode] = useState('')
+export function ChatgptPanel({ ai, onChange }: { ai: AiState; onChange(next: AiState): void }) {
+  const ready = ai.helper === 'ok'
+  const outdated = ai.helper === 'outdated'
+  const [setup, setSetup] = useState(ai.helper === 'offline' || outdated)
+  const [checking, setChecking] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [waiting, setWaiting] = useState(false)
-  const [checked, setChecked] = useState(false)
-  const [copied, setCopied] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(takeReturnError)
   const latest = useRef(ai)
   latest.current = ai
-  const { helper, chatgpt: status } = ai
+  const status = ai.chatgpt
   const signedIn = Boolean(status?.signed_in)
 
-  const refresh = async () => {
-    const h = await probeHelper()
-    let next: AiState = { ...latest.current, ...h }
-    // Signed in with plan usage and nothing else set up: switch to ChatGPT right away.
-    // The model picker then takes the plan's first model.
-    if (h.chatgpt?.plan_usage && !usable(latest.current, latest.current.settings.provider)) {
-      next = { ...next, settings: { provider: 'chatgpt', model: '' } }
-      await saveAiSettings(next.settings).catch(() => {})
+  const go = async (switchAccount = false) => {
+    setError(null)
+    setChecking(true)
+    const state = await helperState()
+    setChecking(false)
+    if (state === 'ok') connectChatgpt(switchAccount)
+    else {
+      onChange({ ...latest.current, helper: state })
+      setSetup(true)
     }
-    onChange(next)
-    return h
   }
 
-  const act = async (fn: () => Promise<void>) => {
+  // While setup is open, notice when the Helper starts.
+  useEffect(() => {
+    if (!setup || ready) return
+    let stop = false
+    let timer = 0
+    const tick = async () => {
+      if ((await helperState()) === 'ok') {
+        if (stop) return
+        const h = await probeHelper()
+        onChange({ ...latest.current, ...h })
+        return
+      }
+      if (!stop) timer = window.setTimeout(tick, POLL_MS)
+    }
+    timer = window.setTimeout(tick, POLL_MS)
+    return () => {
+      stop = true
+      clearTimeout(timer)
+    }
+  }, [setup, ready, onChange])
+
+  const signOut = async () => {
     setBusy(true)
     setError(null)
     try {
-      await fn()
-    } catch (e) {
-      setError(helperMessage(e))
+      const { revoked } = await chatgptLogout()
+      onChange({ ...latest.current, ...(await probeHelper()) })
+      if (revoked === false) {
+        setError(
+          'Signed out here, but ChatGPT didn’t confirm it. You can also remove Writey in your ChatGPT settings.',
+        )
+      }
+    } catch {
+      setError('Writey Helper isn’t running, so it couldn’t sign out.')
     } finally {
       setBusy(false)
     }
   }
 
-  // While you finish signing in in the tab the Helper opened, keep asking how it went.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: polls only while waiting
-  useEffect(() => {
-    if (!waiting) return
-    let stop = false
-    let timer = 0
-    const started = Date.now()
-    const tick = async () => {
-      const h = await refresh().catch(() => null)
-      if (stop) return
-      const s = h?.chatgpt
-      if (!s || s.signed_in || !s.login_pending || Date.now() - started > SIGN_IN_TIMEOUT_MS) {
-        setWaiting(false)
-        if (s?.error) setError(s.error)
-        return
-      }
-      timer = window.setTimeout(tick, 1500)
-    }
-    timer = window.setTimeout(tick, 1500)
-    return () => {
-      stop = true
-      clearTimeout(timer)
-    }
-  }, [waiting])
+  const errorLine = (error || status?.error) && (
+    <p className="inline-error" role="alert">
+      {error ?? status?.error}
+    </p>
+  )
 
-  const login = (forgetFirst = false) =>
-    act(async () => {
-      if (forgetFirst) await chatgptLogout(true)
-      await chatgptLogin()
-      setWaiting(true)
-    })
-
-  const logout = () =>
-    act(async () => {
-      const { revoked } = await chatgptLogout(false)
-      await refresh()
-      if (revoked === false) {
-        setError(
-          'Signed out here, but ChatGPT didn’t confirm it. You can also disconnect Writey in ChatGPT settings.',
-        )
-      }
-    })
-
-  let body: React.ReactNode
-  if (!helper?.running) {
-    body = (
+  if (signedIn && ready) {
+    return (
       <>
-        <p className="small">
-          Start the Helper in a terminal. It needs{' '}
-          <a
-            href="https://docs.astral.sh/uv/getting-started/installation/"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            uv
-          </a>
-          .
-        </p>
-        <div className="command-row">
-          <code className="command">{HELPER_COMMAND}</code>
-          <button
-            type="button"
-            className="small-btn"
-            onClick={() => {
-              void navigator.clipboard.writeText(HELPER_COMMAND)
-              setCopied(true)
-            }}
-          >
-            {copied ? 'Copied' : 'Copy'}
-          </button>
-        </div>
-        <button
-          type="button"
-          onClick={() =>
-            act(async () => {
-              const h = await refresh()
-              setChecked(true)
-              if (!h.helper?.running) throw new HelperError(0, 'helper_offline', '')
-            })
-          }
-          disabled={busy}
-        >
-          {checked ? 'Check again' : 'It’s running'}
-        </button>
-      </>
-    )
-  } else if (!helper.paired) {
-    body = (
-      <>
-        <form
-          className="provider-row"
-          onSubmit={(e) => {
-            e.preventDefault()
-            void act(async () => {
-              await pairHelper(code)
-              setCode('')
-              await refresh()
-            })
-          }}
-        >
-          <input
-            className="key-input"
-            placeholder="Pairing code from the Helper"
-            inputMode="numeric"
-            autoComplete="off"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            aria-label="Helper pairing code"
-          />
-          <button type="submit" disabled={busy || code.replace(/\D/g, '').length !== 6}>
-            Pair
-          </button>
-        </form>
-        <p className="muted small">
-          The six-digit code is in the Helper window, or at{' '}
-          <a href={HELPER_URL} target="_blank" rel="noopener noreferrer">
-            127.0.0.1:47823
-          </a>
-          .
-        </p>
-      </>
-    )
-  } else if (!signedIn) {
-    body = (
-      <>
-        <button
-          type="button"
-          className="primary connect"
-          onClick={() => login()}
-          disabled={busy || waiting}
-        >
-          Continue with ChatGPT
-        </button>
-        {waiting && (
-          <p className="muted small">Finish signing in in the browser tab that just opened…</p>
-        )}
-      </>
-    )
-  } else {
-    body = (
-      <>
-        <div className="provider-row">
-          <span className="small">{status?.email ?? 'Signed in'}</span>
-          <button type="button" className="ghost small-btn" onClick={logout} disabled={busy}>
-            Sign out
-          </button>
+        <div className="account-line">
+          <span>
+            Signed in as <strong>{status?.email ?? 'your ChatGPT account'}</strong>
+          </span>
         </div>
         {status?.plan_usage ? (
-          <p className="small">
+          <p>
             Using your ChatGPT plan ·{' '}
             <a href={CHATGPT_USAGE_URL} target="_blank" rel="noopener noreferrer">
               Manage usage
@@ -218,42 +116,118 @@ export function ChatgptCard({ ai, onChange }: { ai: AiState; onChange(next: AiSt
           </p>
         ) : (
           <>
-            <p className="error small">
-              ChatGPT plan usage isn’t enabled. Sign in again and allow it, or use an OpenRouter or
-              OpenCode Zen key.
+            <p className="inline-error">
+              ChatGPT plan usage isn’t on for Writey. Sign in again and allow “Use your ChatGPT
+              plan”.
             </p>
-            <button type="button" onClick={() => login()} disabled={busy || waiting}>
-              Continue with ChatGPT
-            </button>
+            <ContinueButton onClick={() => go()} busy={checking} />
           </>
         )}
-        <button
-          type="button"
-          className="link-btn small"
-          onClick={() => login(true)}
-          disabled={busy || waiting}
-        >
-          Use another account
-        </button>
-        {waiting && (
-          <p className="muted small">Finish signing in in the browser tab that just opened…</p>
-        )}
+        <div className="actions">
+          <button type="button" className="link-btn" onClick={() => go(true)} disabled={checking}>
+            Use another account
+          </button>
+          <button type="button" className="link-btn" onClick={signOut} disabled={busy}>
+            Sign out
+          </button>
+        </div>
+        {status?.plan_usage && errorLine}
       </>
     )
   }
 
   return (
-    <div className={`provider-card${signedIn ? ' connected' : ''}`}>
-      <div className="provider-head">
-        <span className="provider-name">ChatGPT</span>
-        {signedIn && <span className="provider-badge">Connected</span>}
-      </div>
-      <p className="muted small">
-        Use your ChatGPT Plus or Pro plan in Writey. Sign-in runs in the free Writey Helper app on
-        this computer, so your ChatGPT tokens never leave it.
+    <>
+      <p>
+        <strong>Use your ChatGPT plan.</strong> Complete eligible AI requests in Writey with usage
+        included in your ChatGPT plan or credits balance. No API key.
       </p>
-      {body}
-      {error && <p className="error small">{error}</p>}
+      {!setup && <ContinueButton onClick={() => go()} busy={checking} />}
+      {setup && (
+        <div className="setup">
+          <span className="setup-title">
+            {ready
+              ? 'Ready.'
+              : outdated
+                ? 'Update Writey Helper'
+                : 'One-time setup on this computer'}
+          </span>
+          <ol>
+            <li className={ready ? 'done' : ''}>
+              <span>
+                {outdated
+                  ? 'The Writey Helper on this computer is an older version. Download the setup again to update it.'
+                  : 'OpenAI only allows ChatGPT sign-in from apps on your own computer, so Writey uses a small free helper app. It starts with Windows and stays out of the way.'}
+                {!ready && isWindows && (
+                  <a
+                    className="btn primary"
+                    href={HELPER_SETUP_FILE}
+                    download="writey-helper-setup.cmd"
+                  >
+                    <DownloadIcon size={16} />
+                    Download Writey Helper
+                  </a>
+                )}
+              </span>
+            </li>
+            {isWindows && (
+              <li className={ready ? 'done' : ''}>
+                <span>
+                  Open the downloaded file. If Windows asks, choose <em>More info → Run anyway</em>.
+                  It takes about a minute.
+                </span>
+              </li>
+            )}
+            <li>
+              <span>
+                Continue with ChatGPT, pick your account, and you’re back here.
+                {ready ? (
+                  <ContinueButton onClick={() => go()} busy={checking} />
+                ) : (
+                  <span className="waiting">
+                    <span className="spinner" aria-hidden="true" />
+                    Waiting for Writey Helper…
+                  </span>
+                )}
+              </span>
+            </li>
+          </ol>
+          {!ready && (
+            <details className="other-os" open={!isWindows}>
+              <summary>{isWindows ? 'Prefer a terminal?' : 'On macOS or Linux'}</summary>
+              <CommandRow />
+            </details>
+          )}
+        </div>
+      )}
+      {errorLine}
+    </>
+  )
+}
+
+function ContinueButton({ onClick, busy }: { onClick(): void; busy: boolean }) {
+  return (
+    <button type="button" className="chatgpt-btn" onClick={onClick} disabled={busy}>
+      {busy ? <span className="spinner" aria-hidden="true" /> : <ChatgptIcon size={18} />}
+      Continue with ChatGPT
+    </button>
+  )
+}
+
+function CommandRow() {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="command-row">
+      <code className="command">{HELPER_COMMAND}</code>
+      <button
+        type="button"
+        onClick={() => {
+          void navigator.clipboard.writeText(HELPER_COMMAND)
+          setCopied(true)
+        }}
+      >
+        {copied ? 'Copied' : 'Copy'}
+      </button>
     </div>
   )
 }
@@ -267,6 +241,7 @@ export function WelcomeNotice({ onDone }: { onDone(): void }) {
   }, [])
   return (
     <dialog ref={ref} className="welcome" onClose={onDone} aria-labelledby="welcome-title">
+      <ProviderMark provider="chatgpt" />
       <h2 id="welcome-title">You’re using your ChatGPT plan</h2>
       <p>
         Eligible usage in this app uses your ChatGPT plan. Manage usage in your ChatGPT settings.

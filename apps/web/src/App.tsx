@@ -25,7 +25,7 @@ export function App() {
   if (!supabaseConfigured) {
     return (
       <Centered>
-        <Wordmark big />
+        <Wordmark />
         <p className="muted">
           Supabase isn't configured. Copy <code>apps/web/.env.example</code> to{' '}
           <code>.env.local</code> and fill it in.
@@ -66,19 +66,54 @@ function SignIn() {
   return (
     <main className="signin">
       <Scribble />
-      <div className="signin-card">
+      <section className="signin-copy">
+        <Wordmark />
         <h1>
-          <Wordmark big />
+          Your notebook <em>that writes back.</em>
         </h1>
-        <p className="tagline">Your notebook that writes back.</p>
+        <p className="signin-lede">
+          Work through problems with your pen. When you’re stuck, say “Writey, what’s next?” It
+          reads the page and writes the next step under your own, or explains it on the side.
+        </p>
         <button type="button" className="google" onClick={signIn}>
           <GoogleIcon />
           Continue with Google
         </button>
         {error && <p className="error">{error}</p>}
-      </div>
-      <p className="scribble-hint">Go on, scribble anywhere.</p>
+        <p className="signin-fine">
+          Free and open source. Writey uses <strong>your own AI</strong>: your ChatGPT plan,
+          OpenRouter or OpenCode Zen.
+        </p>
+      </section>
+      <DemoSheet />
     </main>
+  )
+}
+
+/** A page of working with Writey's next lines writing themselves in, in blue ink. */
+function DemoSheet() {
+  return (
+    <figure className="signin-sheet" aria-hidden="true">
+      <span className="sheet-ask">Writey, what’s next?</span>
+      <span className="sheet-line q">3. Find ∫ x eˣ dx</span>
+      <span className="sheet-line">by parts:</span>
+      <span className="sheet-line">u = x, dv = eˣ dx</span>
+      <span className="sheet-line">du = dx, v = eˣ</span>
+      <span className="sheet-line ai" style={{ '--d': '1600ms' } as React.CSSProperties}>
+        = x eˣ − ∫ eˣ dx
+      </span>
+      <span className="sheet-line ai" style={{ '--d': '3000ms' } as React.CSSProperties}>
+        = x eˣ − eˣ + C
+      </span>
+      <span className="sheet-line ai" style={{ '--d': '4400ms' } as React.CSSProperties}>
+        = eˣ (x − 1) + C
+      </span>
+      <span className="sheet-ghost">
+        <span>Accept</span>
+        <span>Redo</span>
+        <span>Why?</span>
+      </span>
+    </figure>
   )
 }
 

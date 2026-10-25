@@ -122,6 +122,6 @@ describe('parseModels for ChatGPT', () => {
       parseModels('chatgpt', {
         models: [{ slug: 'gpt-6', display_name: 'GPT-6', input_modalities: ['text', 'image'] }],
       }),
-    ).toEqual([{ id: 'gpt-6', name: 'GPT-6', vision: true, supported: true }])
+    ).toEqual([{ id: 'gpt-6', name: 'GPT-6', vendor: 'OpenAI', vision: true, supported: true }])
   })
 })

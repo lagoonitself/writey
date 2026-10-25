@@ -1,10 +1,15 @@
 // Talks to Writey Helper on this computer (apps/helper, docs §7.3). ChatGPT tokens live in
-// the Helper; the browser only keeps the pairing token that proves it's allowed to ask.
+// the Helper; the browser only ever learns the email and whether plan usage is allowed.
 
 export const HELPER_URL = 'http://127.0.0.1:47823'
-const TOKEN_KEY = 'writey.helper.token'
+const USED_KEY = 'writey.chatgpt.used'
 
-export type HelperState = { running: boolean; paired: boolean }
+/** Windows setup: installs uv if needed, then the Helper, which starts with Windows after. */
+export const HELPER_SETUP_FILE = '/writey-helper-setup.cmd'
+
+/** For macOS and Linux, where the Helper runs in a terminal for now. */
+export const HELPER_COMMAND =
+  'uvx --from "git+https://github.com/lagoonitself/writey#subdirectory=apps/helper" writey-helper'
 
 export type ChatgptStatus = {
   signed_in: boolean
@@ -27,21 +32,20 @@ export class HelperError extends Error {
   }
 }
 
-function pairingToken(): string {
+/**
+ * True once this browser has started a ChatGPT sign-in. Until then Writey never contacts
+ * 127.0.0.1 by itself, because that makes Chrome ask about local network access.
+ */
+export function chatgptUsed(): boolean {
   try {
-    return localStorage.getItem(TOKEN_KEY) ?? ''
+    return localStorage.getItem(USED_KEY) === '1'
   } catch {
-    return ''
+    return false
   }
 }
 
-/** True once this browser has paired; until then Writey never contacts the Helper by itself. */
-export const hasPairing = () => Boolean(pairingToken())
-
 async function call(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers)
-  const token = pairingToken()
-  if (token) headers.set('Authorization', `Bearer ${token}`)
   if (init.body) headers.set('Content-Type', 'application/json')
   try {
     return await fetch(`${HELPER_URL}${path}`, { ...init, headers })
@@ -65,34 +69,41 @@ async function json<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await res.json()) as T
 }
 
-export async function helperHealth(): Promise<HelperState> {
+/** The Helper API level this Writey needs (2: sign-in by redirect, no pairing). */
+const HELPER_API = 2
+
+/** 'ok', 'outdated' (an older Helper that needs updating) or 'offline'. */
+export type HelperState = 'ok' | 'outdated' | 'offline'
+
+export async function helperState(): Promise<HelperState> {
   try {
-    const h = await json<{ paired: boolean }>('/health', { signal: AbortSignal.timeout(2000) })
-    return { running: true, paired: h.paired }
+    const h = await json<{ api?: number }>('/health', { signal: AbortSignal.timeout(2000) })
+    return (h.api ?? 1) >= HELPER_API ? 'ok' : 'outdated'
   } catch {
-    return { running: false, paired: false }
+    return 'offline'
   }
 }
 
-export async function pairHelper(code: string): Promise<void> {
-  const { token } = await json<{ token: string }>('/pair', {
-    method: 'POST',
-    body: JSON.stringify({ code }),
-  })
-  localStorage.setItem(TOKEN_KEY, token)
+/**
+ * Sends this tab to OpenAI's sign-in through the Helper; OpenAI returns to the Helper,
+ * which sends you back here with `?chatgpt=connected` (or `=error`).
+ */
+export function connectChatgpt(switchAccount = false): void {
+  try {
+    localStorage.setItem(USED_KEY, '1')
+  } catch {}
+  const url = new URL('/chatgpt/connect', HELPER_URL)
+  url.searchParams.set('return_to', location.origin + location.pathname)
+  if (switchAccount) url.searchParams.set('switch', 'true')
+  location.assign(url)
 }
 
 export const chatgptStatus = () => json<ChatgptStatus>('/chatgpt/status')
 
-export const chatgptLogin = () => json<{ started: boolean }>('/chatgpt/login', { method: 'POST' })
-
 export const chatgptWelcomed = () => json<{ ok: boolean }>('/chatgpt/welcomed', { method: 'POST' })
 
-export const chatgptLogout = (forget = false) =>
-  json<{ revoked: boolean | null }>('/chatgpt/logout', {
-    method: 'POST',
-    body: JSON.stringify({ forget }),
-  })
+export const chatgptLogout = () =>
+  json<{ revoked: boolean | null }>('/chatgpt/logout', { method: 'POST', body: '{}' })
 
 export const chatgptModels = () => json<unknown>('/chatgpt/models')
 

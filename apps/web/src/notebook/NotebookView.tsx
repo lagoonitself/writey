@@ -376,6 +376,9 @@ export function NotebookView({ id }: { id: string }) {
           <BackIcon size={18} />
           <span>Notebooks</span>
         </button>
+        <span className="crumb-sep" aria-hidden="true">
+          /
+        </span>
         <input
           className="title-input"
           value={title}
@@ -390,7 +393,7 @@ export function NotebookView({ id }: { id: string }) {
         </span>
         <button
           type="button"
-          className="ghost header-icon"
+          className="ghost icon-btn"
           onClick={() => setSettingsOpen(true)}
           title="Settings"
           aria-label="Settings"
