@@ -4,32 +4,32 @@
 > Say "Writey, what's next?" and it continues your work in handwriting on the page.
 > Say "Writey, why does this work?" and it explains in a side chat.
 
-Status: **v0.2** (2026-10-24). Open-source, multi-user, $0 hosting; users bring their own AI keys.
+Status: **v0.4** (2026-10-25). Open-source, multi-user, $0 hosting; users bring their own AI keys.
 
-v0.2 changes: Gemini Live dropped (voice is local only, via Writey Helper); ChatGPT sign-in settled as Helper-only; push-to-talk added; ChatGPT merged into the Helper phase. v0.3: voice runs on local Python models (Parakeet STT, Fish S1-mini TTS); the browser owns mic, VAD and playback, the Helper only runs models. Running decisions log: [HANDOFF.md](../HANDOFF.md).
+v0.2 changes: Gemini Live dropped (voice is local only, via Writey Helper); ChatGPT sign-in settled as Helper-only; push-to-talk added; ChatGPT merged into the Helper phase. v0.3: voice runs on local Python models (Parakeet STT, Fish S1-mini TTS); the browser owns mic, VAD and playback, the Helper only runs models. v0.4: Phase 2 shipped; key storage goes through two security-definer functions instead of the service role (§6.2). Running decisions log: [HANDOFF.md](../HANDOFF.md).
 
 ---
 
 ## 1. Decisions at a glance
 
-| Area                     | Decision                                                                                                       |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| Platform                 | Web app in Chrome on desktop (laptop + pen tablet, e.g. Huion). iPad later.                                    |
-| Frontend                 | React + TypeScript + Vite. Custom canvas engine (no tldraw/Excalidraw).                                        |
-| Backend                  | One Cloudflare Worker (Hono): serves the app, verifies auth, proxies AI calls, stores files.                   |
-| Database + auth          | Supabase free tier: Postgres + Google login.                                                                   |
-| File storage             | Cloudflare R2 free tier (10 GB): PDFs, images, page ink blobs.                                                 |
-| AI providers (thinking)  | **OpenRouter** (user key), **OpenCode Zen** (user key), **ChatGPT plan** (Sign in with ChatGPT). Nothing else. |
+| Area                     | Decision                                                                                                                                                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Platform                 | Web app in Chrome on desktop (laptop + pen tablet, e.g. Huion). iPad later.                                                                                                                                  |
+| Frontend                 | React + TypeScript + Vite. Custom canvas engine (no tldraw/Excalidraw).                                                                                                                                      |
+| Backend                  | One Cloudflare Worker (Hono): serves the app, verifies auth, proxies AI calls, stores files.                                                                                                                 |
+| Database + auth          | Supabase free tier: Postgres + Google login.                                                                                                                                                                 |
+| File storage             | Cloudflare R2 free tier (10 GB): PDFs, images, page ink blobs.                                                                                                                                               |
+| AI providers (thinking)  | **OpenRouter** (user key), **OpenCode Zen** (user key), **ChatGPT plan** (Sign in with ChatGPT). Nothing else.                                                                                               |
 | Voice                    | **Local models via Writey Helper** (Python): Parakeet TDT 0.6B v2 speech-to-text, Fish OpenAudio S1-mini text-to-speech. Browser owns mic, VAD, playback. Plus a **text box**. No cloud voice. English only. |
-| Talking to Writey        | Say "Writey, …" (detected in the transcript) **or** hold a push-to-talk key / pen-tablet button.               |
-| Default reasoning model  | DeepSeek V4.1 Flash (native vision) via OpenRouter, user-changeable.                                           |
-| Assistant name / trigger | "Writey".                                                                                                      |
-| AI output                | Chat panel **or** handwritten ink on the page, chosen by intent. Both link to each other.                      |
-| AI ink                   | Distinct color, grouped (erasable as one), shown as a ghost preview with **Accept / Redo / Discard**.          |
-| Memory                   | One conversation per page. Nothing global.                                                                     |
-| Proactive help           | None in v1. Writey acts only when asked.                                                                       |
-| Paper                    | Plain white in v1; background system built so v2 can add paper styles.                                         |
-| Sharing                  | v2.                                                                                                            |
+| Talking to Writey        | Say "Writey, …" (detected in the transcript) **or** hold a push-to-talk key / pen-tablet button.                                                                                                             |
+| Default reasoning model  | DeepSeek V4.1 Flash (native vision) via OpenRouter, user-changeable.                                                                                                                                         |
+| Assistant name / trigger | "Writey".                                                                                                                                                                                                    |
+| AI output                | Chat panel **or** handwritten ink on the page, chosen by intent. Both link to each other.                                                                                                                    |
+| AI ink                   | Distinct color, grouped (erasable as one), shown as a ghost preview with **Accept / Redo / Discard**.                                                                                                        |
+| Memory                   | One conversation per page. Nothing global.                                                                                                                                                                   |
+| Proactive help           | None in v1. Writey acts only when asked.                                                                                                                                                                     |
+| Paper                    | Plain white in v1; background system built so v2 can add paper styles.                                                                                                                                       |
+| Sharing                  | v2.                                                                                                                                                                                                          |
 
 ---
 
@@ -300,7 +300,7 @@ Settings let the user pick a provider and model for **reasoning** (PLAN and PROD
 ### 6.2 Key storage
 
 - Keys are sent once over HTTPS to the Worker, encrypted with **AES-256-GCM** (master key is a Worker secret; random IV per row; AAD = `user_id|provider`) and stored in `provider_credentials`.
-- Row-level security blocks every client read of that table. Only the Worker (service role) reads it. The UI sees just provider, label, last 4 characters and created date.
+- The Worker never holds the service-role key. It talks to Postgres as the signed-in user, and RLS plus column grants let clients see only provider, label, last 4 characters and created date. The ciphertext columns are reachable only through two `security definer` functions, `save_provider_secret()` and `provider_secret()`, which act on `auth.uid()`'s own row. A user could call them directly, but all they get is their own ciphertext, useless without the master key.
 - A `key_version` column allows rotating the master key.
 
 ### 6.3 ChatGPT plan: how it fits the rules
@@ -330,13 +330,13 @@ All voice is **local**: models run on the user's PC in Writey Helper. No audio l
 
 ### 7.1 Who does what
 
-| Browser (voice client in `apps/web`)                                                          | Writey Helper (Python, `127.0.0.1:47823`)                     |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Browser (voice client in `apps/web`)                                                           | Writey Helper (Python, `127.0.0.1:47823`)                     |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | Mic via `getUserMedia({ echoCancellation, noiseSuppression })`, 16 kHz mono in an AudioWorklet | **STT:** speech segment (PCM) in → text out (Parakeet)        |
-| **Silero VAD** (ONNX in a Web Worker): only speech segments are sent; silent room = nothing   | **TTS:** text in → audio out (Fish S1-mini), streamed         |
+| **Silero VAD** (ONNX in a Web Worker): only speech segments are sent; silent room = nothing    | **TTS:** text in → audio out (Fish S1-mini), streamed         |
 | 30-second rolling transcript (yours + Writey's replies as text)                                | **ChatGPT:** loopback sign-in, token storage, Responses proxy |
-| Trigger check ("Writey …"), push-to-talk, listening toggle, mic indicator                     | Health / model status, first-run model download               |
-| Plays TTS audio through the page, so Chrome's echo canceller removes it from the mic          |                                                               |
+| Trigger check ("Writey …"), push-to-talk, listening toggle, mic indicator                      | Health / model status, first-run model download               |
+| Plays TTS audio through the page, so Chrome's echo canceller removes it from the mic           |                                                               |
 
 Why this split: Chrome's echo cancellation stops Writey hearing itself for free; no Python audio-device code; one mic permission and indicator; the Helper is stateless (restart anytime); the help engine and transcript already live in the browser.
 
@@ -394,13 +394,13 @@ Same help engine, typed instead of spoken. Ctrl+K opens it at the pen position.
 
 One Worker serves the built React app (static assets) and these routes:
 
-| Route                                       | Purpose                                                                                                                                                                                         |
-| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /api/ai/:provider/stream`             | Check the Supabase JWT, decrypt the key, forward the body to an allow-listed provider URL, stream the response back. The body passes through unparsed to stay within the free plan's CPU limit. |
-| `GET /api/ai/:provider/models`              | Model list (cached 1 h).                                                                                                                                                                        |
-| `PUT/GET/DELETE /api/credentials/:provider` | Save, inspect or delete encrypted keys.                                                                                                                                                         |
-| `PUT/GET /api/pages/:id/content`            | Page ink blobs in R2, with version check.                                                                                                                                                       |
-| `POST /api/assets` → signed R2 upload       | PDF and image uploads (size-limited).                                                                                                                                                           |
+| Route                                                           | Purpose                                                                                                                                                                                         |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/ai/:provider/chat`                                   | Check the Supabase JWT, decrypt the key, forward the body to an allow-listed provider URL, stream the response back. The body passes through unparsed to stay within the free plan's CPU limit. |
+| `GET /api/ai/:provider/models`                                  | Model list (cached 1 h).                                                                                                                                                                        |
+| `GET /api/credentials`, `PUT/DELETE /api/credentials/:provider` | List key metadata; save (OpenRouter keys are checked first) or delete an encrypted key.                                                                                                         |
+| `PUT/GET /api/pages/:id/content`                                | Page ink blobs in R2, with version check.                                                                                                                                                       |
+| `POST /api/assets` → signed R2 upload                           | PDF and image uploads (size-limited).                                                                                                                                                           |
 
 The free plan allows 100k requests a day and about 10 ms CPU per request, so the Worker never parses big bodies. Supabase JWTs are verified against Supabase's JWKS, cached.
 
@@ -442,16 +442,16 @@ provider_credentials (id, owner_id, provider, label, ciphertext bytea, iv bytea,
 
 Each phase ends with something usable.
 
-| Phase                | Delivers                                                                                                                                                                                        | Status     |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
-| **0. Foundations**   | Monorepo, Supabase project with Google login, Worker deployed on workers.dev, CI.                                                                                                               | ✅ shipped |
-| **1. Notebook**      | Ink engine, v1 tools, pages, notebooks, save/load, PDF and image import. A full notebook app without AI.                                                                                        | ✅ shipped |
-| **1b. Math spike**   | Render ~20 typical formulas with the single-stroke handwriting renderer (§5.5) and judge quality.                                                                                               | next       |
-| **2. Ask by typing** | Provider settings (OpenRouter, OpenCode Zen) with encrypted keys, context capture with line labels, PLAN/PRODUCE, chat panel with KaTeX, cancel, errors, vision check. Model eval set (20–30 real pages). | next       |
-| **3. Writey writes** | InkScript, layout engine, handwriting renderer, ghost preview and accept, check-my-work marks.                                                                                                  |            |
-| **4. Helper**        | Browser voice client (mic, VAD, transcript, trigger, push-to-talk) + Writey Helper (Parakeet STT, Fish TTS) **and** Sign in with ChatGPT + Responses adapter (same process).                    |            |
-| **5. Diagrams**      | Diagram spec, renderer, plots, SVG export.                                                                                                                                                      |            |
-| **v1.x / v2**        | Exports, shape snapping, paper styles, study mode, sharing, personal handwriting style, iPad.                                                                                                   |            |
+| Phase                | Delivers                                                                                                                                                                                                  | Status                        |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| **0. Foundations**   | Monorepo, Supabase project with Google login, Worker deployed on workers.dev, CI.                                                                                                                         | ✅ shipped                    |
+| **1. Notebook**      | Ink engine, v1 tools, pages, notebooks, save/load, PDF and image import. A full notebook app without AI.                                                                                                  | ✅ shipped                    |
+| **1b. Math spike**   | Render ~20 typical formulas with the single-stroke handwriting renderer (§5.5) and judge quality.                                                                                                         | next (before 3)               |
+| **2. Ask by typing** | Provider settings (OpenRouter, OpenCode Zen) with encrypted keys, context capture with line labels, PLAN/PRODUCE, chat panel with KaTeX, cancel, errors, vision check. Model eval set (20–30 real pages). | ✅ shipped (eval set pending) |
+| **3. Writey writes** | InkScript, layout engine, handwriting renderer, ghost preview and accept, check-my-work marks.                                                                                                            |                               |
+| **4. Helper**        | Browser voice client (mic, VAD, transcript, trigger, push-to-talk) + Writey Helper (Parakeet STT, Fish TTS) **and** Sign in with ChatGPT + Responses adapter (same process).                              |                               |
+| **5. Diagrams**      | Diagram spec, renderer, plots, SVG export.                                                                                                                                                                |                               |
+| **v1.x / v2**        | Exports, shape snapping, paper styles, study mode, sharing, personal handwriting style, iPad.                                                                                                             |                               |
 
 ---
 

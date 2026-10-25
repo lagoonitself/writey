@@ -31,14 +31,15 @@ These are decided. Don't propose alternatives unless the owner asks:
 
 ## Repo map
 
-| Path                  | What                                                  |
-| --------------------- | ----------------------------------------------------- |
-| `apps/web`            | React + Vite app (notebook UI, toolbar, library)      |
-| `apps/worker`         | Cloudflare Worker (Hono): `/api/*` + hosts `web/dist` |
-| `packages/ink-engine` | Page model, editor/undo, geometry, render, serialize  |
-| `packages/shared`     | Types shared by web and worker                        |
-| `supabase/migrations` | SQL schema + RLS                                      |
-| (planned) `packages/inkscript`, `packages/ai-core`, `apps/helper` | See ARCHITECTURE §3 |
+| Path                                          | What                                                                           |
+| --------------------------------------------- | ------------------------------------------------------------------------------ |
+| `apps/web`                                    | React + Vite app (notebook UI, toolbar, library)                               |
+| `apps/worker`                                 | Cloudflare Worker (Hono): `/api/*` + hosts `web/dist`                          |
+| `packages/ink-engine`                         | Page model, editor/undo, geometry, render, serialize                           |
+| `packages/shared`                             | Types shared by web and worker                                                 |
+| `supabase/migrations`                         | SQL schema + RLS                                                               |
+| `packages/ai-core`                            | Prompts, intent rules, focus region + line labels, SSE parsing, error messages |
+| (planned) `packages/inkscript`, `apps/helper` | See ARCHITECTURE §3                                                            |
 
 `ink-engine`, `inkscript` and `ai-core` stay plain TypeScript with no React, so they're testable and reusable on iPad later.
 

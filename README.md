@@ -15,6 +15,7 @@ See [HANDOFF.md](HANDOFF.md) for decisions and current state, and [docs/ARCHITEC
 | `apps/web`            | React app (Vite)                             |
 | `apps/worker`         | Cloudflare Worker: API + hosts the built app |
 | `packages/ink-engine` | Page model, hit-testing, undo, ink rendering |
+| `packages/ai-core`    | Prompts, intent rules, focus region, streams |
 | `packages/shared`     | Types shared by web and worker               |
 | `supabase/migrations` | Database schema and row-level security       |
 
@@ -30,13 +31,15 @@ pnpm dev                                        # web on :5173, worker on :8787
 
 Set `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` in `apps/worker/wrangler.jsonc` to your project, and apply `supabase/migrations` in order. Deploying needs an R2 bucket named `writey` (`wrangler dev` simulates it locally).
 
-| Command          | Does                                    |
-| ---------------- | --------------------------------------- |
-| `pnpm lint`      | Biome lint + format check               |
-| `pnpm format`    | Auto-fix lint and formatting            |
-| `pnpm typecheck` | TypeScript across all packages          |
-| `pnpm test`      | Vitest across all packages              |
-| `pnpm deploy`    | Build the web app and deploy the Worker |
+Provider keys are encrypted with a 32-byte master key. Put `CREDENTIALS_KEY=<base64>` in `apps/worker/.dev.vars` for local dev, and set it in production with `wrangler secret put CREDENTIALS_KEY`. Generate one with `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
+
+| Command           | Does                                    |
+| ----------------- | --------------------------------------- |
+| `pnpm lint`       | Biome lint + format check               |
+| `pnpm format`     | Auto-fix lint and formatting            |
+| `pnpm typecheck`  | TypeScript across all packages          |
+| `pnpm test`       | Vitest across all packages              |
+| `pnpm run deploy` | Build the web app and deploy the Worker |
 
 ### Google sign-in setup (once)
 

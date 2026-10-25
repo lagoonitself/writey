@@ -131,6 +131,39 @@ export const EditIcon = (p: P) => (
   </Svg>
 )
 
+/** Writey's own mark: a sparkle, for anything the AI does. */
+export const SparkleIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M12 3.5l1.9 5.1a2 2 0 001.2 1.2l5.1 1.9-5.1 1.9a2 2 0 00-1.2 1.2L12 20l-1.9-5.2a2 2 0 00-1.2-1.2L3.8 11.7l5.1-1.9a2 2 0 001.2-1.2z" />
+    <path d="M19 3v3M17.5 4.5h3" />
+  </Svg>
+)
+
+export const GearIcon = (p: P) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6L18 18M6 18l1.4-1.4M16.6 7.4L18 6" />
+  </Svg>
+)
+
+export const SendIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M12 19V5M6 11l6-6 6 6" />
+  </Svg>
+)
+
+export const StopIcon = (p: P) => (
+  <Svg {...p}>
+    <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
+  </Svg>
+)
+
+export const CloseIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M6 6l12 12M18 6L6 18" />
+  </Svg>
+)
+
 export const GoogleIcon = ({ size = 18 }: P) => (
   <svg width={size} height={size} viewBox="0 0 48 48" aria-hidden="true">
     <path

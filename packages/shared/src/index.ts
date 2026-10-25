@@ -1,6 +1,36 @@
-/** Thinking providers. Gemini is used for voice only and is not in this list. */
+/** Thinking providers (HANDOFF D11). */
 export const AI_PROVIDERS = ['openrouter', 'opencode-zen', 'chatgpt'] as const
 export type AiProvider = (typeof AI_PROVIDERS)[number]
+
+/** Providers whose API keys Writey stores, encrypted. ChatGPT signs in through the Helper. */
+export const KEY_PROVIDERS = ['openrouter', 'opencode-zen'] as const
+export type KeyProvider = (typeof KEY_PROVIDERS)[number]
+
+export const isKeyProvider = (s: string): s is KeyProvider =>
+  (KEY_PROVIDERS as readonly string[]).includes(s)
+
+/** What the browser may know about a saved key. Never the key itself. */
+export type CredentialInfo = {
+  provider: KeyProvider
+  label: string | null
+  last4: string
+  created_at: string
+}
+
+export type SaveCredentialBody = { key: string; label?: string }
+
+/** Per-user AI choice, stored in `profiles.settings.ai`. */
+export type AiSettings = { provider: KeyProvider; model: string }
+
+export const DEFAULT_AI: AiSettings = {
+  provider: 'openrouter',
+  model: 'deepseek/deepseek-v4.1-flash',
+}
+
+export const KEY_MAX_LENGTH = 512
+
+/** Model requests carry page images, so they are bigger than most API calls. */
+export const AI_BODY_MAX_BYTES = 8 * 1024 * 1024
 
 export type HealthResponse = { ok: true; service: 'writey-worker'; time: string }
 

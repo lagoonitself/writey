@@ -11,10 +11,14 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "2.118.0",
+    "@writey/ai-core": "workspace:*",
     "@writey/ink-engine": "workspace:*",
     "@writey/shared": "workspace:*",
+    "dompurify": "3.4.16",
     "fractional-indexing": "4.0.0",
     "idb-keyval": "6.3.0",
+    "katex": "0.19.0",
+    "marked": "18.1.0",
     "pdfjs-dist": "6.4.299",
     "react": "19.3.1",
     "react-dom": "19.3.1"

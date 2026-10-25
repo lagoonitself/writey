@@ -4,7 +4,9 @@ import { useEffect, useState } from 'react'
 import { createNotebook, listNotebooks, renameNotebook, trashNotebook } from '../lib/db'
 import { navigate } from '../lib/router'
 import { supabase } from '../lib/supabase'
-import { EditIcon, PlusIcon, TrashIcon } from './icons'
+import { SettingsDialog } from '../settings/SettingsDialog'
+import { takeOpenSettingsFlag, useAiState } from '../settings/useAiState'
+import { EditIcon, GearIcon, PlusIcon, TrashIcon } from './icons'
 
 const COVERS = ['#2f4bf0', '#f0304f', '#ffb020', '#0f9d6b', '#7a5cff', '#16171d']
 
@@ -19,6 +21,8 @@ export function Library({ session }: { session: Session }) {
   const [notebooks, setNotebooks] = useState<NotebookRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  const [ai, setAi] = useAiState()
+  const [settingsOpen, setSettingsOpen] = useState(takeOpenSettingsFlag)
 
   useEffect(() => {
     listNotebooks()
@@ -59,6 +63,15 @@ export function Library({ session }: { session: Session }) {
       <header className="library-header">
         <Wordmark />
         <span className="user-email">{session.user.email}</span>
+        <button
+          type="button"
+          className="ghost header-icon"
+          onClick={() => setSettingsOpen(true)}
+          title="Settings"
+          aria-label="Settings"
+        >
+          <GearIcon size={18} />
+        </button>
         <button type="button" className="ghost" onClick={() => supabase.auth.signOut()}>
           Sign out
         </button>
@@ -114,6 +127,9 @@ export function Library({ session }: { session: Session }) {
       {notebooks === null && !error && <p className="muted loading">Fetching your notebooks…</p>}
       {notebooks?.length === 0 && (
         <p className="empty-hint">Start your first notebook. It's a blank page waiting for you.</p>
+      )}
+      {settingsOpen && (
+        <SettingsDialog ai={ai} onChange={setAi} onClose={() => setSettingsOpen(false)} />
       )}
     </div>
   )

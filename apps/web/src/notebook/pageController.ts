@@ -21,7 +21,14 @@ import type { AssetRow, PageRow } from '@writey/shared'
 import { loadImage } from '../lib/assets'
 import { backupPage, clearBackup, loadPage, savePage } from '../lib/pageStore'
 import { renderPdfPage } from '../lib/pdf'
-import { clipboard, type PageHandle, type SaveState, type ToolId, type ToolState } from './tools'
+import {
+  clipboard,
+  type PageHandle,
+  type PageSnapshot,
+  type SaveState,
+  type ToolId,
+  type ToolState,
+} from './tools'
 
 const MAX_CANVAS_PIXELS = 16_000_000
 const ERASER_PX = 9
@@ -29,6 +36,8 @@ const HANDLE_PX = 12
 const SAVE_DELAY_MS = 1500
 const RETRY_DELAY_MS = 5000
 const SELECTION_COLOR = '#2f4bf0'
+/** Writing this recent marks where the user is working (docs §5.1). */
+const RECENT_MS = 90_000
 
 type LiveStroke = { tool: StrokeTool; color: string; width: number; points: number[] }
 
@@ -81,6 +90,8 @@ export class PageController {
   private wetFrame = 0
   /** Where the eraser ring is drawn, in page units. */
   private hover: [number, number] | null = null
+  /** When the user wrote each item this session. */
+  private written = new Map<string, number>()
 
   private loaded = false
   private version = 0
@@ -106,6 +117,18 @@ export class PageController {
       insertImage: (asset, w, h) => this.insertImage(asset, w, h),
       flush: () => this.flush(),
       isDirty: () => this.isDirty(),
+      snapshot: () => this.snapshot(),
+    }
+  }
+
+  private snapshot(): PageSnapshot {
+    const since = Date.now() - RECENT_MS
+    const recent = new Set<string>()
+    for (const [id, at] of this.written) if (at >= since) recent.add(id)
+    return {
+      items: this.editor.items,
+      recent,
+      selection: unionBounds(this.selectedItems()),
     }
   }
 
@@ -516,15 +539,21 @@ export class PageController {
     this.gesture = null
     if (!g) return
     switch (g.type) {
-      case 'draw':
-        this.editor.add([{ kind: 'stroke', id: newId(), ...g.live, author: 'user' }])
+      case 'draw': {
+        const id = newId()
+        this.written.set(id, Date.now())
+        this.editor.add([{ kind: 'stroke', id, ...g.live, author: 'user' }])
         break
+      }
       case 'erase': {
         const changes = new Map<string, Item[]>()
         for (const id of g.touched) changes.set(id, [])
         for (const item of g.items) {
           const from = g.origin.get(item.id)
-          if (from) changes.get(from)?.push(item)
+          if (!from) continue
+          changes.get(from)?.push(item)
+          const at = this.written.get(from)
+          if (at) this.written.set(item.id, at)
         }
         if (changes.size) this.editor.splice(changes)
         else this.redrawInk()
@@ -736,6 +765,7 @@ export class PageController {
       size: edit.size,
       color: edit.color,
     }
+    this.written.set(item.id, Date.now())
     if (edit.id) this.editor.replace([item])
     else this.editor.add([item])
   }

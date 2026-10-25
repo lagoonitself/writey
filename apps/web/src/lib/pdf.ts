@@ -77,3 +77,52 @@ export function renderPdfPage(
     task?.cancel()
   }
 }
+
+/**
+ * Renders the part of a PDF page starting at (x, y) points onto `canvas`, at `pxPerPt`.
+ * Used to capture what Writey sees, so it resolves when drawing is finished.
+ */
+export async function drawPdfRegion(
+  canvas: HTMLCanvasElement,
+  assetId: string,
+  pageNumber: number,
+  pxPerPt: number,
+  x: number,
+  y: number,
+): Promise<void> {
+  const page = await (await pdfForAsset(assetId)).getPage(pageNumber)
+  const viewport = page.getViewport({
+    scale: pxPerPt,
+    offsetX: -x * pxPerPt,
+    offsetY: -y * pxPerPt,
+  })
+  await page.render({ canvas, viewport }).promise
+}
+
+export type PdfTextLine = { text: string; x: number; y: number; w: number; h: number }
+
+/** The page's printed text as lines, with boxes in points (top-left origin). */
+export async function pdfTextLines(assetId: string, pageNumber: number): Promise<PdfTextLine[]> {
+  const m = await pdfjs()
+  const page = await (await pdfForAsset(assetId)).getPage(pageNumber)
+  const viewport = page.getViewport({ scale: 1 })
+  const content = await page.getTextContent()
+  const lines: PdfTextLine[] = []
+  for (const item of content.items) {
+    if (!('str' in item) || !item.str.trim()) continue
+    const t = m.Util.transform(viewport.transform, item.transform)
+    const h = Math.hypot(t[2] as number, t[3] as number)
+    const box = { x: t[4] as number, y: (t[5] as number) - h, w: item.width, h }
+    // pdf.js splits lines into runs; glue runs that share a baseline.
+    const last = lines.at(-1)
+    if (last && Math.abs(last.y - box.y) < h * 0.5 && box.x >= last.x) {
+      const gap = box.x - (last.x + last.w)
+      last.text += (gap > h * 0.2 ? ' ' : '') + item.str
+      last.w = Math.max(last.w, box.x + box.w - last.x)
+      last.h = Math.max(last.h, box.h)
+    } else {
+      lines.push({ text: item.str, ...box })
+    }
+  }
+  return lines
+}

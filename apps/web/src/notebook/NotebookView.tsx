@@ -1,6 +1,15 @@
 import type { NotebookRow, PageRow } from '@writey/shared'
 import { generateKeyBetween } from 'fractional-indexing'
-import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 import { uploadAsset } from '../lib/assets'
 import {
   A4,
@@ -13,16 +22,22 @@ import {
 } from '../lib/db'
 import { pdfPageSizes } from '../lib/pdf'
 import { navigate } from '../lib/router'
-import { BackIcon, DownIcon, PlusIcon, TrashIcon, UpIcon } from './icons'
+import { SettingsDialog } from '../settings/SettingsDialog'
+import { takeOpenSettingsFlag, useAiState } from '../settings/useAiState'
+import { BackIcon, DownIcon, GearIcon, PlusIcon, SparkleIcon, TrashIcon, UpIcon } from './icons'
 import { PageView } from './PageView'
 import { Toolbar } from './Toolbar'
 import { DEFAULT_TOOLS, type PageHandle, type SaveState, TOOL_KEYS, type ToolState } from './tools'
+
+// Markdown and KaTeX are sizable, so the chat panel loads on first open.
+const ChatPanel = lazy(() => import('../chat/ChatPanel'))
 
 /** CSS pixels per PDF point at 100% zoom. */
 const BASE_SCALE = 96 / 72
 const MIN_ZOOM = 0.3
 const MAX_ZOOM = 4
 const TOOLS_KEY = 'writey.tools'
+const CHAT_KEY = 'writey.chat'
 
 const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
 
@@ -52,6 +67,16 @@ export function NotebookView({ id }: { id: string }) {
   const handles = useRef(new Map<string, PageHandle>()).current
   const scrollRef = useRef<HTMLDivElement>(null)
   const zoomAnchor = useRef<number | null>(null)
+  const [ai, setAi] = useAiState()
+  const [chatOpen, setChatOpenState] = useState(() => localStorage.getItem(CHAT_KEY) === '1')
+  const [chatFocus, bumpChatFocus] = useReducer((n: number) => n + 1, 0)
+  const [settingsOpen, setSettingsOpen] = useState(takeOpenSettingsFlag)
+
+  const setChatOpen = useCallback((open: boolean) => {
+    setChatOpenState(open)
+    localStorage.setItem(CHAT_KEY, open ? '1' : '0')
+    if (open) bumpChatFocus()
+  }, [])
 
   const setTools = useCallback((next: ToolState) => {
     setToolsState(next)
@@ -171,8 +196,17 @@ export function NotebookView({ id }: { id: string }) {
   // ---- keyboard: tool shortcuts and zoom ----
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (isTyping(e.target)) return
       const mod = e.ctrlKey || e.metaKey
+      // Ctrl+K opens the chat, or focuses it if open; from inside the chat it closes it.
+      if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        const inChat = e.target instanceof Element && e.target.closest('.chat')
+        if (chatOpen && inChat) setChatOpen(false)
+        else if (chatOpen) bumpChatFocus()
+        else setChatOpen(true)
+        return
+      }
+      if (isTyping(e.target)) return
       if (mod && (e.key === '=' || e.key === '+')) setZoom(zoom * 1.2)
       else if (mod && e.key === '-') setZoom(zoom / 1.2)
       else if (mod && e.key === '0') setZoom(1)
@@ -184,7 +218,7 @@ export function NotebookView({ id }: { id: string }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [zoom, tools, setZoom, setTools])
+  }, [zoom, tools, setZoom, setTools, chatOpen, setChatOpen])
 
   // ---- page operations ----
   const run = async (label: string, fn: () => Promise<void>) => {
@@ -354,6 +388,26 @@ export function NotebookView({ id }: { id: string }) {
           <span className="save-dot" aria-hidden="true" />
           {saveLabel}
         </span>
+        <button
+          type="button"
+          className="ghost header-icon"
+          onClick={() => setSettingsOpen(true)}
+          title="Settings"
+          aria-label="Settings"
+        >
+          <GearIcon size={18} />
+        </button>
+        <button
+          type="button"
+          className={`ask-writey${chatOpen ? ' on' : ''}`}
+          onClick={() => setChatOpen(!chatOpen)}
+          title="Ask Writey (Ctrl+K)"
+          aria-pressed={chatOpen}
+        >
+          <SparkleIcon size={18} />
+          <span>Ask Writey</span>
+          <kbd>Ctrl K</kbd>
+        </button>
       </header>
       <div className="notebook-body">
         <nav className="page-list" aria-label="Pages">
@@ -447,7 +501,23 @@ export function NotebookView({ id }: { id: string }) {
             </div>
           </div>
         </div>
+        {chatOpen && (
+          <Suspense fallback={<aside className="chat" aria-busy="true" />}>
+            <ChatPanel
+              page={pages.find((p) => p.id === activeId) ?? null}
+              pageNumber={pages.findIndex((p) => p.id === activeId) + 1}
+              handle={(pageId) => handles.get(pageId)}
+              ai={ai}
+              focusKey={chatFocus}
+              onSettings={() => setSettingsOpen(true)}
+              onClose={() => setChatOpen(false)}
+            />
+          </Suspense>
+        )}
       </div>
+      {settingsOpen && (
+        <SettingsDialog ai={ai} onChange={setAi} onClose={() => setSettingsOpen(false)} />
+      )}
     </div>
   )
 }

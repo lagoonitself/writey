@@ -1,4 +1,4 @@
-import type { Item } from '@writey/ink-engine'
+import type { Item, Rect } from '@writey/ink-engine'
 import type { AssetRow } from '@writey/shared'
 
 export type ToolId = 'pen' | 'highlighter' | 'eraser' | 'lasso' | 'text'
@@ -49,6 +49,16 @@ export type PageHandle = {
   /** Saves now if there are unsaved edits. */
   flush(): Promise<void>
   isDirty(): boolean
+  /** What the help engine needs to see this page. */
+  snapshot(): PageSnapshot
+}
+
+export type PageSnapshot = {
+  items: readonly Item[]
+  /** Items the user wrote in the last minute or so (docs §5.1). */
+  recent: ReadonlySet<string>
+  /** Bounds of the lasso selection, if any. */
+  selection: Rect | null
 }
 
 export type SaveState = 'saved' | 'dirty' | 'saving' | 'error'

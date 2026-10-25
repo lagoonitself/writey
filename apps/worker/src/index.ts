@@ -11,10 +11,11 @@ import {
   type VersionConflict,
 } from '@writey/shared'
 import { Hono } from 'hono'
+import { type AiEnv, ai } from './ai'
 import { type AuthUser, supabaseJwks, verifySupabaseToken } from './auth'
-import { isUuid, rest, type SupabaseEnv, select } from './supabase'
+import { isUuid, rest, select } from './supabase'
 
-export type Env = SupabaseEnv & { FILES: R2Bucket }
+export type Env = AiEnv & { FILES: R2Bucket }
 type Vars = { user: AuthUser; token: string }
 
 const app = new Hono<{ Bindings: Env; Variables: Vars }>().basePath('/api')
@@ -172,6 +173,8 @@ app.get('/assets/:id', async (c) => {
     },
   })
 })
+
+app.route('/', ai)
 
 app.notFound((c) => c.json<ApiError>({ error: 'not_found' }, 404))
 
