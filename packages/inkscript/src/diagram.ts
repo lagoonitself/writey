@@ -8,6 +8,7 @@ import {
 } from './circuit'
 import { compile } from './expr'
 import { drawField, FIELD_KINDS, fieldExtent } from './fields'
+import { expandFigure, FIGURE_NAMES } from './figures'
 import { calloutRoom, drawFreehand, FREEHAND_KINDS, freehandExtent, type PageBox } from './freehand'
 import { type Box, layoutMath, type Path, type Rng } from './layout'
 import { drawLogic, LOGIC_KINDS, logicExtent } from './logic'
@@ -103,6 +104,10 @@ const KINDS: Record<string, string> = {
   ...FIELD_KINDS,
   ...LOGIC_KINDS,
   ...FREEHAND_KINDS,
+  figure: 'figure',
+  picture: 'figure',
+  // A figure's own name works as a kind too: {"kind":"heart"}.
+  ...Object.fromEntries(FIGURE_NAMES.map((n) => [n, 'figure'])),
 }
 
 const CIRCUIT = new Set(Object.values(CIRCUIT_KINDS))
@@ -320,6 +325,12 @@ export type DiagramOptions = {
 
 export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagram {
   const { size, rng } = opts
+  // Library figures are drawn on a y-down canvas, so the whole diagram is.
+  if (spec.items.some((o) => o.kind === 'figure')) {
+    const items = spec.items.flatMap((o) => (o.kind === 'figure' ? (expandFigure(o) ?? []) : [o]))
+    if (!items.length) return { w: 0, h: 0, paths: [] }
+    spec = { ...spec, ydown: true, items }
+  }
   const world = fitWorld(spec)
   const xr = world.x[1] - world.x[0]
   const yr = world.y[1] - world.y[0]
@@ -341,17 +352,20 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
           : Math.max(230, size * 11)
   // Callout names sit beside the drawing, so the drawing leaves them room.
   const room = calloutRoom(spec.items, { size }, (world.x[0] + world.x[1]) / 2)
-  const W = Math.min(
+  let W = Math.min(
     Math.max(size * 6, opts.maxW - room.left - room.right),
     Math.max(size * 4, num(spec.w, natural)),
   )
+  // Pictures keep their proportions; a tall one gets narrower instead of squashed.
+  const picture = spec.items.some((o) => FREEHAND.has(o.kind)) && !spec.h
+  if (picture) W = Math.min(W, (size * 21 * xr) / yr)
   // Same scale on both axes unless told otherwise, so circles stay round.
   // Ray diagrams stretch their heights, as textbooks do, so rays don't lie flat on the axis.
   const rays = spec.items.some(
     (o) => o.kind === 'optics' || o.kind === 'lens' || o.kind === 'mirror',
   )
   const minH = W * (rays ? 0.62 : 0.4)
-  const natH = Math.min(W * 1.15, Math.max(minH, (W * yr) / xr))
+  const natH = picture ? (W * yr) / xr : Math.min(W * 1.15, Math.max(minH, (W * yr) / xr))
   // A ray diagram is never squashed flat, even when asked for a short frame.
   const H = Math.max(size * 3, rays ? Math.max(num(spec.h, natH), minH) : num(spec.h, natH))
   const sx = W / xr

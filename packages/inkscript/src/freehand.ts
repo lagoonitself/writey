@@ -1,4 +1,6 @@
+import { seeded } from './layout'
 import { type DiagramItem, num, type Pt, pt, type Sketch, smooth, text } from './sketch'
+import { layoutParagraph, stackLines } from './text'
 
 // Pictures that can't be computed (biology, chemistry apparatus, geography): the model
 // draws them with SVG path data, which models write well, and organic blobs; Writey draws
@@ -226,6 +228,16 @@ function svgItemPaths(o: DiagramItem): Pt[][] {
   return polys.map((p) => p.map(([x, y]) => [at[0] + x * scale, at[1] + y * scale] as Pt))
 }
 
+/** A polyline moved `d` to one side, each point along the mean of its segments' normals. */
+function offset(p: readonly Pt[], d: number): Pt[] {
+  return p.map((q, i) => {
+    const a = p[Math.max(0, i - 1)] as Pt
+    const b = p[Math.min(p.length - 1, i + 1)] as Pt
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1
+    return [q[0] - ((b[1] - a[1]) / len) * d, q[1] + ((b[0] - a[0]) / len) * d]
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Blobs: organic closed shapes
 // ---------------------------------------------------------------------------
@@ -299,7 +311,12 @@ export type PageBox = { L: number; T: number; R: number; B: number }
 export function drawFreehand(o: DiagramItem, k: Sketch, content: PageBox): void {
   switch (o.kind) {
     case 'svg': {
-      for (const p of svgItemPaths(o)) k.pen.poly(p.map(k.map), false, o.dashed === true)
+      const tube = num(o.tube, 0) * num(o.scale, 1)
+      for (const p of svgItemPaths(o)) {
+        if (tube > 0)
+          for (const side of [-1, 1]) k.pen.poly(offset(p, (side * tube) / 2).map(k.map))
+        else k.pen.poly(p.map(k.map), false, o.dashed === true)
+      }
       const l = text(o)
       if (l) {
         const ps = svgItemPaths(o).flat()
@@ -323,8 +340,9 @@ export function drawFreehand(o: DiagramItem, k: Sketch, content: PageBox): void 
   }
 }
 
-/** Width a name takes when written, in points (about half an em per letter at label size). */
-const nameWidth = (s: string, k: Sketch) => s.length * k.size * 0.62 * 0.5
+/** Width a name takes when written at label size, in points. */
+const nameWidth = (s: string, k: Pick<Sketch, 'size'>) =>
+  stackLines(layoutParagraph(s, 14, seeded(1))).w * k.size * 0.62
 
 function drawCallouts(o: DiagramItem, k: Sketch, content: PageBox): void {
   const cs = callouts(o)
@@ -398,7 +416,7 @@ export function calloutRoom(
       const side =
         c.side ||
         (forced === 'left' || forced === 'right' ? forced : c.at[0] < midX ? 'left' : 'right')
-      room[side] = Math.max(room[side], nameWidth(c.text, k as Sketch) + k.size * 1.4)
+      room[side] = Math.max(room[side], nameWidth(c.text, k) + k.size * 1.4)
     }
   }
   return room

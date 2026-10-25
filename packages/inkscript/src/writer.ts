@@ -4,6 +4,7 @@ import { penStrokes, type TimedStroke } from './hand'
 import { type Box, handLine, layoutMath, type Path, type Rng, seeded } from './layout'
 import { type PlaceEnv, Placer } from './place'
 import type { InkBlock, MarkKind } from './script'
+import { drawTable } from './table'
 import { layoutParagraph, stackLines } from './text'
 
 // Turns InkScript blocks into timed pen strokes placed on the page (docs §5.4–5.5).
@@ -84,6 +85,8 @@ export class InkWriter {
         return this.mark(block.kind, block.target, block.note)
       case 'diagram':
         return this.diagram(block)
+      case 'table':
+        return this.table(block)
       default:
         return null
     }
@@ -138,6 +141,27 @@ export class InkWriter {
       { x: spot.x, y: spot.y, w: drawn.w * spot.scale, h: drawn.h * spot.scale },
       { width: this.penWidth * 0.85, speed: 1.6 },
     )
+  }
+
+  private table(block: Extract<InkBlock, { type: 'table' }>): WriteResult {
+    const t = drawTable(block, this.rng)
+    if (!t.paths.length) return null
+    // Wide tables write smaller rather than spill off the page.
+    const room = this.placer.room(this.placer.startX(block.after))
+    const k = Math.max(this.opts.size * 0.6, Math.min(this.opts.size, room / t.w))
+    const spot = this.placer.place(t.w * k, t.h * k, block.after, this.opts.size * 0.5)
+    if (!spot) return { noRoom: true }
+    const s = k * spot.scale
+    const paths = t.paths.map((p) => p.map((n, i) => (i % 2 === 0 ? spot.x : spot.y) + n * s))
+    const cells = [block.header ?? [], ...block.rows].map((r) => `| ${r.join(' | ')} |`)
+    if (block.header?.length) cells.splice(1, 0, `|${' --- |'.repeat(block.header.length)}`)
+    const source = `[table${block.title ? `: ${block.title}` : ''}]\n${cells.join('\n')}`
+    return this.pen(paths, this.opts.color, source, block.why, {
+      x: spot.x,
+      y: spot.y,
+      w: t.w * s,
+      h: t.h * s,
+    })
   }
 
   private pen(

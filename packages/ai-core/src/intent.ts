@@ -14,7 +14,7 @@ const MODE_RULES: [RegExp, Mode][] = [
   [/\bwrite (it|this|that)( down| out| on the page)?\b|\bjust show me the answer\b/, 'write'],
   [/\bwhat('?s| is) next\b/, 'write'],
   [
-    /\b(draw|sketch|plot|graph (it|this|that)|diagram|free[- ]body|new page|ray diagram|circuit diagram|field lines)\b/,
+    /\b(draw|sketch|plot|graph (it|this|that)|diagram|free[- ]body|new page|ray diagram|circuit diagram|field lines|truth table|tabulate|(make|draw|write) (a|the) table|in a table)\b/,
     'write',
   ],
   [

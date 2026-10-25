@@ -5,6 +5,10 @@ import {
   type DiagramItem,
   diagramItems,
   drawDiagram,
+  drawTable,
+  expandFigure,
+  FIGURE_NAMES,
+  findFigure,
   glyph,
   type InkBlock,
   InkScriptParser,
@@ -644,5 +648,42 @@ describe('freehand pictures', () => {
     const d = drawDiagram({ items }, { size: 20, maxW: 500, rng: seeded(1) })
     expect(d.paths.length).toBeGreaterThan(10)
     expect(allFinite(d.paths)).toBe(true)
+  })
+})
+
+describe('tables and figures', () => {
+  it('parses a truth table and rules a grid around its cells', () => {
+    const [b] = parseInkScript(
+      '{"type":"table","header":["A","B","Y"],"rows":[[0,0,0],[0,1,1],[1,0,1],[1,1,0]]}',
+    )
+    expect(b?.type).toBe('table')
+    if (b?.type !== 'table') return
+    expect(b.rows[1]).toEqual(['0', '1', '1'])
+    const t = drawTable(b, seeded(1))
+    expect(t.w).toBeGreaterThan(3)
+    // Frame (4) + 4 row rules + header double rule + 2 column rules, then the cells.
+    expect(t.paths.length).toBeGreaterThan(11 + 15)
+  })
+
+  it('finds library figures by everyday names and labels the parts asked for', () => {
+    expect(findFigure('the human heart')?.title).toMatch(/heart/i)
+    expect(findFigure('L.S. of flower')?.title).toMatch(/flower/i)
+    expect(findFigure('plant cell')?.title).toMatch(/plant/i)
+    expect(findFigure('spaceship')).toBeNull()
+    const items = expandFigure({ kind: 'figure', name: 'flower', labels: ['stamen', 'ovary'] })
+    const callouts = items?.find((o) => o.kind === 'callouts')
+    const names = ((callouts?.labels ?? []) as { text: string }[]).map((l) => l.text)
+    expect(names.sort()).toEqual(['anther', 'filament', 'ovary'])
+  })
+
+  it('draws every library figure', () => {
+    for (const name of FIGURE_NAMES) {
+      const d = drawDiagram(
+        { items: [{ kind: 'figure', name }] },
+        { size: 20, maxW: 500, rng: seeded(2) },
+      )
+      expect(d.paths.length, name).toBeGreaterThan(5)
+      expect(d.w, name).toBeLessThanOrEqual(520)
+    }
   })
 })

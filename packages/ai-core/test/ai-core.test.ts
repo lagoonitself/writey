@@ -50,6 +50,7 @@ describe('routeIntent', () => {
     ['just explain, please continue', 'explain', 'next_step'],
     ['write it', 'write', null],
     ['draw a free body diagram', 'write', null],
+    ['make a truth table for XOR', 'write', null],
     ['sketch the graph of sin x', 'write', null],
     ['hmm', null, null],
   ])('%s → %s / %s', (text, mode, scope) => {

@@ -277,6 +277,18 @@ function blockMarkdown(b: InkBlock): string {
       return `**${b.target}** (${b.kind})${b.note ? `: ${b.note}` : ''}`
     case 'diagram':
       return `*Diagram${b.title ? `: ${b.title}` : ''}*${why}`
+    case 'table': {
+      const row = (r: readonly string[]) => `   | ${r.join(' | ')} |`
+      const head = b.header?.length ? b.header : (b.rows[0] ?? [])
+      const body = b.header?.length ? b.rows : b.rows.slice(1)
+      return [
+        `*Table${b.title ? `: ${b.title}` : ''}*${why}`,
+        '',
+        row(head),
+        `   |${' --- |'.repeat(head.length)}`,
+        ...body.map(row),
+      ].join('\n')
+    }
     default:
       return ''
   }
@@ -407,11 +419,13 @@ async function writeInk(
   else if (summary) parts.push(summary)
   if (written.length) {
     const drawings = written.filter((w) => w.source.startsWith('[diagram')).length
-    const marks = written.filter((w) => w.source.startsWith('[')).length - drawings
-    const lines = written.length - marks - drawings
+    const tables = written.filter((w) => w.source.startsWith('[table')).length
+    const marks = written.filter((w) => w.source.startsWith('[')).length - drawings - tables
+    const lines = written.length - marks - drawings - tables
     const did = [
       lines && `${lines} line${lines === 1 ? '' : 's'}`,
       drawings && `${drawings} diagram${drawings === 1 ? '' : 's'}`,
+      tables && `${tables} table${tables === 1 ? '' : 's'}`,
       marks && `${marks} mark${marks === 1 ? '' : 's'}`,
     ].filter(Boolean)
     const where = pagesLabel(inked.map(o.pageNumber))

@@ -1,4 +1,5 @@
 import { type DiagramSpec, diagramItems } from './diagram'
+import type { TableSpec } from './table'
 
 // InkScript: the AI's drawing language (docs §5.4). The model streams one JSON object
 // per block; each block is drawn as soon as it arrives.
@@ -13,6 +14,8 @@ export type InkBlock =
   | { type: 'mark'; kind: MarkKind; target: string; note?: string }
   /** A hand-drawn diagram or graph (docs §5.6). */
   | ({ type: 'diagram'; after?: string; title?: string; why?: string } & DiagramSpec)
+  /** A ruled table (truth tables, observations, comparisons); cells may hold $math$. */
+  | ({ type: 'table'; after?: string; title?: string; why?: string } & TableSpec)
   /** Start a fresh page and carry on at its top. */
   | { type: 'page' }
   /** Markdown for the chat panel: explanations that don't belong on the page. */
@@ -88,6 +91,26 @@ export function toBlock(raw: unknown): InkBlock | null {
         y: range(spec.y ?? spec.yrange),
         ydown: spec.ydown === true || spec.coords === 'svg' || undefined,
         title: str(o.title) || str(spec.title) || undefined,
+        after: after(o.after),
+        why,
+      }
+    }
+    case 'table':
+    case 'truth_table': {
+      const cell = (v: unknown): string =>
+        typeof v === 'number' || typeof v === 'boolean' ? String(Number(v)) : str(v)
+      const row = (v: unknown): string[] | null => (Array.isArray(v) ? v.map(cell) : null)
+      const header = row(o.header ?? o.headers ?? o.columns ?? o.head) ?? undefined
+      const body = o.rows ?? o.data ?? o.body
+      const rows = Array.isArray(body) ? body.map(row).filter((r): r is string[] => !!r) : []
+      if (!rows.length && !header) return null
+      const align = row(o.align) ?? undefined
+      return {
+        type: 'table',
+        header,
+        rows,
+        align,
+        title: str(o.title) || undefined,
         after: after(o.after),
         why,
       }
