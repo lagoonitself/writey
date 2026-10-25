@@ -107,10 +107,9 @@ export function circuitExtent(o: DiagramItem): Pt[] {
 export function drawCircuit(o: DiagramItem, k: Sketch): void {
   switch (o.kind) {
     case 'wire': {
-      const ps = pts(o.points)
-      const line = ps.length >= 2 ? ps : [pt(o.from), pt(o.to)].filter((p): p is Pt => !!p)
+      const line = wirePath(o, k.terminals ?? [])
       for (let i = 0; i + 1 < line.length; i++) {
-        k.pen.line(k.map(line[i] as Pt), k.map(line[i + 1] as Pt), o.dashed === true)
+        k.pen.line(k.map(line[i] as Pt), k.map(line[i + 1] as Pt), o.dashed === true, true)
       }
       const mid = line.length >= 2 ? midpoint(k.map(line[0] as Pt), k.map(line[1] as Pt)) : null
       if (mid) k.itemLabel(o, mid, upNormal(k.map(line[0] as Pt), k.map(line[1] as Pt)))
@@ -176,8 +175,8 @@ function twoTerminal(o: DiagramItem, k: Sketch): void {
   ]
   const pen = k.pen
   if (t0 > 0.5) {
-    pen.line(A, at(0, 0))
-    pen.line(at(s, 0), B)
+    pen.line(A, at(0, 0), false, true)
+    pen.line(at(s, 0), B, false, true)
   }
   let half = z * 0.3
   switch (o.kind) {
@@ -360,47 +359,161 @@ function transistor(o: DiagramItem, k: Sketch): void {
   k.itemLabel(o, w(0.1, 0), [-1, -1], 0.72 * s * k.sx)
 }
 
-/** Logic gates. Inputs at at + (−size, ±size/4) (NOT: at − (size, 0)); output at at + (size, 0). */
+/** Input offsets (in gate sizes) for a gate with n inputs, top first. */
+export function inputOffsets(type: string, n: number): number[] {
+  if (type === 'not' || n <= 1) return [0]
+  if (n === 2) return [0.25, -0.25]
+  return Array.from({ length: n }, (_, i) => 0.32 - (0.64 * i) / (n - 1))
+}
+
+const gateType = (o: DiagramItem) => (text(o, 'type') || 'and').toLowerCase()
+const gateInputs = (o: DiagramItem) =>
+  gateType(o) === 'not' ? 1 : Math.max(2, Math.min(4, Math.round(num(o.inputs, 2))))
+
+/** Where a gate's or transistor's wires attach, in world units. */
+export function circuitTerminals(items: readonly DiagramItem[]): Pt[] {
+  const out: Pt[] = []
+  for (const o of items) {
+    const c = pt(o.at)
+    if (!c) continue
+    const s = num(o.size, 1)
+    if (o.kind === 'gate') {
+      for (const y of inputOffsets(gateType(o), gateInputs(o))) out.push([c[0] - s, c[1] + y * s])
+      out.push([c[0] + s, c[1]])
+    } else if (o.kind === 'transistor') {
+      out.push([c[0] - s, c[1]], [c[0] + s / 2, c[1] + s], [c[0] + s / 2, c[1] - s])
+    }
+  }
+  return out
+}
+
+/**
+ * A wire's corners. Ends near a pin snap onto it, and a slanted run becomes an L (across,
+ * then up or down), since circuit wires only run straight across or up and down.
+ */
+export function wirePath(o: DiagramItem, terminals: readonly Pt[]): Pt[] {
+  const ps = pts(o.points)
+  const raw = ps.length >= 2 ? ps : [pt(o.from), pt(o.to)].filter((p): p is Pt => !!p)
+  const snap = (p: Pt): Pt => {
+    let best: Pt = p
+    let d = 0.35
+    for (const t of terminals) {
+      const e = Math.hypot(t[0] - p[0], t[1] - p[1])
+      if (e < d) {
+        d = e
+        best = t
+      }
+    }
+    return best
+  }
+  const line = raw.map((p, i) => (i === 0 || i === raw.length - 1 ? snap(p) : p))
+  if (o.straight === true) return line
+  const out: Pt[] = []
+  for (const p of line) {
+    const q = out.at(-1)
+    if (q && Math.abs(p[0] - q[0]) > 1e-6 && Math.abs(p[1] - q[1]) > 1e-6) out.push([p[0], q[1]])
+    out.push(p)
+  }
+  return out
+}
+
+type Seg = [Pt, Pt]
+
+/**
+ * Junction dots, as textbooks draw them: wherever a wire ends on another wire, or three or
+ * more wire ends meet. Plain crossings get none.
+ */
+export function junctionDots(segs: readonly Seg[]): Pt[] {
+  const key = (p: Pt) => `${p[0].toFixed(4)},${p[1].toFixed(4)}`
+  const ends = new Map<string, { p: Pt; n: number }>()
+  for (const [a, b] of segs) {
+    for (const p of [a, b]) {
+      const e = ends.get(key(p))
+      if (e) e.n++
+      else ends.set(key(p), { p, n: 1 })
+    }
+  }
+  const out: Pt[] = []
+  for (const { p, n } of ends.values()) {
+    let degree = n
+    for (const [a, b] of segs) {
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1])
+      if (len < 1e-9) continue
+      const t = ((p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])) / (len * len)
+      if (t <= 1e-6 || t >= 1 - 1e-6) continue
+      const off = Math.abs((p[0] - a[0]) * (b[1] - a[1]) - (p[1] - a[1]) * (b[0] - a[0])) / len
+      if (off < 1e-4) degree += 2
+    }
+    if (degree >= 3) out.push(p)
+  }
+  return out
+}
+
+/** Every wire run in a hand-placed circuit (wires and the leads of parts), for junction dots. */
+export function circuitSegments(items: readonly DiagramItem[]): Seg[] {
+  const terminals = circuitTerminals(items)
+  const segs: Seg[] = []
+  for (const o of items) {
+    if (o.kind === 'wire') {
+      const line = wirePath(o, terminals)
+      for (let i = 0; i + 1 < line.length; i++) segs.push([line[i] as Pt, line[i + 1] as Pt])
+    } else if (o.kind in BODY) {
+      const a = pt(o.from)
+      const b = pt(o.to)
+      if (a && b) segs.push([a, b])
+    }
+  }
+  return segs
+}
+
+/** Logic gates. Inputs at at + (−size, offsets), output at at + (size, 0). */
 function gate(o: DiagramItem, k: Sketch): void {
   const c = pt(o.at)
   if (!c) return
   const s = num(o.size, 1)
-  const type = (o.kind === 'gate' ? text(o, 'type') : String(o.kind)).toLowerCase() || 'and'
+  const type = gateType(o)
+  const offsets = inputOffsets(type, gateInputs(o))
   const w = (x: number, y: number): Pt => k.map([c[0] + x * s, c[1] + y * s])
   const pen = k.pen
   const bubble = type === 'nand' || type === 'nor' || type === 'not'
   const br = 0.08
+  // Taller bodies for more inputs.
+  const hh = Math.max(0.4, Math.abs(offsets[0] ?? 0) + 0.12)
   let tip = 0.45
   if (type === 'not') {
     pen.poly([w(-0.45, 0.35), w(-0.45, -0.35), w(0.3, 0)], true)
-    pen.line(w(-1, 0), w(-0.45, 0))
+    pen.line(w(-1, 0), w(-0.45, 0), false, true)
     tip = 0.3
   } else if (type === 'and' || type === 'nand') {
     const arc: Pt[] = []
     for (let j = 0; j <= 14; j++) {
       const th = Math.PI / 2 - (j / 14) * Math.PI
-      arc.push(w(-0.05 + Math.cos(th) * 0.4, Math.sin(th) * 0.4))
+      arc.push(w(-0.05 + Math.cos(th) * 0.4, Math.sin(th) * hh))
     }
-    pen.poly([w(-0.05, -0.4), w(-0.55, -0.4), w(-0.55, 0.4), w(-0.05, 0.4), ...arc])
-    for (const y of [0.25, -0.25]) pen.line(w(-1, y), w(-0.55, y))
+    pen.poly([w(-0.05, -hh), w(-0.55, -hh), w(-0.55, hh), w(-0.05, hh), ...arc])
+    for (const y of offsets) pen.line(w(-1, y), w(-0.55, y), false, true)
     tip = 0.35
   } else {
     // OR family: a curved back and two curves meeting at the tip.
-    const back = (dx: number) => quad(w(-0.55 + dx, 0.4), w(-0.35 + dx, 0), w(-0.55 + dx, -0.4))
+    const back = (dx: number) => quad(w(-0.55 + dx, hh), w(-0.35 + dx, 0), w(-0.55 + dx, -hh))
     pen.poly(back(0))
     pen.poly([
-      ...quad(w(-0.55, 0.4), w(0.15, 0.4), w(0.45, 0)),
-      ...quad(w(0.45, 0), w(0.15, -0.4), w(-0.55, -0.4)).slice(1),
+      ...quad(w(-0.55, hh), w(0.15, hh), w(0.45, 0)),
+      ...quad(w(0.45, 0), w(0.15, -hh), w(-0.55, -hh)).slice(1),
     ])
     if (type === 'xor') pen.poly(back(-0.12))
-    for (const y of [0.25, -0.25]) pen.line(w(-1, y), w(type === 'xor' ? -0.6 : -0.47, y))
+    for (const y of offsets) {
+      // The back curve is further right in the middle.
+      const back0 = -0.55 + 0.2 * (1 - (y / hh) ** 2) * 0.5 + 0.02
+      pen.line(w(-1, y), w(back0 - (type === 'xor' ? 0.12 : 0), y), false, true)
+    }
   }
   if (bubble) {
     const bc = w(tip + br, 0)
     pen.ellipse(bc, br * s * k.sx, br * s * k.sy)
     tip += br * 2
   }
-  pen.line(w(tip, 0), w(1, 0))
-  const name = text(o) || type.toUpperCase()
-  k.label(name, w(-0.1, -0.4), [0, 1], 3)
+  pen.line(w(tip, 0), w(1, 0), false, true)
+  const name = text(o) || (o.name === true ? type.toUpperCase() : '')
+  if (name) k.label(name, w(-0.1, -hh), [0, 1], 3)
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  circuitTerminals,
   compile,
   type DiagramItem,
   diagramItems,
@@ -8,6 +9,8 @@ import {
   type InkBlock,
   InkScriptParser,
   InkWriter,
+  junctionDots,
+  layoutLogic,
   layoutMath,
   layoutParagraph,
   opticsImages,
@@ -19,6 +22,7 @@ import {
   sizeFromLines,
   splitInline,
   splitRows,
+  wirePath,
 } from '../src'
 
 const FORMULAS = [
@@ -497,5 +501,80 @@ describe('physics diagrams', () => {
       expect(d.w).toBeLessThan(2000)
       expect(d.h).toBeLessThan(2000)
     }
+  })
+})
+
+describe('logic circuits', () => {
+  const fullAdder = {
+    kind: 'logic',
+    inputs: ['A', 'B', 'Cin'],
+    gates: [
+      { id: 'x1', type: 'xor', in: ['A', 'B'] },
+      { id: 'x2', type: 'xor', in: ['x1', 'Cin'] },
+      { id: 'n1', type: 'nand', in: ['A', 'B'] },
+      { id: 'n2', type: 'nand', in: ['x1', 'Cin'] },
+      { id: 'n3', type: 'nand', in: ['n1', 'n2'] },
+    ],
+    outputs: { Sum: 'x2', Cout: 'n3' },
+  }
+
+  it('lays gates out in columns with wires that never cross a gate', () => {
+    const l = layoutLogic(fullAdder as DiagramItem)
+    if (!l) throw new Error('expected a layout')
+    expect(l.gates).toHaveLength(5)
+    const xs = new Set(l.gates.map((g) => (g.at as number[])[0]))
+    expect(xs.size).toBe(3)
+    for (const [a, b] of l.segs) {
+      // Only straight across or straight up and down.
+      expect(Math.abs(a[0] - b[0]) < 1e-9 || Math.abs(a[1] - b[1]) < 1e-9).toBe(true)
+      for (const g of l.gates) {
+        const [gx, gy] = g.at as number[]
+        const x0 = Math.max(Math.min(a[0], b[0]), (gx as number) - 0.55)
+        const x1 = Math.min(Math.max(a[0], b[0]), (gx as number) + 0.45)
+        const y0 = Math.max(Math.min(a[1], b[1]), (gy as number) - 0.4)
+        const y1 = Math.min(Math.max(a[1], b[1]), (gy as number) + 0.4)
+        expect(x0 < x1 - 1e-6 && y0 <= y1 + 1e-6, `segment through gate at ${gx},${gy}`).toBe(false)
+      }
+    }
+    expect(l.labels.map((t) => t.text).sort()).toEqual(['A', 'B', 'Cin', 'Cout', 'Sum'])
+  })
+
+  it('puts dots on branches, not on crossings', () => {
+    expect(
+      junctionDots([
+        [
+          [0, 0],
+          [4, 0],
+        ],
+        [
+          [2, 0],
+          [2, -2],
+        ],
+        [
+          [1, 1],
+          [1, -1],
+        ],
+      ]),
+    ).toEqual([[2, 0]])
+  })
+
+  it('draws a logic item at a size that fits the page', () => {
+    const d = drawDiagram(
+      { items: diagramItems([fullAdder]) },
+      { size: 22, maxW: 500, rng: seeded(1) },
+    )
+    expect(d.w).toBeGreaterThan(350)
+    expect(d.w).toBeLessThanOrEqual(520)
+    expect(allFinite(d.paths)).toBe(true)
+  })
+
+  it('snaps wire ends to pins and turns slanted runs into corners', () => {
+    const items = diagramItems([{ kind: 'and', at: [0, 0] }])
+    const path = wirePath({ kind: 'wire', from: [-3, 1], to: [-1.1, 0.3] }, circuitTerminals(items))
+    expect(path).toEqual([
+      [-3, 1],
+      [-1, 1],
+      [-1, 0.25],
+    ])
   })
 })

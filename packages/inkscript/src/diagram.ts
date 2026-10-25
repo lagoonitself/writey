@@ -1,7 +1,15 @@
-import { CIRCUIT_KINDS, circuitExtent, drawCircuit } from './circuit'
+import {
+  CIRCUIT_KINDS,
+  circuitExtent,
+  circuitSegments,
+  circuitTerminals,
+  drawCircuit,
+  junctionDots,
+} from './circuit'
 import { compile } from './expr'
 import { drawField, FIELD_KINDS, fieldExtent } from './fields'
 import { type Box, layoutMath, type Path, type Rng } from './layout'
+import { drawLogic, LOGIC_KINDS, logicExtent } from './logic'
 import { drawOptics, OPTICS_KINDS, opticsExtent } from './optics'
 import {
   center,
@@ -90,6 +98,7 @@ const KINDS: Record<string, string> = {
   concave_mirror: 'mirror',
   convex_mirror: 'mirror',
   ...FIELD_KINDS,
+  ...LOGIC_KINDS,
 }
 
 const CIRCUIT = new Set(Object.values(CIRCUIT_KINDS))
@@ -251,6 +260,7 @@ function extent(o: DiagramItem, xr: [number, number] | null): Pt[] {
       if (CIRCUIT.has(o.kind)) return circuitExtent(o)
       if (OPTICS.has(o.kind)) return opticsExtent(o)
       if (FIELDS.has(o.kind)) return fieldExtent(o)
+      if (o.kind === 'logic') return logicExtent(o)
       return []
   }
 }
@@ -304,7 +314,11 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
   const world = fitWorld(spec)
   const xr = world.x[1] - world.x[0]
   const yr = world.y[1] - world.y[0]
-  const W = Math.min(opts.maxW, Math.max(size * 4, num(spec.w, Math.max(230, size * 11))))
+  // Circuits get a fixed scale (a gate is about two letters' height across), so a big
+  // circuit gets a big drawing instead of being squeezed into the default width.
+  const wired = spec.items.some((o) => CIRCUIT.has(o.kind) || o.kind === 'logic')
+  const natural = wired ? Math.max(230, xr * size * 1.25) : Math.max(230, size * 11)
+  const W = Math.min(opts.maxW, Math.max(size * 4, num(spec.w, natural)))
   // Same scale on both axes unless told otherwise, so circles stay round.
   // Ray diagrams stretch their heights, as textbooks do, so rays don't lie flat on the axis.
   const rays = spec.items.some(
@@ -346,7 +360,19 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
     return [(b[1] - a[1]) / len, -(b[0] - a[0]) / len]
   }
 
-  const sketch: Sketch = { pen, map, sx, sy, world, size, head: headSize, label, itemLabel }
+  const terminals = circuitTerminals(spec.items)
+  const sketch: Sketch = {
+    pen,
+    map,
+    sx,
+    sy,
+    world,
+    size,
+    head: headSize,
+    label,
+    itemLabel,
+    terminals,
+  }
 
   const yMin = world.y[0] - yr * 0.02
   const yMax = world.y[1] + yr * 0.02
@@ -644,6 +670,15 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
         if (CIRCUIT.has(o.kind)) drawCircuit(o, sketch)
         else if (OPTICS.has(o.kind)) drawOptics(o, sketch)
         else if (FIELDS.has(o.kind)) drawField(o, sketch)
+        else if (o.kind === 'logic') drawLogic(o, sketch)
+    }
+  }
+
+  if (wired) {
+    const placed = spec.items.filter((o) => o.kind === 'junction').map((o) => pt(o.at))
+    for (const p of junctionDots(circuitSegments(spec.items))) {
+      if (placed.some((q) => q && Math.hypot(q[0] - p[0], q[1] - p[1]) < 1e-3)) continue
+      pen.dot(map(p), Math.max(1.4, size * 0.09))
     }
   }
 

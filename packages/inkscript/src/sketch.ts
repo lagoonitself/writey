@@ -56,8 +56,11 @@ export class Pen {
     return (this.rng() - 0.5) * 2 * this.rough * n
   }
 
-  /** A straight stroke: bowed a little, ends a touch off, like a quick ruler-less line. */
-  line(a: Pt, b: Pt, dashed = false): void {
+  /**
+   * A straight stroke: bowed a little, ends a touch off, like a quick ruler-less line.
+   * `steady` lines (circuit wires) bow less and land where they should.
+   */
+  line(a: Pt, b: Pt, dashed = false, steady = false): void {
     const len = Math.hypot(b[0] - a[0], b[1] - a[1])
     if (len < 0.3) return
     if (dashed) {
@@ -65,15 +68,16 @@ export class Pen {
       for (let k = 0; k < n; k++) {
         const t0 = k / n
         const t1 = (k + 0.55) / n
-        this.line(lerp(a, b, t0), lerp(a, b, t1))
+        this.line(lerp(a, b, t0), lerp(a, b, t1), false, steady)
       }
       return
     }
     const ux = (b[0] - a[0]) / len
     const uy = (b[1] - a[1]) / len
-    const bow = (this.rng() - 0.5) * Math.min(0.025 * len, 3.5)
-    const a2: Pt = [a[0] + this.j(0.5), a[1] + this.j(0.5)]
-    const b2: Pt = [b[0] + this.j(0.5), b[1] + this.j(0.5)]
+    const bow = (this.rng() - 0.5) * Math.min(0.025 * len, 3.5) * (steady ? 0.3 : 1)
+    const end = steady ? 0.15 : 0.5
+    const a2: Pt = [a[0] + this.j(end), a[1] + this.j(end)]
+    const b2: Pt = [b[0] + this.j(end), b[1] + this.j(end)]
     const n = Math.max(2, Math.ceil(len / 3))
     const out: number[] = []
     for (let k = 0; k <= n; k++) {
@@ -187,6 +191,8 @@ export type Sketch = {
   size: number
   head: number
   label(s: string, at: Pt, dir?: Pt, gap?: number, latex?: boolean): void
+  /** Where wires may end (gate and transistor pins); wire ends close to one snap onto it. */
+  terminals?: readonly Pt[]
   itemLabel(o: DiagramItem, at: Pt, dir: Pt, gap?: number): void
 }
 
