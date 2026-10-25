@@ -77,7 +77,7 @@ The owner wants **both** outputs (chat and handwriting). Writey picks one from w
 
 ## 5. Current state (2026-10-25)
 
-- **Live:** https://writey.anilreddy2569900.workers.dev
+- **Live:** https://writey.writey.workers.dev
 - **Supabase project:** `writey` (ref `ksnpzfgcxjallzucvuhr`). Google OAuth is on. Migrations in `supabase/migrations` are applied.
 - **Shipped**
   - Phase 0: monorepo, CI, auth shell, Worker API, schema.
@@ -106,6 +106,7 @@ The owner gave the go on 2026-10-25.
 
 ## 8. Gotchas
 
+- The URL is `<worker>.<account subdomain>.workers.dev`. The account subdomain was `anilreddy2569900` until 2026-10-25, when it became `writey` (API: delete, then create; there's no rename). Changing it again breaks the Helper's allowed origins (`apps/helper/writey_helper/config.py`) and Supabase's Site URL / redirect list. Cloudflare Workers Builds deploys every push to `main` (deploy command `cd apps/worker && npx wrangler deploy`, Supabase `VITE_*` values set as build variables).
 - Free Supabase org allows only 2 active projects. The `roleplay` project was **paused** to make room. Don't unpause it without freeing a slot.
 - Use `pnpm run deploy`, not `pnpm deploy` (that's a pnpm built-in). See AGENTS.md for the non-interactive deploy recipe.
 - Worker free plan: ~10 ms CPU per request. Stream AI bodies through unparsed; never parse big bodies in the Worker.

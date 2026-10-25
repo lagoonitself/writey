@@ -67,7 +67,7 @@ Wrangler's own login has expired and can't refresh non-interactively. Instead:
 - Set `CLOUDFLARE_API_TOKEN` to the `oauth_token` from the cf CLI config (`%APPDATA%\xdg.config\cloudflare\config\default.json`).
 - Set `CLOUDFLARE_ACCOUNT_ID` to the owner's account ID (in the same config or `cf whoami`).
 - Run `pnpm run deploy`. The web build reads `apps/web/.env.local` (gitignored; Supabase URL + publishable key).
-- Live URL: https://writey.anilreddy2569900.workers.dev
+- Live URL: https://writey.writey.workers.dev
 
 ## Infra facts
 

@@ -27,11 +27,11 @@ From a Writey checkout: `uv run --directory apps/helper writey-helper`.
 Then **Continue with ChatGPT** sends the tab to OpenAI, you pick your account, and OpenAI sends
 you back to the Writey page you were on. No codes, nothing to paste.
 
-| Variable             | Default                                                             |
-| -------------------- | ------------------------------------------------------------------- |
-| `WRITEY_HELPER_PORT` | `47823`                                                             |
-| `WRITEY_ORIGINS`     | `https://writey.anilreddy2569900.workers.dev,http://localhost:5173` |
-| `WRITEY_HELPER_HOME` | Your OS's per-user app data folder                                  |
+| Variable             | Default                                                   |
+| -------------------- | --------------------------------------------------------- |
+| `WRITEY_HELPER_PORT` | `47823`                                                   |
+| `WRITEY_ORIGINS`     | `https://writey.writey.workers.dev,http://localhost:5173` |
+| `WRITEY_HELPER_HOME` | Your OS's per-user app data folder                        |
 
 ## How sign-in works
 

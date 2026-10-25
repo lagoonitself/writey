@@ -6,7 +6,7 @@ HOST = "127.0.0.1"
 PORT = int(os.environ.get("WRITEY_HELPER_PORT", "47823"))
 
 # Only these sites may talk to the Helper (docs/ARCHITECTURE.md §7.3).
-DEFAULT_ORIGINS = "https://writey.anilreddy2569900.workers.dev,http://localhost:5173"
+DEFAULT_ORIGINS = "https://writey.writey.workers.dev,http://localhost:5173"
 ORIGINS = frozenset(
     o.strip().rstrip("/")
     for o in os.environ.get("WRITEY_ORIGINS", DEFAULT_ORIGINS).split(",")
