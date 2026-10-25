@@ -39,6 +39,12 @@ export async function pdfPageSizes(
   }
 }
 
+// pdf.js multiplies the context's current transform by the viewport's, so a context already
+// scaled to points would draw the page scaled twice (too big, cut off on the right and bottom).
+function unscaled(canvas: HTMLCanvasElement): void {
+  canvas.getContext('2d')?.setTransform(1, 0, 0, 1, 0, 0)
+}
+
 const docs = new Map<string, Promise<PDFDocumentProxy>>()
 
 function pdfForAsset(assetId: string): Promise<PDFDocumentProxy> {
@@ -67,6 +73,7 @@ export function renderPdfPage(
     const doc = await pdfForAsset(assetId)
     const page = await doc.getPage(pageNumber)
     if (cancelled) return
+    unscaled(canvas)
     task = page.render({ canvas, viewport: page.getViewport({ scale: pxPerPt }) })
     await task.promise
   })().catch((e: unknown) => {
@@ -96,6 +103,7 @@ export async function drawPdfRegion(
     offsetX: -x * pxPerPt,
     offsetY: -y * pxPerPt,
   })
+  unscaled(canvas)
   await page.render({ canvas, viewport }).promise
 }
 

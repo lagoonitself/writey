@@ -1,6 +1,7 @@
-import { CHATGPT_USAGE_URL, inkMode, PROVIDER_LABEL, type Usage } from '@writey/ai-core'
+import { CHATGPT_USAGE_URL, PROVIDER_LABEL, type Usage } from '@writey/ai-core'
 import type { PageRow } from '@writey/shared'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { askWritey, HelpFailure } from '../help/engine'
 import {
   appendMessages,
@@ -12,17 +13,13 @@ import {
   type ThreadInfo,
   turnsOf,
 } from '../lib/ai'
-import {
-  CloseIcon,
-  HistoryIcon,
-  NewChatIcon,
-  SendIcon,
-  StopIcon,
-  TrashIcon,
-} from '../notebook/icons'
+import { CloseIcon, HistoryIcon, NewChatIcon, TrashIcon } from '../notebook/icons'
 import type { PageHandle } from '../notebook/tools'
 import { type AiState, usable } from '../settings/useAiState'
 import { speakable } from '../voice/speech'
+import type { Voice } from '../voice/useVoice'
+import { VoiceGuide } from '../voice/VoiceGuide'
+import { AskBar } from './AskBar'
 import { renderMarkdown } from './markdown'
 
 type Props = {
@@ -37,15 +34,17 @@ type Props = {
   /** Changes whenever the input should take focus (Ctrl+K). */
   focusKey: number
   onSettings(): void
-  onClose(): void
+  onVoiceSettings(): void
+  /** The conversation shows beside the page; the ask bar is always there. */
+  open: boolean
+  onOpen(open: boolean): void
+  /** Where the ask bar floats (under the pages). */
+  slot: HTMLElement | null
   /** A question from outside the text box (voice). Sent once per id. */
   ask: { id: number; text: string } | null
   /** Lets the notebook stop an answer or check whether one is running (voice commands). */
   control: { current: ChatControl | null }
-  /** The spoken transcript to send along with a question. */
-  transcript(): string
-  /** Something worth saying out loud (only used when spoken replies are on). */
-  onSay(text: string): void
+  voice: Voice
 }
 
 export type ChatControl = { stop(): void; busy(): boolean }
@@ -59,8 +58,6 @@ type Shown = StoredMessage & {
   link?: { label: string; url: string }
 }
 type Live = { status: string; seen: string | null; text: string; thinking: boolean }
-
-const EXAMPLES = ["What's next?", 'Is this right?', 'Explain the last step', 'Give me a hint']
 
 const MODE_LABEL: Record<string, string> = {
   explain: 'Explained',
@@ -87,6 +84,7 @@ export default function ChatPanel(p: Props) {
   const [live, setLive] = useState<Live | null>(null)
   const [input, setInput] = useState('')
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   const abort = useRef<AbortController | null>(null)
   const logRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -136,8 +134,10 @@ export default function ChatPanel(p: Props) {
     }
   }, [threadId])
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: focus on every Ctrl+K
-  useEffect(() => inputRef.current?.focus(), [p.focusKey])
+  // Focus on every Ctrl+K (not on mount, so tool shortcuts keep working).
+  useEffect(() => {
+    if (p.focusKey) inputRef.current?.focus()
+  }, [p.focusKey])
 
   useEffect(() => () => abort.current?.abort(), [])
 
@@ -149,7 +149,7 @@ export default function ChatPanel(p: Props) {
   }, [messages, live])
 
   const send = useCallback(
-    async (text: string, on: PageRow | null = page) => {
+    async (text: string, on: PageRow | null = page, typed = false) => {
       const utterance = text.trim()
       if (!utterance || busy || !on) return
       const handle = p.handle(on.id)
@@ -158,12 +158,16 @@ export default function ChatPanel(p: Props) {
       for (const h of lastGhosts.current) h.ghostDiscard()
       const ghosts = new Map<string, PageHandle>()
       lastGhosts.current = []
+      setNotice(null)
+      // Typed questions show the conversation; spoken ones only when there's something to read.
+      if (typed) p.onOpen(true)
       const user: Shown = { id: tmp(), role: 'user', text: utterance }
       const turns = turnsOf(messages)
       setInput('')
       setHistoryOpen(false)
       pinned.current = true
       setMessages((m) => [...m, user])
+      let mode: string | undefined
       let state: Live = { status: 'Looking at your work…', seen: null, text: '', thinking: false }
       setLive(state)
       const controller = new AbortController()
@@ -210,10 +214,11 @@ export default function ChatPanel(p: Props) {
         const result = await askWritey({
           utterance,
           page: on,
-          snapshot: { ...handle.snapshot(), transcript: p.transcript() || undefined },
+          snapshot: { ...handle.snapshot(), transcript: p.voice.transcript() || undefined },
           settings: ai.settings,
           turns,
           signal: controller.signal,
+          spoken: p.voice.speaks(),
           nextPage: (after) => p.addPageAfter(after.id),
           pageNumber: (pg) => p.pageNumber(pg.id),
           onUpdate(u) {
@@ -221,8 +226,13 @@ export default function ChatPanel(p: Props) {
             else if (u.type === 'seen') state = { ...state, seen: u.image }
             else if (u.type === 'thinking') state = { ...state, thinking: true }
             else if (u.type === 'text') state = { ...state, text: state.text + u.text }
-            else if (u.type === 'plan') {
-              if (u.plan.status_line) p.onSay(u.plan.status_line)
+            else if (u.type === 'say') {
+              p.voice.say(u.text)
+              return
+            } else if (u.type === 'plan') {
+              mode = u.plan.mode
+              if (mode !== 'write') p.onOpen(true)
+              if (u.plan.status_line) p.voice.say(u.plan.status_line)
               return
             } else if (u.type === 'inkStart') {
               const h = p.handle(u.page.id)
@@ -258,7 +268,12 @@ export default function ChatPanel(p: Props) {
             ink: [...ghosts.values()].some((h) => h.hasGhost()) ? 'pending' : undefined,
           },
         ])
-        if (!inkMode(result.plan.mode)) p.onSay(speakable(result.text))
+        // A model that skipped the spoken part: read the start of the chat answer instead.
+        if (!result.said)
+          p.voice.say(speakable(result.text.replace(/<details[\s\S]*?<\/details>/g, '')))
+        p.voice.answered()
+        if (mode === 'write' && ghosts.size)
+          setNotice(`Written on page ${p.pageNumber(on.id)} · read the explanation`)
         save(reply).catch((e) => console.error('save failed', e))
       } catch (e) {
         const seenOn = (m: Shown[]) =>
@@ -301,8 +316,8 @@ export default function ChatPanel(p: Props) {
       messages,
       ai.settings,
       p.handle,
-      p.transcript,
-      p.onSay,
+      p.voice,
+      p.onOpen,
       p.addPageAfter,
       p.pageNumber,
     ],
@@ -360,196 +375,173 @@ export default function ChatPanel(p: Props) {
 
   const hasKey = usable(ai, ai.settings.provider)
   const modelName = ai.settings.model.split('/').pop() ?? ai.settings.model
+  const ask = (text: string) => void send(text, page, true)
+
+  const bar = (
+    <AskBar
+      voice={p.voice}
+      input={input}
+      onInput={setInput}
+      onSend={ask}
+      onStop={() => abort.current?.abort()}
+      inputRef={inputRef}
+      busy={busy}
+      status={live ? (live.thinking && !live.text ? 'Thinking…' : live.status) : null}
+      canAsk={!!page}
+      conversationOpen={p.open}
+      hasConversation={messages.length > 0 || threads.length > 0}
+      onConversation={p.onOpen}
+      notice={notice}
+      onNotice={() => {
+        setNotice(null)
+        p.onOpen(true)
+      }}
+      chatgpt={ai.settings.provider === 'chatgpt'}
+      onSettings={p.onVoiceSettings}
+    />
+  )
 
   return (
-    <aside className="chat" aria-label="Ask Writey">
-      <header className="chat-header">
-        <span className="chat-title">
-          Writey
-          {page && <small>Page {p.pageNumber(page.id)}</small>}
-        </span>
-        <button
-          type="button"
-          className="chat-model"
-          onClick={p.onSettings}
-          title={`${PROVIDER_LABEL[ai.settings.provider]} · ${ai.settings.model}`}
-        >
-          <span>{modelName || PROVIDER_LABEL[ai.settings.provider]}</span>
-        </button>
-        <button
-          type="button"
-          className="ghost chat-icon"
-          onClick={startNew}
-          disabled={busy || (!threadId && !messages.length)}
-          title="New conversation"
-          aria-label="New conversation"
-        >
-          <NewChatIcon size={16} />
-        </button>
-        <button
-          type="button"
-          className={`ghost chat-icon${historyOpen ? ' on' : ''}`}
-          onClick={() => setHistoryOpen((o) => !o)}
-          disabled={busy || !threads.length}
-          title="Earlier conversations"
-          aria-label="Earlier conversations"
-          aria-expanded={historyOpen}
-        >
-          <HistoryIcon size={16} />
-        </button>
-        <button
-          type="button"
-          className="ghost chat-icon"
-          onClick={remove}
-          disabled={busy || !threadId}
-          title="Delete this conversation"
-          aria-label="Delete conversation"
-        >
-          <TrashIcon size={16} />
-        </button>
-        <button
-          type="button"
-          className="ghost chat-icon"
-          onClick={p.onClose}
-          title="Close (Ctrl+K)"
-          aria-label="Close chat"
-        >
-          <CloseIcon size={16} />
-        </button>
-        {historyOpen && (
-          <div className="chat-history" role="menu">
-            <p className="chat-history-label">Conversations in this notebook</p>
-            {threads.map((t) => (
+    <>
+      {p.slot && createPortal(bar, p.slot)}
+      {p.open && (
+        <aside className="margin" aria-label="Conversation with Writey">
+          <header className="margin-head">
+            <span className="margin-title">
+              Writey
+              {page && <small>on page {p.pageNumber(page.id)}</small>}
+            </span>
+            <button
+              type="button"
+              className="margin-model"
+              onClick={p.onSettings}
+              title={`${PROVIDER_LABEL[ai.settings.provider]} · ${ai.settings.model} (change in Settings)`}
+            >
+              {modelName || PROVIDER_LABEL[ai.settings.provider]}
+            </button>
+            <span className="margin-actions">
               <button
                 type="button"
-                role="menuitem"
-                key={t.id}
-                className={t.id === threadId ? 'on' : ''}
-                onClick={() => open(t.id)}
+                className="ghost chat-icon"
+                onClick={startNew}
+                disabled={busy || (!threadId && !messages.length)}
+                title="New conversation"
+                aria-label="New conversation"
               >
-                <span>{t.title || 'Conversation'}</span>
-                <small>{when(t.updated_at)}</small>
+                <NewChatIcon size={16} />
               </button>
-            ))}
-          </div>
-        )}
-      </header>
-
-      <div
-        className="chat-log"
-        ref={logRef}
-        onScroll={(e) => {
-          const el = e.currentTarget
-          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-        }}
-      >
-        {!loading && !messages.length && !live && (
-          <div className="chat-empty">
-            {hasKey ? (
-              <>
-                <p className="chat-empty-title">Ask about your work.</p>
-                <p className="muted">
-                  Writey looks at what you wrote last, or at whatever you lasso.
-                </p>
-                <div className="chat-examples">
-                  {EXAMPLES.map((ex) => (
-                    <button type="button" key={ex} onClick={() => send(ex)} disabled={!page}>
-                      {ex}
-                    </button>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="chat-empty-title">Connect your AI first.</p>
-                <p className="muted">
-                  Writey thinks with your own account. Continue with ChatGPT, or connect OpenRouter.
-                  It takes a minute.
-                </p>
-                <button type="button" className="primary" onClick={p.onSettings}>
-                  Connect an account
-                </button>
-              </>
+              <button
+                type="button"
+                className={`ghost chat-icon${historyOpen ? ' on' : ''}`}
+                onClick={() => setHistoryOpen((o) => !o)}
+                disabled={busy || !threads.length}
+                title="Earlier conversations"
+                aria-label="Earlier conversations"
+                aria-expanded={historyOpen}
+              >
+                <HistoryIcon size={16} />
+              </button>
+              <button
+                type="button"
+                className="ghost chat-icon"
+                onClick={remove}
+                disabled={busy || !threadId}
+                title="Delete this conversation"
+                aria-label="Delete conversation"
+              >
+                <TrashIcon size={16} />
+              </button>
+              <button
+                type="button"
+                className="ghost chat-icon"
+                onClick={() => p.onOpen(false)}
+                title="Hide (Esc)"
+                aria-label="Hide the conversation"
+              >
+                <CloseIcon size={16} />
+              </button>
+            </span>
+            {historyOpen && (
+              <div className="chat-history" role="menu">
+                <p className="chat-history-label">Conversations in this notebook</p>
+                {threads.map((t) => (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    key={t.id}
+                    className={t.id === threadId ? 'on' : ''}
+                    onClick={() => open(t.id)}
+                  >
+                    <span>{t.title || 'Conversation'}</span>
+                    <small>{when(t.updated_at)}</small>
+                  </button>
+                ))}
+              </div>
             )}
-          </div>
-        )}
-        {loading && <p className="muted chat-loading">Loading conversation…</p>}
-        {messages.map((m, i) => (
-          <Message
-            key={m.id}
-            m={m}
-            onSettings={p.onSettings}
-            onWrite={
-              i === messages.length - 1 &&
-              !busy &&
-              m.role === 'assistant' &&
-              !m.error &&
-              m.mode === 'explain'
-                ? () => void send('Write this on the page')
-                : undefined
-            }
-          />
-        ))}
-        {live && <LiveMessage live={live} />}
-      </div>
+          </header>
 
-      <form
-        className="chat-input"
-        onSubmit={(e) => {
-          e.preventDefault()
-          void send(input)
-        }}
-      >
-        <textarea
-          ref={inputRef}
-          value={input}
-          rows={1}
-          placeholder={page ? 'Ask Writey…' : 'Open a page to ask Writey'}
-          disabled={!page}
-          onChange={(e) => {
-            setInput(e.target.value)
-            e.target.style.height = '0px'
-            e.target.style.height = `${Math.min(160, e.target.scrollHeight)}px`
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault()
-              void send(input)
-            } else if (e.key === 'Escape' && !input) p.onClose()
-          }}
-          aria-label="Message Writey"
-        />
-        {busy ? (
-          <button
-            type="button"
-            className="chat-send stop"
-            onClick={() => abort.current?.abort()}
-            title="Stop"
-            aria-label="Stop"
+          <div
+            className="margin-log"
+            ref={logRef}
+            onScroll={(e) => {
+              const el = e.currentTarget
+              pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+            }}
           >
-            <StopIcon size={18} />
-          </button>
-        ) : (
-          <button
-            type="submit"
-            className="chat-send"
-            disabled={!input.trim() || !page}
-            title="Send (Enter)"
-            aria-label="Send"
-          >
-            <SendIcon size={18} />
-          </button>
-        )}
-      </form>
-      {ai.settings.provider === 'chatgpt' && (
-        <p className="chat-plan">
-          Using ChatGPT plan ·{' '}
-          <a href={CHATGPT_USAGE_URL} target="_blank" rel="noopener noreferrer">
-            Manage usage
-          </a>
-        </p>
+            {!loading && !messages.length && !live && (
+              <div className="chat-empty">
+                {hasKey ? (
+                  <>
+                    <p className="chat-empty-title">Ask about your work.</p>
+                    <p className="muted">
+                      Writey reads what you wrote last, or whatever you lasso. Try one of these:
+                    </p>
+                    <VoiceGuide compact onTry={ask} />
+                  </>
+                ) : (
+                  <>
+                    <p className="chat-empty-title">Connect your AI first.</p>
+                    <p className="muted">
+                      Writey thinks with your own account. Continue with ChatGPT, or connect
+                      OpenRouter. It takes a minute.
+                    </p>
+                    <button type="button" className="primary" onClick={p.onSettings}>
+                      Connect an account
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+            {loading && <p className="muted chat-loading">Loading conversation…</p>}
+            {messages.map((m, i) => (
+              <Message
+                key={m.id}
+                m={m}
+                onSettings={p.onSettings}
+                onWrite={
+                  i === messages.length - 1 &&
+                  !busy &&
+                  m.role === 'assistant' &&
+                  !m.error &&
+                  m.mode === 'explain'
+                    ? () => void send('Write this on the page')
+                    : undefined
+                }
+              />
+            ))}
+            {live && <LiveMessage live={live} />}
+          </div>
+          {ai.settings.provider === 'chatgpt' && (
+            <p className="chat-plan">
+              Using ChatGPT plan ·{' '}
+              <a href={CHATGPT_USAGE_URL} target="_blank" rel="noopener noreferrer">
+                Manage usage
+              </a>
+            </p>
+          )}
+        </aside>
       )}
-    </aside>
+    </>
   )
 }
 

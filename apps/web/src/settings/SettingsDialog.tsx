@@ -17,7 +17,20 @@ import { ProviderMark } from './ProviderMark'
 import { type AiState, chatgptReturn, usable } from './useAiState'
 import { VoiceSection } from './VoiceSection'
 
-type Props = { ai: AiState; onChange(next: AiState): void; onClose(): void }
+export type SettingsTab = 'ai' | 'voice' | 'privacy'
+
+type Props = {
+  ai: AiState
+  onChange(next: AiState): void
+  onClose(): void
+  tab?: SettingsTab
+}
+
+const TABS: { id: SettingsTab; label: string; sub: string }[] = [
+  { id: 'ai', label: 'AI', sub: 'Account and model' },
+  { id: 'voice', label: 'Voice', sub: 'Talk to Writey' },
+  { id: 'privacy', label: 'Privacy', sub: 'Keys and audio' },
+]
 
 /** ChatGPT first: it needs no key, just the plan you already pay for. */
 const ORDER: AiProvider[] = ['chatgpt', 'openrouter', 'opencode-zen']
@@ -37,8 +50,9 @@ const DEFAULT_MODEL: Record<AiProvider, string> = {
 const shortDate = (iso: string) =>
   new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 
-export function SettingsDialog({ ai, onChange, onClose }: Props) {
+export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: Props) {
   const ref = useRef<HTMLDialogElement>(null)
+  const [tab, setTab] = useState<SettingsTab>(chatgptReturn ? 'ai' : firstTab)
   const [open, setOpen] = useState<AiProvider | null>(() =>
     chatgptReturn ? 'chatgpt' : usable(ai, ai.settings.provider) ? null : 'chatgpt',
   )
@@ -76,60 +90,97 @@ export function SettingsDialog({ ai, onChange, onClose }: Props) {
       onClick={(e) => e.target === ref.current && ref.current?.close()}
       aria-labelledby="settings-title"
     >
-      <header className="settings-header">
+      <nav className="settings-nav" aria-label="Settings sections">
         <h2 id="settings-title">Settings</h2>
+        {TABS.map((t) => (
+          <button
+            type="button"
+            key={t.id}
+            className={tab === t.id ? 'on' : ''}
+            onClick={() => setTab(t.id)}
+            aria-current={tab === t.id ? 'page' : undefined}
+          >
+            <span>{t.label}</span>
+            <small>{t.sub}</small>
+          </button>
+        ))}
+      </nav>
+
+      <div className="settings-main">
         <button
           type="button"
-          className="ghost icon-btn"
+          className="ghost icon-btn settings-close"
           onClick={() => ref.current?.close()}
           aria-label="Close settings"
         >
           <CloseIcon size={18} />
         </button>
-      </header>
-
-      <div className="settings-body">
-        <section className="settings-section">
-          <div className="section-head">
-            <h3>AI account</h3>
-          </div>
-          <p className="section-sub">
-            Writey thinks with your own account, so there’s no Writey bill. Connect one.
-          </p>
-          <div className="providers">
-            {ORDER.map((p) => (
-              <ProviderRow
-                key={p}
-                provider={p}
-                ai={ai}
-                open={open === p}
-                onToggle={() => setOpen(open === p ? null : p)}
-              >
-                {p === 'chatgpt' ? (
-                  <>
-                    <ChatgptPanel ai={ai} onChange={onChange} />
-                    {usable(ai, p) && ai.settings.provider !== p && (
-                      <button type="button" className="primary" onClick={() => use(p)}>
-                        Use ChatGPT for Writey
-                      </button>
-                    )}
-                  </>
-                ) : (
-                  <KeyPanel provider={p} ai={ai} onChange={onChange} onUse={use} />
-                )}
-              </ProviderRow>
-            ))}
-          </div>
-        </section>
-
-        <ModelSection ai={ai} choose={choose} saved={saved} />
-
-        <VoiceSection />
-
-        <p className="settings-foot">
-          API keys are encrypted on Writey’s server and only ever sent to that provider. Your
-          ChatGPT sign-in never leaves this computer.
-        </p>
+        <div className="settings-body" key={tab}>
+          {tab === 'ai' && (
+            <>
+              <NowUsing ai={ai} onConnect={() => setOpen('chatgpt')} />
+              <section className="settings-section">
+                <div className="section-head">
+                  <h3>Accounts</h3>
+                </div>
+                <p className="section-sub">
+                  Writey thinks with your own account, so there’s no Writey bill. ChatGPT needs no
+                  key; OpenRouter and OpenCode Zen use one.
+                </p>
+                <div className="providers">
+                  {ORDER.map((p) => (
+                    <ProviderRow
+                      key={p}
+                      provider={p}
+                      ai={ai}
+                      open={open === p}
+                      onToggle={() => setOpen(open === p ? null : p)}
+                    >
+                      {p === 'chatgpt' ? (
+                        <>
+                          <ChatgptPanel ai={ai} onChange={onChange} />
+                          {usable(ai, p) && ai.settings.provider !== p && (
+                            <button type="button" className="primary" onClick={() => use(p)}>
+                              Use ChatGPT for Writey
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <KeyPanel provider={p} ai={ai} onChange={onChange} onUse={use} />
+                      )}
+                    </ProviderRow>
+                  ))}
+                </div>
+              </section>
+              <ModelSection ai={ai} choose={choose} saved={saved} />
+            </>
+          )}
+          {tab === 'voice' && <VoiceSection />}
+          {tab === 'privacy' && (
+            <section className="settings-section">
+              <h3 className="settings-title">Privacy</h3>
+              <ul className="privacy-list">
+                <li>
+                  <strong>API keys</strong> are encrypted on Writey’s server and only ever sent to
+                  that provider. You can remove them any time under AI.
+                </li>
+                <li>
+                  <strong>Your ChatGPT sign-in</strong> never leaves this computer: Writey Helper
+                  keeps it.
+                </li>
+                <li>
+                  <strong>Your voice</strong> is turned into text on this computer. No audio is
+                  uploaded or stored.
+                </li>
+                <li>
+                  <strong>What Writey sees</strong> is an image of the part of the page you’re
+                  working on, sent to the AI you chose when you ask. Every answer has a “What Writey
+                  saw” link.
+                </li>
+              </ul>
+            </section>
+          )}
+        </div>
       </div>
 
       {ai.chatgpt?.welcome && (
@@ -141,6 +192,29 @@ export function SettingsDialog({ ai, onChange, onClose }: Props) {
         />
       )}
     </dialog>
+  )
+}
+
+/** What Writey thinks with right now, at a glance. */
+function NowUsing({ ai, onConnect }: { ai: AiState; onConnect(): void }) {
+  const { provider, model } = ai.settings
+  const ready = usable(ai, provider)
+  return (
+    <div className={`now-using${ready ? ' ready' : ''}`}>
+      <ProviderMark provider={provider} />
+      <span className="now-using-text">
+        <small>Writey thinks with</small>
+        <strong>{model ? model.split('/').pop() : PROVIDER_LABEL[provider]}</strong>
+        <span>via {PROVIDER_LABEL[provider]}</span>
+      </span>
+      {ready ? (
+        <span className="pill ok">Ready</span>
+      ) : (
+        <button type="button" className="primary" onClick={onConnect}>
+          Connect an account
+        </button>
+      )}
+    </div>
   )
 }
 

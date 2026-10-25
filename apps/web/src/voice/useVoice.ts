@@ -3,8 +3,8 @@ import { VoiceClient, type VoicePrefs, type VoiceState } from './client'
 import type { VoiceCommand } from './trigger'
 
 const PREFS_KEY = 'writey.voice'
-/** Spoken replies are off by default (HANDOFF D9). */
-const DEFAULT_PREFS: VoicePrefs = { replies: false, voice: 'af_heart' }
+/** Writey talks back by default (HANDOFF D9, changed 2026-10-25). */
+const DEFAULT_PREFS: VoicePrefs = { replies: true, voice: 'af_heart' }
 /** Hold this key (or a pen button mapped to it) to talk without saying "Writey". */
 export const PTT_CODE = 'Backquote'
 export const PTT_LABEL = '`'
@@ -32,6 +32,12 @@ export type Voice = {
   heard: string | null
   /** A sound-alike of "Writey" waiting for "yes, ask that". */
   confirm: string | null
+  /** Writey just answered and is waiting for your reply (no "Writey" needed). */
+  replying: boolean
+  /** Writey is listening and talks back. */
+  speaks(): boolean
+  /** An answer finished. */
+  answered(): void
   toggle(): void
   start(): void
   ask(text: string): void
@@ -52,6 +58,7 @@ export function useVoice(handlers: {
   const [speaking, setSpeaking] = useState(false)
   const [heard, setHeard] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<string | null>(null)
+  const [replying, setReplying] = useState(false)
   const latest = useRef(handlers)
   latest.current = handlers
   const prefs = useRef(loadVoicePrefs())
@@ -82,6 +89,7 @@ export function useVoice(handlers: {
         },
         confirm: setConfirm,
         command: (c) => latest.current.command(c),
+        followUp: setReplying,
       },
       () => prefs.current,
     )
@@ -117,6 +125,9 @@ export function useVoice(handlers: {
     speaking,
     heard,
     confirm,
+    replying,
+    speaks: useCallback(() => c.speaks, [c]),
+    answered: useCallback(() => c.answered(), [c]),
     toggle: useCallback(() => {
       if (c.on) c.stop()
       else void c.start()

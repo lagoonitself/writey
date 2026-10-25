@@ -36,6 +36,8 @@ export type VoiceEvents = {
   /** It sounded like "Writey" but not clearly: ask before acting. */
   confirm(text: string): void
   command(c: VoiceCommand): void
+  /** Writey just answered: the next sentence is a reply, no "Writey" needed. */
+  followUp(open: boolean): void
 }
 
 const TRANSCRIPT_MS = 30_000
@@ -43,6 +45,8 @@ const TRANSCRIPT_MS = 30_000
 const SILENCE_PAUSE_MS = 10 * 60_000
 /** After a bare "Writey", the next sentence within this window is the request. */
 const ARMED_MS = 8_000
+/** After Writey answers, how long it waits for a reply that doesn't start with "Writey". */
+const FOLLOW_UP_MS = 10_000
 const SAMPLE_RATE = 16_000
 
 type Line = { who: 'you' | 'writey'; text: string; at: number }
@@ -56,6 +60,11 @@ export class VoiceClient {
   private speechActive = false
   private silenceTimer = 0
   private stopped = true
+  /** Speech that began while Writey was talking: an interruption meant for it. */
+  private bargedIn = false
+  private followUntil = 0
+  private followTimer = 0
+  private followAfterSpeech = false
   private readonly speaker: Speaker
 
   constructor(
@@ -65,11 +74,43 @@ export class VoiceClient {
     this.speaker = new Speaker(
       () => this.prefs().voice,
       (on) => this.ev.speaking(on),
+      () => {
+        if (!this.followAfterSpeech) return
+        this.followAfterSpeech = false
+        this.followUp()
+      },
     )
+  }
+
+  /** An answer finished: listen for a reply once Writey stops talking. */
+  answered(): void {
+    if (this.speaker.busy) this.followAfterSpeech = true
+    else this.followUp()
   }
 
   get on(): boolean {
     return !this.stopped
+  }
+
+  /** Writey is listening and will talk back. */
+  get speaks(): boolean {
+    return this.on && this.prefs().replies
+  }
+
+  /** Opens the reply window: the next sentence goes to Writey without its name. */
+  private followUp(): void {
+    if (!this.on || this.speaker.busy) return
+    this.followUntil = Date.now() + FOLLOW_UP_MS
+    this.ev.followUp(true)
+    window.clearTimeout(this.followTimer)
+    this.followTimer = window.setTimeout(() => this.closeFollowUp(), FOLLOW_UP_MS)
+  }
+
+  private closeFollowUp(): void {
+    window.clearTimeout(this.followTimer)
+    if (!this.followUntil) return
+    this.followUntil = 0
+    this.ev.followUp(false)
   }
 
   async start(): Promise<void> {
@@ -159,13 +200,21 @@ export class VoiceClient {
       onSpeechStart: () => {
         this.speechActive = true
         if (this.ptt) this.skipSegment = true
-        // Barge-in: talking over Writey stops it.
+        // Barge-in: talking over Writey stops it, and what you say is for Writey.
+        if (this.speaker.busy) this.bargedIn = true
         this.speaker.stop()
+        // Still inside the reply window: hold it open while you finish the sentence.
+        if (this.followUntil) {
+          this.followUntil = Math.max(this.followUntil, Date.now() + FOLLOW_UP_MS)
+          window.clearTimeout(this.followTimer)
+        }
         this.resetSilence()
         if (!this.ptt) this.ev.state({ kind: 'hearing' })
       },
       onVADMisfire: () => {
         this.speechActive = false
+        this.bargedIn = false
+        if (this.followUntil) this.followUp()
         if (!this.ptt) this.ev.state({ kind: 'listening' })
       },
       onSpeechEnd: (audio) => {
@@ -185,6 +234,8 @@ export class VoiceClient {
   stop(): void {
     this.stopped = true
     window.clearTimeout(this.silenceTimer)
+    this.followAfterSpeech = false
+    this.closeFollowUp()
     this.ptt = null
     this.speaker.stop()
     void this.vad?.destroy()
@@ -221,6 +272,9 @@ export class VoiceClient {
   }
 
   private async segment(audio: Float32Array, ptt: boolean): Promise<void> {
+    // Decided when the sentence ends, not after transcribing: a reply that took a moment counts.
+    const reply = this.bargedIn || Date.now() < this.followUntil
+    this.bargedIn = false
     this.ev.state({ kind: 'transcribing' })
     let text: string
     try {
@@ -246,8 +300,10 @@ export class VoiceClient {
     this.ev.heard(text, address)
 
     let request: string | null = null
-    if (ptt) request = address?.request || text
-    else if (address?.kind === 'strong') {
+    if (ptt || reply) {
+      request = address?.request || text
+      this.closeFollowUp()
+    } else if (address?.kind === 'strong') {
       if (!address.request) {
         this.armedUntil = Date.now() + ARMED_MS
         return
@@ -317,7 +373,13 @@ class Speaker {
   constructor(
     private readonly voice: () => string,
     private readonly onSpeaking: (on: boolean) => void,
+    /** Finished saying everything (not stopped). */
+    private readonly onDone: () => void,
   ) {}
+
+  get busy(): boolean {
+    return this.playing
+  }
 
   say(text: string): void {
     if (!this.abort) this.abort = new AbortController()
@@ -356,6 +418,7 @@ class Speaker {
     this.playing = false
     this.abort = null
     this.onSpeaking(false)
+    this.onDone()
   }
 
   stop(): void {

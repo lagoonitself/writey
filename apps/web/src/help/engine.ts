@@ -16,6 +16,8 @@ import {
   responsesBody,
   responsesEvents,
   routeIntent,
+  SaySplitter,
+  SentenceBuffer,
   type StreamEvent,
   type Turn,
   type Usage,
@@ -36,6 +38,8 @@ import { type Capture, capturePage } from './capture'
 // The help engine (docs §5): capture → PLAN (fast, JSON) → PRODUCE (streamed).
 // "explain" answers stream into the chat as Markdown; "write", "check" and "both" stream
 // InkScript, which is written onto the page as a ghost preview, block by block.
+// When Writey is talking (spoken replies), each answer also opens with what it says out loud,
+// handed out sentence by sentence so speech starts while the rest is still coming.
 
 /** Writey's own ink, and the teacher's red pen for marks (HANDOFF D5). */
 export const AI_INK = '#5b3fb5'
@@ -47,6 +51,8 @@ export type HelpUpdate =
   | { type: 'plan'; plan: Plan }
   | { type: 'thinking' }
   | { type: 'text'; text: string }
+  /** One sentence to say out loud. */
+  | { type: 'say'; text: string }
   /** Ink is about to be written on this page: it opens a preview. */
   | { type: 'inkStart'; page: PageRow }
   | { type: 'ink'; page: PageRow; written: Written }
@@ -57,6 +63,8 @@ export type HelpResult = {
   usage: Usage
   /** Blocks written on the page; absent for chat answers. */
   ink?: Written[]
+  /** What Writey said out loud, if anything. */
+  said?: string
 }
 
 export class HelpFailure extends Error {
@@ -165,6 +173,8 @@ export async function askWritey(opts: {
   settings: AiSettings
   turns: readonly Turn[]
   signal: AbortSignal
+  /** The student is talking to Writey: answers open with words to say out loud. */
+  spoken?: boolean
   onUpdate(u: HelpUpdate): void
   /** A blank page after this one, for ink that doesn't fit. Null if none can be made. */
   nextPage(after: PageRow): Promise<PageRow | null>
@@ -189,7 +199,8 @@ export async function askWritey(opts: {
   onUpdate({ type: 'status', text: plan.status_line || MODE_STATUS[plan.mode] })
 
   const effort = plan.scope === 'full' || plan.mode === 'check' ? 'high' : 'low'
-  const produce = produceMessages(utterance, ctx, plan, turns)
+  const spoken = Boolean(opts.spoken)
+  const produce = produceMessages(utterance, ctx, plan, turns, spoken)
   if (inkMode(plan.mode)) {
     const ink = await writeInk(transport.stream(produce, effort), {
       page: opts.page,
@@ -200,15 +211,33 @@ export async function askWritey(opts: {
       pageNumber: opts.pageNumber,
       failure: transport.failure,
     })
-    return { text: ink.text, plan, usage: addUsage(usage, ink.usage), ink: ink.written }
+    return {
+      text: ink.text,
+      plan,
+      usage: addUsage(usage, ink.usage),
+      ink: ink.written,
+      said: ink.said,
+    }
   }
 
   let text = ''
+  let said = ''
   let thinking = false
+  const split = new SaySplitter()
+  const sentences = new SentenceBuffer()
+  const take = (part: { say: string; text: string }, last = false) => {
+    said += part.say
+    for (const s of [...sentences.push(part.say), ...(last ? sentences.flush() : [])]) {
+      onUpdate({ type: 'say', text: s })
+    }
+    if (part.text) {
+      text += part.text
+      onUpdate({ type: 'text', text: part.text })
+    }
+  }
   for await (const ev of transport.stream(produce, effort)) {
     if (ev.type === 'text') {
-      text += ev.text
-      onUpdate({ type: 'text', text: ev.text })
+      take(spoken ? split.push(ev.text) : { say: '', text: ev.text })
     } else if (ev.type === 'reasoning' && !thinking && !text) {
       thinking = true
       onUpdate({ type: 'thinking' })
@@ -218,8 +247,19 @@ export async function askWritey(opts: {
       throw new HelpFailure(transport.failure(ev))
     }
   }
-  if (!text.trim()) throw new HelpFailure({ message: 'The model sent an empty reply. Try again.' })
-  return { text, plan, usage }
+  take(split.end(), true)
+  said = said.trim()
+  if (!text.trim() && !said) {
+    throw new HelpFailure({ message: 'The model sent an empty reply. Try again.' })
+  }
+  return { text: withSaid(said, text.trim()), plan, usage, said: said || undefined }
+}
+
+/** The chat shows what Writey said above the written answer. */
+function withSaid(said: string, text: string): string {
+  if (!said) return text
+  const esc = said.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return [`<p class="said">${esc}</p>`, text].filter(Boolean).join('\n\n')
 }
 
 /** Pages Writey may add for one answer before it gives up and puts the rest in the chat. */
@@ -256,7 +296,7 @@ async function writeInk(
     pageNumber(page: PageRow): number
     failure(ev: Extract<StreamEvent, { type: 'error' }>): HelpError
   },
-): Promise<{ text: string; written: Written[]; usage: Usage | undefined }> {
+): Promise<{ text: string; written: Written[]; usage: Usage | undefined; said?: string }> {
   const { capture, onUpdate } = o
   const size = sizeFromLines(capture.lines.map((l) => l.rect.h))
   const seed = Math.floor(Math.random() * 2 ** 31)
@@ -280,6 +320,7 @@ async function writeInk(
   const onPage: string[] = []
   const unwritten: string[] = []
   const chat: string[] = []
+  const said: string[] = []
   let summary = ''
   let usage: Usage | undefined
   let thinking = false
@@ -307,8 +348,15 @@ async function writeInk(
 
   const take = async (b: InkBlock) => {
     if (b.type === 'status') onUpdate({ type: 'status', text: b.text })
-    else if (b.type === 'chat') chat.push(b.text)
-    else if (b.type === 'done') summary = b.summary ?? ''
+    else if (b.type === 'say') {
+      said.push(b.text)
+      const buf = new SentenceBuffer()
+      for (const s of [...buf.push(b.text), ...buf.flush()]) onUpdate({ type: 'say', text: s })
+    } else if (b.type === 'chat') {
+      // The explanation streams into the chat; the working goes on the page only.
+      onUpdate({ type: 'text', text: `${chat.length ? '\n\n' : ''}${b.text}` })
+      chat.push(b.text)
+    } else if (b.type === 'done') summary = b.summary ?? ''
     else {
       const md = blockMarkdown(b)
       if (unwritten.length) {
@@ -331,7 +379,7 @@ async function writeInk(
       written.push(r)
       onPage.push(md)
       onUpdate({ type: 'ink', page, written: r })
-      onUpdate({ type: 'text', text: `${written.length}. ${md}\n` })
+      onUpdate({ type: 'status', text: `Writing on your page… line ${written.length}` })
     }
   }
 
@@ -344,10 +392,11 @@ async function writeInk(
     else if (ev.type === 'error') throw new HelpFailure(o.failure(ev))
   }
 
-  // The chat reads as an explanation first; the copy of the page folds away under it.
+  // The chat is the explanation. A copy of the page is kept for the model's history, but
+  // the chat only shows that it was written (styles hide the list).
+  const spoken = said.join(' ').trim()
   const parts: string[] = []
-  const explained = chat.length > 0
-  if (explained) parts.push(...chat)
+  if (chat.length) parts.push(...chat)
   else if (summary) parts.push(summary)
   if (written.length) {
     const marks = written.filter((w) => w.source.startsWith('[')).length
@@ -358,7 +407,7 @@ async function writeInk(
     ].filter(Boolean)
     const where = pagesLabel(inked.map(o.pageNumber))
     parts.push(
-      `<details class="ink-copy"${explained ? '' : ' open'}><summary>Written on ${where} · ${did.join(', ')}</summary>`,
+      `<details class="ink-copy"><summary>Written on ${where} · ${did.join(', ')}</summary>`,
       list(onPage),
       '</details>',
     )
@@ -368,6 +417,8 @@ async function writeInk(
   }
   // A model that ignored the format: show what it said rather than nothing.
   if (!parts.length && parser.leftover()) parts.push(parser.leftover())
-  if (!parts.length) throw new HelpFailure({ message: 'The model sent an empty reply. Try again.' })
-  return { text: parts.join('\n\n'), written, usage }
+  if (!parts.length && !spoken) {
+    throw new HelpFailure({ message: 'The model sent an empty reply. Try again.' })
+  }
+  return { text: withSaid(spoken, parts.join('\n\n')), written, usage, said: spoken || undefined }
 }

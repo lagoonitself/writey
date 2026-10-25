@@ -23,12 +23,11 @@ import {
 } from '../lib/db'
 import { pdfPageSizes } from '../lib/pdf'
 import { navigate } from '../lib/router'
-import { SettingsDialog } from '../settings/SettingsDialog'
+import { SettingsDialog, type SettingsTab } from '../settings/SettingsDialog'
 import { takeOpenSettingsFlag, useAiState } from '../settings/useAiState'
 import type { VoiceCommand } from '../voice/trigger'
 import { useVoice } from '../voice/useVoice'
-import { VoiceButton } from '../voice/VoiceButton'
-import { BackIcon, DownIcon, GearIcon, PlusIcon, SparkleIcon, TrashIcon, UpIcon } from './icons'
+import { BackIcon, DownIcon, GearIcon, PlusIcon, TrashIcon, UpIcon } from './icons'
 import { PageView } from './PageView'
 import { Toolbar } from './Toolbar'
 import { DEFAULT_TOOLS, type PageHandle, type SaveState, TOOL_KEYS, type ToolState } from './tools'
@@ -80,8 +79,14 @@ export function NotebookView({ id }: { id: string }) {
   const zoomAnchor = useRef<number | null>(null)
   const [ai, setAi] = useAiState()
   const [chatOpen, setChatOpenState] = useState(() => localStorage.getItem(CHAT_KEY) === '1')
+  const [askSlot, setAskSlot] = useState<HTMLDivElement | null>(null)
   const [chatFocus, bumpChatFocus] = useReducer((n: number) => n + 1, 0)
   const [settingsOpen, setSettingsOpen] = useState(takeOpenSettingsFlag)
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('ai')
+  const openSettings = (tab: SettingsTab = 'ai') => {
+    setSettingsTab(tab)
+    setSettingsOpen(true)
+  }
   const chatControl = useRef<ChatControl | null>(null)
   const [voiceAsk, setVoiceAsk] = useState<{ id: number; text: string } | null>(null)
   const voiceAskId = useRef(0)
@@ -89,13 +94,11 @@ export function NotebookView({ id }: { id: string }) {
   const setChatOpen = useCallback((open: boolean) => {
     setChatOpenState(open)
     localStorage.setItem(CHAT_KEY, open ? '1' : '0')
-    if (open) bumpChatFocus()
   }, [])
 
   // Talking to Writey (docs §7): a request opens the chat and asks; commands act directly.
   const voice = useVoice({
     request: (text) => {
-      setChatOpen(true)
       setVoiceAsk({ id: ++voiceAskId.current, text })
     },
     command: (c: VoiceCommand) => {
@@ -226,13 +229,12 @@ export function NotebookView({ id }: { id: string }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey
-      // Ctrl+K opens the chat, or focuses it if open; from inside the chat it closes it.
+      // Ctrl+K: type to Writey (again from the box: leave it).
       if (mod && e.key.toLowerCase() === 'k') {
         e.preventDefault()
-        const inChat = e.target instanceof Element && e.target.closest('.chat')
-        if (chatOpen && inChat) setChatOpen(false)
-        else if (chatOpen) bumpChatFocus()
-        else setChatOpen(true)
+        const inBar = e.target instanceof Element && e.target.closest('.askbar')
+        if (inBar) (e.target as HTMLElement).blur()
+        else bumpChatFocus()
         return
       }
       if (isTyping(e.target)) return
@@ -247,7 +249,7 @@ export function NotebookView({ id }: { id: string }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [zoom, tools, setZoom, setTools, chatOpen, setChatOpen])
+  }, [zoom, tools, setZoom, setTools])
 
   // ---- page operations ----
   const run = async (label: string, fn: () => Promise<void>) => {
@@ -449,26 +451,14 @@ export function NotebookView({ id }: { id: string }) {
           <span className="save-dot" aria-hidden="true" />
           {saveLabel}
         </span>
-        <VoiceButton voice={voice} onSettings={() => setSettingsOpen(true)} />
         <button
           type="button"
           className="ghost icon-btn"
-          onClick={() => setSettingsOpen(true)}
+          onClick={() => openSettings()}
           title="Settings"
           aria-label="Settings"
         >
           <GearIcon size={18} />
-        </button>
-        <button
-          type="button"
-          className={`ask-writey${chatOpen ? ' on' : ''}`}
-          onClick={() => setChatOpen(!chatOpen)}
-          title="Ask Writey (Ctrl+K)"
-          aria-pressed={chatOpen}
-        >
-          <SparkleIcon size={18} />
-          <span>Ask Writey</span>
-          <kbd>Ctrl K</kbd>
         </button>
       </header>
       <div className="notebook-body">
@@ -543,6 +533,7 @@ export function NotebookView({ id }: { id: string }) {
             zoom={zoom}
             onZoom={setZoom}
           />
+          <div className="ask-slot" ref={setAskSlot} />
           <div className="pages-scroll" ref={scrollRef}>
             <div className="pages">
               {pages.map((p, i) => (
@@ -563,28 +554,33 @@ export function NotebookView({ id }: { id: string }) {
             </div>
           </div>
         </div>
-        {chatOpen && (
-          <Suspense fallback={<aside className="chat" aria-busy="true" />}>
-            <ChatPanel
-              notebookId={id}
-              page={pages.find((p) => p.id === activeId) ?? null}
-              pageNumber={pageNumber}
-              handle={(pageId) => handles.get(pageId)}
-              addPageAfter={addPageAfter}
-              ai={ai}
-              focusKey={chatFocus}
-              onSettings={() => setSettingsOpen(true)}
-              onClose={() => setChatOpen(false)}
-              ask={voiceAsk}
-              control={chatControl}
-              transcript={voice.transcript}
-              onSay={voice.say}
-            />
-          </Suspense>
-        )}
+        <Suspense fallback={null}>
+          <ChatPanel
+            notebookId={id}
+            page={pages.find((p) => p.id === activeId) ?? null}
+            pageNumber={pageNumber}
+            handle={(pageId) => handles.get(pageId)}
+            addPageAfter={addPageAfter}
+            ai={ai}
+            focusKey={chatFocus}
+            onSettings={() => openSettings()}
+            onVoiceSettings={() => openSettings('voice')}
+            open={chatOpen}
+            onOpen={setChatOpen}
+            slot={askSlot}
+            ask={voiceAsk}
+            control={chatControl}
+            voice={voice}
+          />
+        </Suspense>
       </div>
       {settingsOpen && (
-        <SettingsDialog ai={ai} onChange={setAi} onClose={() => setSettingsOpen(false)} />
+        <SettingsDialog
+          ai={ai}
+          onChange={setAi}
+          tab={settingsTab}
+          onClose={() => setSettingsOpen(false)}
+        />
       )}
     </div>
   )

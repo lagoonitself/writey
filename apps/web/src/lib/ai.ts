@@ -205,8 +205,21 @@ export async function deleteThread(threadId: string): Promise<void> {
 }
 
 /** The model reads a reply as plain Markdown, without the chat's fold-out markup. */
+/**
+ * A reply as the model should remember it. The copy of the page is marked as handwriting, so
+ * the model doesn't take it for chat text and start repeating its working in the chat.
+ */
 const plainReply = (text: string) =>
-  text.replace(/<summary>(.*?)<\/summary>/g, '$1').replace(/<\/?details[^>]*>/g, '')
+  text
+    .replace(/<p class="said">([\s\S]*?)<\/p>/g, '(Said out loud: $1)')
+    .replace(
+      /<details[^>]*><summary>Written on ([^<·]*?)\s*·[^<]*<\/summary>([\s\S]*?)<\/details>/g,
+      (_, where: string, lines: string) =>
+        `[Handwritten on ${where.trim()}, shown on the page and not in the chat:\n${lines.trim()}]`,
+    )
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
 
 /** Question-and-answer pairs for the model's history; failed or unanswered asks are left out. */
 export function turnsOf(messages: readonly StoredMessage[]): Turn[] {

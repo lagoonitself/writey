@@ -1,6 +1,6 @@
 [project]
 name = "writey-helper"
-version = "0.3.0"
+version = "0.4.0"
 description = "Local companion for Writey: Sign in with ChatGPT and local speech models."
 license = "MIT"
 requires-python = ">=3.11"
@@ -9,10 +9,17 @@ dependencies = [
     "httpx>=0.28.1",
     "kokoro-onnx>=0.6.1",
     "numpy>=2.0.2",
-    "onnx-asr[cpu,hub]>=0.12.0",
+    "onnx-asr[hub]>=0.12.0",
+    # The GPU build also runs on the CPU, so it replaces onnxruntime wherever it exists.
+    "onnxruntime-gpu>=1.31.0; platform_machine == 'AMD64' or platform_machine == 'x86_64'",
+    "onnxruntime>=1.31.0; platform_machine != 'AMD64' and platform_machine != 'x86_64'",
     "pyjwt[crypto]>=2.15.1",
     "uvicorn>=0.54.0",
 ]
+
+[project.optional-dependencies]
+# CUDA and cuDNN as pip wheels (~1.1 GB), for NVIDIA GPUs. The setup file adds this when it finds one.
+gpu = ["onnxruntime-gpu[cuda,cudnn]>=1.31.0; platform_machine == 'AMD64' or platform_machine == 'x86_64'"]
 
 [project.scripts]
 writey-helper = "writey_helper.server:main"
@@ -25,8 +32,21 @@ build-backend = "hatchling.build"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 
+[tool.uv]
+# kokoro-onnx asks for onnxruntime, which would overwrite onnxruntime-gpu (same module).
+# `uv tool install` ignores this, so the setup file passes --excludes instead.
+override-dependencies = ["onnxruntime>=1.31.0; platform_machine != 'AMD64' and platform_machine != 'x86_64'"]
+default-groups = ["dev", "cuda"]
+# Some NVIDIA releases ship Linux wheels only; keep the lock on ones Windows can install.
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]
+# Same as the gpu extra, for development on Windows (CI on Linux skips it).
+cuda = ["onnxruntime-gpu[cuda,cudnn]>=1.31.0; sys_platform == 'win32'"]

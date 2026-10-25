@@ -286,7 +286,7 @@ def test_server_guards_host_and_origin(server) -> None:
     client = server
     assert client.get("/health", headers={"host": "evil.example:47823"}).status_code == 403
     health = client.get("/health", headers=HOST).json()
-    assert health["ok"] is True and health["api"] == 3
+    assert health["ok"] is True and health["api"] == 4
 
     pre = client.options("/chatgpt/status", headers={**HOST, "origin": ORIGIN})
     assert pre.status_code == 204

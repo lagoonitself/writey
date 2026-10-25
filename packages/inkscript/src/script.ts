@@ -11,6 +11,8 @@ export type InkBlock =
   | { type: 'mark'; kind: MarkKind; target: string; note?: string }
   /** Markdown for the chat panel: explanations that don't belong on the page. */
   | { type: 'chat'; text: string }
+  /** Plain words Writey says out loud (spoken replies), math read as words. */
+  | { type: 'say'; text: string }
   | { type: 'done'; summary?: string }
 
 const MARKS: readonly string[] = ['circle', 'underline', 'cross', 'tick', 'arrow']
@@ -54,6 +56,9 @@ export function toBlock(raw: unknown): InkBlock | null {
     case 'chat':
     case 'explain':
       return str(o.text) ? { type: 'chat', text: str(o.text) } : null
+    case 'say':
+    case 'speak':
+      return str(o.text) ? { type: 'say', text: str(o.text) } : null
     case 'done':
       return { type: 'done', summary: str(o.summary) || undefined }
     default:

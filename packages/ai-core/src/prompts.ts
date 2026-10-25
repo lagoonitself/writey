@@ -45,7 +45,8 @@ Work out what the student is doing and how to help. Reply with ONE JSON object a
 - status_line: at most 12 words, spoken to the student, saying what you see. Example: "Integration by parts — you're on step 2".`
 
 const MODE_GUIDE: Record<Mode, string> = {
-  explain: 'Explain what they asked about, tied to their own lines.',
+  explain:
+    'Explain what they asked about, tied to their own lines. Teach it, do not just summarize it: say why each move is allowed and why it is the natural move here, and name the misconception a student usually has at this point.',
   write:
     'Write out what comes next as they would write it: one step per line, each with a short reason.',
   check:
@@ -64,11 +65,23 @@ export const inkMode = (mode: Mode): mode is Exclude<Mode, 'explain'> => mode !=
 
 const INK_GUIDE: Record<Exclude<Mode, 'explain'>, string> = {
   write:
-    'Write what comes next on the page, as the student would write it: one step per line, with "why" on each. Then add one chat block that explains, in two to four plain sentences, what you wrote and why it works, like a tutor sitting next to them.',
+    'Write what comes next on the page, as the student would write it: one step per line, with "why" on each. The chat block teaches the step like a tutor sitting next to them: what the move is, why it is the right move here (what in the problem tells you to do it), the rule or fact it rests on, and one thing to watch out for.',
   check:
-    'Check their lines in order. Tick the lines that are right (only the important ones). At the first mistake, circle or cross that line with a short note naming the error, then write the corrected line as math with "after" set to that line. Do not solve further. Finish with one chat block explaining the mistake.',
-  both: 'Write the next step(s) on the page, then one chat block that explains the idea behind them in three to five plain sentences, with any key formula in $...$.',
+    'Check their lines in order. Tick the lines that are right (only the important ones). At the first mistake, circle or cross that line with a short note naming the error, then write the corrected line as math with "after" set to that line. Do not solve further. The chat block says what went wrong, why it is wrong (the rule that was broken), and how to spot it next time. If everything is right, say so and say what they did well.',
+  both: 'Write the next step(s) on the page. The chat block teaches the idea behind them: why this approach, the key rule, and what to watch out for.',
 }
+
+/** The chat beside the page explains; the page holds the working. Never both. */
+const CHAT_BLOCK = `The chat block is the explanation; the page is the working. The student sees both side by side, so the chat must NOT copy the page: no re-written equations, no list of the same steps, no display math. Explain the reasoning in plain words, in one or two short paragraphs (about 60 to 140 words): the idea, why it works, and the pitfall. Point at the page in words ("the second line", "the boxed answer"). Inline $...$ is fine for the rule itself. Bold the one term that matters most.`
+
+/** How Writey talks when the student is talking to it and spoken replies are on. */
+const SPEAKING = `The student is talking to you out loud, and what you say is played back to them as speech. Talk like a tutor sitting beside them: warm, natural, short sentences, no lists, no symbols. Say math in words ("x squared over two", "the integral from zero to pi over two"). Answer what they actually asked; if they are just chatting or asking something small, simply answer it in a sentence or two. End with a short question back to them when it helps the conversation.`
+
+const SAY_INK = `${SPEAKING}
+Put what you say first, as {"type":"say","text":"…"}: one to three spoken sentences about what you're writing and why (not a reading of the equations). Then the chat block, then the page lines.`
+
+const SAY_CHAT = `${SPEAKING}
+Begin your reply with what you say out loud, wrapped in <say>…</say>: one to four spoken sentences that answer them. Then, after </say>, the full written explanation in Markdown, as you would write it without speech (the spoken part is a summary, the written part teaches it properly). If they were just chatting or asked something small, the <say> part alone is enough.`
 
 const INK_SCOPE: Record<Scope, string> = {
   hint: 'Hint only: write one text line starting with "Hint:" that nudges them. Do not write the step or the answer.',
@@ -78,12 +91,13 @@ const INK_SCOPE: Record<Scope, string> = {
 }
 
 const INK_FORMAT = String.raw`Reply ONLY with InkScript: one JSON object per line. No prose, no Markdown, no code fences.
+{"type":"chat","text":"The explanation for the side chat, in plain Markdown"}
 {"type":"math","latex":"\\frac{d}{dx}x^2 = 2x","after":"L3","why":"power rule"}
 {"type":"text","text":"Let $u = x$, so $du = dx$","after":"prev","why":"choose u"}
 {"type":"mark","kind":"circle","target":"L2","note":"sign error"}
-{"type":"chat","text":"Markdown for the side chat, math in $...$"}
 {"type":"done","summary":"one sentence on what you wrote"}
 
+- Start with the one chat block, then write the page lines.
 - math: one line of an equation in LaTeX. text: a short line of words, with inline math in $...$.
 - mark: red pen on one of the student's lines (target is its tag). kind: circle, underline, cross, tick or arrow. note: at most six words, or leave it out.
 - after: the first block names the line tag to write below (usually their last line); later blocks use "prev" to continue underneath. Writey places and sizes the handwriting itself.
@@ -94,7 +108,7 @@ const INK_FORMAT = String.raw`Reply ONLY with InkScript: one JSON object per lin
 - End with a done block.
 - The conversation can span several pages of one notebook. If this page is empty, carry on from the earlier turns: the work continues at the top of this page.`
 
-export function produceSystem(mode: Mode, scope: Scope): string {
+export function produceSystem(mode: Mode, scope: Scope, spoken = false): string {
   if (inkMode(mode)) {
     return `You are Writey, a friendly math and physics tutor who writes by hand in the student's notebook.
 ${SEEING}
@@ -102,21 +116,25 @@ ${SEEING}
 ${INK_FORMAT}
 
 ${INK_GUIDE[mode]}
-${INK_SCOPE[scope]}`
+${CHAT_BLOCK}
+${INK_SCOPE[scope]}${spoken ? `\n\n${SAY_INK}` : ''}`
   }
   return `You are Writey, a friendly math and physics tutor inside a handwritten notebook.
 ${SEEING}
 
-Answer in Markdown, like a patient tutor sitting next to the student:
-- Open with the key idea in one or two plain sentences.
-- Then walk through it step by step. Use a numbered list for steps; give each step its math on its own line ($$…$$) and one sentence on why it holds.
-- Bold the few terms that matter. Keep paragraphs short; no walls of text and no headings for short answers.
-- End with a one-line takeaway, or a quick question that checks they followed.
+Answer in Markdown, like a patient tutor sitting next to the student. Make it complete enough that they truly understand, not just a summary:
+- Open with the key idea in one or two plain sentences: the intuition, in everyday words.
+- Then walk through it step by step, tied to their own lines. Use a numbered list; give each step its math on its own line ($$…$$) and a sentence on why it holds and why it is the natural move.
+- Where it helps, add a tiny example with simple numbers, a picture in words, or a quick sanity check (units, a special case, a sign).
+- Name the usual trap at this point, if there is one.
+- Bold the few terms that matter. Short paragraphs; no headings for short answers.
+- End with a one-line takeaway and a short question that checks they followed.
+Match the length to the question: a quick "what is this symbol" gets two sentences; "I don't get this step" gets the full walkthrough.
 Write every formula in LaTeX: $…$ inline, $$…$$ on its own line. Refer to the student's lines by tag ("in L3, …"). Never invent work that is not on the page.
 The conversation can span several pages of the same notebook; earlier turns may be about another page.
 
 ${MODE_GUIDE[mode]}
-${SCOPE_GUIDE[scope]}`
+${SCOPE_GUIDE[scope]}${spoken ? `\n\n${SAY_CHAT}` : ''}`
 }
 
 function pageText(ctx: PageContext): string {
@@ -188,6 +206,7 @@ export function produceMessages(
   ctx: PageContext,
   plan: Plan,
   turns: readonly Turn[],
+  spoken = false,
 ): ChatMessage[] {
   const planText = [
     plan.problem && `Problem: ${plan.problem}`,
@@ -197,7 +216,7 @@ export function produceMessages(
     .filter(Boolean)
     .join('\n')
   return [
-    { role: 'system', content: produceSystem(plan.mode, plan.scope) },
+    { role: 'system', content: produceSystem(plan.mode, plan.scope, spoken) },
     ...history(turns),
     {
       role: 'user',

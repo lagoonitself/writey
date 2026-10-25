@@ -35,7 +35,6 @@ import {
 
 /** Per canvas. Three canvases per mounted page; Chrome blanks canvases (black) past its GPU budget. */
 const MAX_CANVAS_PIXELS = 8_000_000
-const ERASER_PX = 9
 const HANDLE_PX = 12
 const SAVE_DELAY_MS = 1500
 const RETRY_DELAY_MS = 5000
@@ -565,7 +564,7 @@ export class PageController {
     const px = 1 / this.scale
     ctx.save()
     ctx.beginPath()
-    ctx.arc(x, y, ERASER_PX * px, 0, Math.PI * 2)
+    ctx.arc(x, y, (this.tools.eraser.size / 2) * px, 0, Math.PI * 2)
     ctx.fillStyle = pressed ? 'rgba(255, 92, 122, 0.18)' : 'rgba(255, 255, 255, 0.6)'
     ctx.fill()
     ctx.lineWidth = 1.5 * px
@@ -783,7 +782,8 @@ export class PageController {
   private eraseAt(x: number, y: number): void {
     const g = this.gesture
     if (g?.type !== 'erase') return
-    const r = ERASER_PX / this.scale
+    const r = this.tools.eraser.size / 2 / this.scale
+    const whole = this.tools.eraser.mode === 'stroke'
     let changed = false
     const next: Item[] = []
     for (const item of g.items) {
@@ -792,7 +792,7 @@ export class PageController {
         continue
       }
       const from = g.origin.get(item.id) ?? item.id
-      if (item.kind === 'stroke') {
+      if (item.kind === 'stroke' && !whole) {
         const pieces = eraseStroke(item, x, y, r, newId)
         if (!pieces) {
           next.push(item)
@@ -804,7 +804,7 @@ export class PageController {
         next.push(item)
         continue
       }
-      // Text and images go as a whole.
+      // Text and images (and strokes, in whole-stroke mode) go as a whole.
       g.touched.add(from)
       changed = true
     }

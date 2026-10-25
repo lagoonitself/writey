@@ -115,17 +115,24 @@ export const chatgptResponses = (body: string, signal: AbortSignal) =>
 // Voice: local speech models in the Helper (docs §7)
 // ---------------------------------------------------------------------------
 
-/** The Helper API level voice needs (3: /stt, /tts, /voice/*). */
-export const VOICE_API = 3
+/** The Helper API level voice needs (3: /stt, /tts, /voice/*; 4: models on the GPU). */
+export const VOICE_API = 4
+
+export type Device = 'cuda' | 'cpu'
 
 export type ModelStatus = {
   model: string
   state: 'missing' | 'downloaded' | 'downloading' | 'loading' | 'ready' | 'error'
+  device?: Device
   progress?: number
   error?: string
 }
 
-export type VoiceStatus = { stt: ModelStatus; tts: ModelStatus & { voices: string[] } }
+export type VoiceStatus = {
+  device?: Device
+  stt: ModelStatus
+  tts: ModelStatus & { voices: string[] }
+}
 
 /** 'ok', 'outdated' (no voice yet) or 'offline'. */
 export async function voiceHelperState(): Promise<HelperState> {

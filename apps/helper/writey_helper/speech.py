@@ -3,11 +3,15 @@ Local speech models (docs/ARCHITECTURE.md §7): Parakeet TDT 0.6B v2 for speech-
 Kokoro-82M for text-to-speech, both ONNX on this computer. The browser owns the microphone,
 voice detection and playback; the Helper only turns audio into text and text into audio.
 
+Speech-to-text is the int8 build on the CPU (~660 MB). Text-to-speech runs full precision on an
+NVIDIA GPU when there is one, otherwise int8 on the CPU.
 Models download on first use into the Helper's data folder. Nothing here touches the network
 after that, and no audio is ever stored.
 """
 
 import asyncio
+import ctypes
+import importlib.util
 import io
 import os
 import threading
@@ -24,15 +28,26 @@ MAX_SECONDS = 30
 MAX_TTS_CHARS = 800
 
 PARAKEET_REPO = "istupakov/parakeet-tdt-0.6b-v2-onnx"
-PARAKEET_FILES = {
+#: The int8 build (~660 MB) on every computer: as accurate as full precision for English
+#: and fast on the CPU. Its quantized ops don't run on CUDA, so speech-to-text stays on the CPU.
+_PARAKEET_INT8 = {
     "config.json": 1,
     "vocab.txt": 1,
     "nemo128.onnx": 1,
     "encoder-model.int8.onnx": 652_000_000,
     "decoder_joint-model.int8.onnx": 9_000_000,
 }
+PARAKEET_FILES = {"cuda": _PARAKEET_INT8, "cpu": _PARAKEET_INT8}
+#: Left by Helper 0.4.0's full-precision build (2.5 GB); removed on start.
+STALE_FILES = ("encoder-model.onnx", "encoder-model.onnx.data", "decoder_joint-model.onnx")
 KOKORO_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
-KOKORO_FILES = {"kokoro-v1.0.int8.onnx": 92_000_000, "voices-v1.0.bin": 28_000_000}
+KOKORO_FILES = {
+    "cuda": {"kokoro-v1.0.onnx": 310_000_000, "voices-v1.0.bin": 28_000_000},
+    "cpu": {"kokoro-v1.0.int8.onnx": 92_000_000, "voices-v1.0.bin": 28_000_000},
+}
+
+#: Shapes change with every sentence, so cuDNN's exhaustive search would rerun each time.
+CUDA_OPTIONS = {"arena_extend_strategy": "kSameAsRequested", "cudnn_conv_algo_search": "HEURISTIC"}
 
 #: Kokoro voices offered in Writey's settings (American and British English).
 VOICES = ("af_heart", "af_bella", "af_nicole", "am_michael", "am_fenrir", "bf_emma", "bm_george")
@@ -55,18 +70,58 @@ class Synthesizer(Protocol):
     def create(self, text: str, voice: str, speed: float) -> tuple[Any, int]: ...
 
 
+def pick_device() -> str:
+    """"cuda" when an NVIDIA GPU and the CUDA build of onnxruntime are both here, else "cpu"."""
+    if os.environ.get("WRITEY_DEVICE", "").lower() == "cpu":
+        return "cpu"
+    try:
+        # The driver, not just the toolkit: a GPU is actually present.
+        ctypes.CDLL("nvcuda.dll" if os.name == "nt" else "libcuda.so.1")
+        if importlib.util.find_spec("onnxruntime") is None:
+            return "cpu"
+        import onnxruntime as ort
+
+        return "cuda" if "CUDAExecutionProvider" in ort.get_available_providers() else "cpu"
+    except Exception:  # noqa: BLE001 - any failure means no usable GPU
+        return "cpu"
+
+
+def _providers(device: str) -> list[Any]:
+    if device != "cuda":
+        return ["CPUExecutionProvider"]
+    import onnxruntime as ort
+
+    try:
+        # CUDA and cuDNN come as pip wheels (nvidia-*); load them before the first session.
+        ort.preload_dlls()
+    except Exception as e:  # noqa: BLE001
+        print(f"  Couldn't load the CUDA libraries: {e}", flush=True)
+    return [("CUDAExecutionProvider", CUDA_OPTIONS), "CPUExecutionProvider"]
+
+
+def _on_gpu(session: Any) -> bool:
+    return session.get_providers()[0] == "CUDAExecutionProvider"
+
+
 @dataclass
 class Model:
     """One model's lifecycle, as /voice/status reports it."""
 
     name: str
-    files: dict[str, int]
+    variants: dict[str, dict[str, int]]
     folder: Path
+    device: str = "cpu"
     state: str = "missing"  # missing | downloading | loading | ready | error
     error: str | None = None
     instance: Any = None
     lock: threading.Lock = field(default_factory=threading.Lock)
     task: asyncio.Task[None] | None = None
+    #: Where it really runs once loaded: CUDA can still fail and leave it on the CPU.
+    running_on: str | None = None
+
+    @property
+    def files(self) -> dict[str, int]:
+        return self.variants[self.device]
 
     def downloaded(self) -> bool:
         return all((self.folder / f).is_file() for f in self.files)
@@ -84,7 +139,7 @@ class Model:
         state = self.state
         if state == "missing" and self.downloaded():
             state = "downloaded"
-        out: dict[str, Any] = {"model": self.name, "state": state}
+        out: dict[str, Any] = {"model": self.name, "state": state, "device": self.running_on or self.device}
         if state == "downloading":
             out["progress"] = self.progress()
         if self.error:
@@ -92,13 +147,10 @@ class Model:
         return out
 
 
-Fetch = Callable[[str, Path], Any]
-
-
-def _download_parakeet(folder: Path) -> None:
+def _download_parakeet(folder: Path, device: str) -> None:
     from huggingface_hub import hf_hub_download
 
-    for name in PARAKEET_FILES:
+    for name in PARAKEET_FILES[device]:
         if not (folder / name).is_file():
             hf_hub_download(PARAKEET_REPO, name, local_dir=folder)
 
@@ -110,30 +162,37 @@ def _session_options() -> Any:
     # two models share the CPU (measured 2026-10-25: 6 threads ran Parakeet 3x faster).
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = max(2, min(6, (os.cpu_count() or 4) // 2))
+    # Hide the "some nodes run on the CPU" notes: those are cheap shape ops.
+    opts.log_severity_level = 3
     return opts
 
 
-def _load_parakeet(folder: Path) -> Recognizer:
+def _load_parakeet(folder: Path, device: str) -> tuple[Recognizer, str]:
     import numpy as np
     import onnx_asr
 
     model = onnx_asr.load_model(
-        "nemo-parakeet-tdt-0.6b-v2", folder, quantization="int8", sess_options=_session_options()
+        "nemo-parakeet-tdt-0.6b-v2",
+        folder,
+        quantization="int8",
+        sess_options=_session_options(),
+        providers=["CPUExecutionProvider"],
     )
-    # The first run is several times slower than the rest; pay for it while loading.
-    model.recognize(np.zeros(SAMPLE_RATE, dtype=np.float32), sample_rate=SAMPLE_RATE)
+    # The first runs are several times slower than the rest; pay for them while loading.
+    for seconds in (1, 4):
+        model.recognize(np.zeros(SAMPLE_RATE * seconds, dtype=np.float32), sample_rate=SAMPLE_RATE)
 
     class Parakeet:
         def recognize(self, audio: Any) -> str:
             return str(model.recognize(audio, sample_rate=SAMPLE_RATE))
 
-    return Parakeet()
+    return Parakeet(), "cpu"
 
 
-def _download_kokoro(folder: Path) -> None:
+def _download_kokoro(folder: Path, device: str) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     with httpx.Client(follow_redirects=True, timeout=60) as client:
-        for name in KOKORO_FILES:
+        for name in KOKORO_FILES[device]:
             target = folder / name
             if target.is_file():
                 continue
@@ -146,32 +205,33 @@ def _download_kokoro(folder: Path) -> None:
             part.replace(target)
 
 
-def _load_kokoro(folder: Path) -> Synthesizer:
+def _load_kokoro(folder: Path, device: str) -> tuple[Synthesizer, str]:
     import onnxruntime as ort
     from kokoro_onnx import Kokoro
 
+    name = "kokoro-v1.0.onnx" if device == "cuda" else "kokoro-v1.0.int8.onnx"
     session = ort.InferenceSession(
-        str(folder / "kokoro-v1.0.int8.onnx"),
-        sess_options=_session_options(),
-        providers=["CPUExecutionProvider"],
+        str(folder / name), sess_options=_session_options(), providers=_providers(device)
     )
     model = Kokoro.from_session(session, str(folder / "voices-v1.0.bin"))
-    model.create("Hello.", voice=DEFAULT_VOICE, lang="en-us")
+    for text in ("Hello.", "Let's look at the next step together."):
+        model.create(text, voice=DEFAULT_VOICE, lang="en-us")
 
     class KokoroTTS:
         def create(self, text: str, voice: str, speed: float) -> tuple[Any, int]:
             samples, rate = model.create(text, voice=voice, speed=speed, lang="en-us")
             return samples, rate
 
-    return KokoroTTS()
+    return KokoroTTS(), "cuda" if _on_gpu(session) else "cpu"
 
 
 @dataclass
 class Backend:
-    """How a model is fetched and opened. Tests swap these for fakes."""
+    """How a model is fetched and opened on a device. Tests swap these for fakes."""
 
-    download: Callable[[Path], None]
-    load: Callable[[Path], Any]
+    download: Callable[[Path, str], None]
+    #: Returns the model and the device it really runs on.
+    load: Callable[[Path, str], tuple[Any, str]]
 
 
 DEFAULT_BACKENDS = {
@@ -194,16 +254,24 @@ def wav_bytes(samples: Any, rate: int) -> bytes:
 
 
 class Speech:
-    def __init__(self, folder: Path, backends: dict[str, Backend] | None = None) -> None:
+    def __init__(
+        self, folder: Path, backends: dict[str, Backend] | None = None, device: str | None = None
+    ) -> None:
         self.backends = backends or DEFAULT_BACKENDS
+        self.device = device or pick_device()
         models = folder / "models"
         self.models = {
-            "stt": Model("parakeet-tdt-0.6b-v2", PARAKEET_FILES, models / "parakeet-tdt-0.6b-v2"),
-            "tts": Model("kokoro-82m", KOKORO_FILES, models / "kokoro-v1.0"),
+            "stt": Model(
+                "parakeet-tdt-0.6b-v2", PARAKEET_FILES, models / "parakeet-tdt-0.6b-v2", self.device
+            ),
+            "tts": Model("kokoro-82m", KOKORO_FILES, models / "kokoro-v1.0", self.device),
         }
+        for name in STALE_FILES:
+            (self.models["stt"].folder / name).unlink(missing_ok=True)
 
     def status(self) -> dict[str, Any]:
         return {
+            "device": self.device,
             "stt": self.models["stt"].status(),
             "tts": {**self.models["tts"].status(), "voices": list(VOICES)},
         }
@@ -223,10 +291,12 @@ class Speech:
             if not m.downloaded():
                 m.state = "downloading"
                 m.folder.mkdir(parents=True, exist_ok=True)
-                await asyncio.to_thread(backend.download, m.folder)
+                await asyncio.to_thread(backend.download, m.folder, m.device)
             m.state = "loading"
-            m.instance = await asyncio.to_thread(backend.load, m.folder)
+            m.instance, m.running_on = await asyncio.to_thread(backend.load, m.folder, m.device)
             m.state = "ready"
+            where = "GPU" if m.running_on == "cuda" else "CPU"
+            print(f"  {m.name} is ready on the {where}.", flush=True)
         except Exception as e:  # noqa: BLE001 - reported to the browser, not raised
             m.state = "error"
             m.error = f"{type(e).__name__}: {e}"[:300]

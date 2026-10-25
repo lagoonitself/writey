@@ -6,26 +6,31 @@ export type ToolId = 'pen' | 'highlighter' | 'eraser' | 'lasso' | 'text'
 
 export type PenStyle = { color: string; width: number }
 
+/** size: the eraser's diameter in screen pixels. 'stroke' removes whole strokes it touches. */
+export type EraserStyle = { size: number; mode: 'partial' | 'stroke' }
+
 export type ToolState = {
   tool: ToolId
   pen: PenStyle
   highlighter: PenStyle
+  eraser: EraserStyle
   textSize: number
 }
 
-export const PEN_PRESETS: PenStyle[] = [
-  { color: '#16171d', width: 1.6 },
-  { color: '#2f4bf0', width: 1.6 },
-  { color: '#f0304f', width: 1.6 },
-  { color: '#0f9d6b', width: 1.6 },
-]
-export const PEN_WIDTHS = [1, 1.6, 2.6, 4]
-export const HIGHLIGHTER_COLORS = ['#ffe14a', '#7ff0a6', '#ffa8cb', '#8fd3ff']
+export const PEN_COLORS = ['#16171d', '#2f4bf0', '#f0304f', '#0f9d6b', '#e07a10', '#7a3fd0']
+export const PEN_PRESETS: PenStyle[] = PEN_COLORS.map((color) => ({ color, width: 1.6 }))
+/** Pen widths in points: the presets, and the slider's range. */
+export const PEN_WIDTHS = [0.8, 1.6, 2.6, 4]
+export const PEN_RANGE = { min: 0.5, max: 8, step: 0.1 }
+export const HIGHLIGHTER_COLORS = ['#ffe14a', '#7ff0a6', '#ffa8cb', '#8fd3ff', '#ffc078']
+export const HIGHLIGHTER_WIDTHS = [8, 14, 22]
+export const ERASER_SIZES = [10, 18, 32, 56]
 
 export const DEFAULT_TOOLS: ToolState = {
   tool: 'pen',
   pen: PEN_PRESETS[0] as PenStyle,
   highlighter: { color: HIGHLIGHTER_COLORS[0] as string, width: 14 },
+  eraser: { size: 18, mode: 'partial' },
   textSize: 14,
 }
 
