@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   compile,
+  type DiagramItem,
   diagramItems,
   drawDiagram,
   glyph,
@@ -9,6 +10,7 @@ import {
   InkWriter,
   layoutMath,
   layoutParagraph,
+  opticsImages,
   Placer,
   parseInkScript,
   parseMath,
@@ -353,5 +355,147 @@ describe('diagrams', () => {
     const hl = w.write({ type: 'mark', kind: 'highlight', target: 'L1' })
     if (!hl || 'noRoom' in hl) throw new Error('expected a highlight')
     expect(hl.strokes[0]?.stroke.tool).toBe('highlighter')
+  })
+})
+
+describe('physics diagrams', () => {
+  const one = (item: Record<string, unknown>) => diagramItems([item])[0] as DiagramItem
+
+  it('finds images with the lens and mirror formulas', () => {
+    const lens = opticsImages(
+      one({ kind: 'lens', type: 'convex', x: 0, f: 10, object: { x: -25, h: 4 } }),
+    )
+    expect(lens[0]?.x).toBeCloseTo(50 / 3)
+    expect(lens[0]?.h).toBeCloseTo(-8 / 3)
+    expect(lens[0]?.virtual).toBe(false)
+    const magnifier = opticsImages(
+      one({ kind: 'lens', type: 'convex', x: 0, f: 10, object: { x: -5, h: 1 } }),
+    )
+    expect(magnifier[0]).toMatchObject({ virtual: true })
+    expect(magnifier[0]?.x).toBeCloseTo(-10)
+    expect(magnifier[0]?.h).toBeCloseTo(2)
+    const concave = opticsImages(
+      one({ kind: 'concave_mirror', x: 0, f: 10, object: { x: -30, h: 4 } }),
+    )
+    expect(concave[0]?.x).toBeCloseTo(-15)
+    expect(concave[0]?.h).toBeCloseTo(-2)
+    const convex = opticsImages(
+      one({ kind: 'mirror', type: 'convex', x: 0, f: 10, object: { x: -10, h: 4 } }),
+    )
+    expect(convex[0]?.virtual).toBe(true)
+    expect(convex[0]?.x).toBeCloseTo(5)
+    expect(convex[0]?.h).toBeCloseTo(2)
+    const microscope = opticsImages(
+      one({
+        kind: 'optics',
+        elements: [
+          { type: 'convex_lens', x: 0, f: 2 },
+          { type: 'convex_lens', x: 12, f: 4 },
+        ],
+        object: { x: -2.5, h: 1 },
+      }),
+    )
+    expect(microscope).toHaveLength(2)
+    expect(microscope[0]?.x).toBeCloseTo(10)
+    expect(microscope[1]?.virtual).toBe(true)
+  })
+
+  it('reads gate and transistor aliases as their type', () => {
+    expect(one({ kind: 'nand', at: [0, 0] })).toMatchObject({ kind: 'gate', type: 'nand' })
+    expect(one({ kind: 'pnp', at: [0, 0] })).toMatchObject({ kind: 'transistor', type: 'pnp' })
+    expect(one({ type: 'convex_lens', f: 5 })).toMatchObject({ kind: 'lens', type: 'convex_lens' })
+  })
+
+  it('draws every physics kind as finite pen paths', () => {
+    const specs: Record<string, unknown>[][] = [
+      [
+        { kind: 'resistor', from: [0, 0], to: [2, 0], label: 'R', current: 'I' },
+        { kind: 'rheostat', from: [2, 0], to: [4, 0] },
+        { kind: 'capacitor', from: [4, 0], to: [4, -2] },
+        { kind: 'battery', from: [4, -2], to: [2, -2], cells: 3, signs: true },
+        { kind: 'cell', from: [2, -2], to: [0, -2], flip: true },
+        { kind: 'inductor', from: [0, -2], to: [0, 0] },
+        { kind: 'switch', from: [0, 1], to: [2, 1] },
+        { kind: 'bulb', from: [2, 1], to: [4, 1] },
+        { kind: 'ammeter', from: [0, 2], to: [2, 2] },
+        { kind: 'voltmeter', from: [2, 2], to: [4, 2] },
+        { kind: 'galvanometer', from: [4, 2], to: [6, 2] },
+        { kind: 'diode', from: [0, 3], to: [2, 3] },
+        { kind: 'zener', from: [2, 3], to: [4, 3] },
+        { kind: 'led', from: [4, 3], to: [6, 3] },
+        { kind: 'ac', from: [0, 4], to: [2, 4] },
+        { kind: 'fuse', from: [2, 4], to: [4, 4] },
+        {
+          kind: 'wire',
+          points: [
+            [4, 4],
+            [6, 4],
+            [6, 0],
+          ],
+        },
+        { kind: 'junction', at: [2, 0], label: 'A' },
+        { kind: 'terminal', at: [6, 0] },
+        { kind: 'ground', at: [4, -2] },
+        { kind: 'npn', at: [8, 0] },
+        { kind: 'transistor', type: 'pnp', at: [8, 3] },
+        ...['and', 'or', 'not', 'nand', 'nor', 'xor'].map((t, i) => ({
+          kind: 'gate',
+          type: t,
+          at: [11, i * 1.2],
+        })),
+      ],
+      [{ kind: 'mirror', type: 'concave', x: 0, f: 10, object: { x: -15, h: 3 } }],
+      [{ kind: 'lens', type: 'concave', x: 0, f: 10, object: { x: -20, h: 3 }, image: "A'B'" }],
+      [{ kind: 'lens', type: 'convex', x: 0, f: 10, object: { x: -10, h: 3 } }],
+      [{ kind: 'prism', at: [0, 0], side: 4, apex: 60, n: 1.5, i: 45, deviation: true }],
+      [{ kind: 'prism', at: [0, 0], side: 4, apex: 90, n: 1.5, i: 0 }],
+      [{ kind: 'slab', at: [0, 0], w: 4, h: 1.5, n: 1.5, i: 40 }],
+      [{ kind: 'refraction', at: [0, 0], i: 60, n1: 1.5, n2: 1 }],
+      [
+        {
+          kind: 'charges',
+          charges: [
+            { at: [-1, 0], q: 2 },
+            { at: [1, 0], q: -1 },
+          ],
+        },
+      ],
+      [{ kind: 'charges', charges: [{ at: [0, 0], q: -1 }] }],
+      [{ kind: 'dipole', at: [0, 0], d: 2 }],
+      [{ kind: 'magnet', at: [0, 0], length: 2, north: 'left' }],
+      [{ kind: 'solenoid', from: [-2, 0], to: [2, 0], r: 0.6 }],
+      [{ kind: 'current', at: [0, 0], dir: 'in' }],
+      [
+        {
+          kind: 'levels',
+          levels: [
+            { n: 1, e: -13.6 },
+            { n: 2, e: -3.4 },
+          ],
+          transitions: [{ from: 2, to: 1 }],
+        },
+      ],
+      [
+        { kind: 'wavefronts', at: [0, 0], r: [1, 2] },
+        {
+          kind: 'slits',
+          x: 3,
+          y: [-2, 2],
+          gaps: [
+            [-0.6, -0.4],
+            [0.4, 0.6],
+          ],
+        },
+      ],
+    ]
+    for (const spec of specs) {
+      const items = diagramItems(spec)
+      expect(items).toHaveLength(spec.length)
+      const d = drawDiagram({ items }, { size: 20, maxW: 400, rng: seeded(4) })
+      expect(d.paths.length, JSON.stringify(spec[0])).toBeGreaterThan(2)
+      expect(allFinite(d.paths)).toBe(true)
+      expect(d.w).toBeLessThan(2000)
+      expect(d.h).toBeLessThan(2000)
+    }
   })
 })

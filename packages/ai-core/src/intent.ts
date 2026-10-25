@@ -13,7 +13,10 @@ const MODE_RULES: [RegExp, Mode][] = [
   [/\b(just|only) explain\b/, 'explain'],
   [/\bwrite (it|this|that)( down| out| on the page)?\b|\bjust show me the answer\b/, 'write'],
   [/\bwhat('?s| is) next\b/, 'write'],
-  [/\b(draw|sketch|plot|graph (it|this|that)|diagram|free[- ]body|new page)\b/, 'write'],
+  [
+    /\b(draw|sketch|plot|graph (it|this|that)|diagram|free[- ]body|new page|ray diagram|circuit diagram|field lines)\b/,
+    'write',
+  ],
   [
     /\b(check|is (this|that|it|my \w+) (right|correct|ok)|mistakes?|wrong|error|did i (get|do) (it|this|that) right)\b/,
     'check',

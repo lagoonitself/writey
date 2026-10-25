@@ -1,14 +1,30 @@
+import { CIRCUIT_KINDS, circuitExtent, drawCircuit } from './circuit'
 import { compile } from './expr'
+import { drawField, FIELD_KINDS, fieldExtent } from './fields'
 import { type Box, layoutMath, type Path, type Rng } from './layout'
+import { drawOptics, OPTICS_KINDS, opticsExtent } from './optics'
+import {
+  center,
+  type DiagramItem,
+  deg,
+  lerp,
+  num,
+  Pen,
+  type Pt,
+  pt,
+  pts,
+  range,
+  type Sketch,
+  smooth,
+  text,
+} from './sketch'
 import { layoutParagraph, stackLines } from './text'
 
 // Diagrams and graphs (docs §5.6). The model never draws pixels: it writes a spec in its own
 // math coordinates (y up), and Writey draws it with a pen, rough.js-style: lines bow a
 // little, ends wander, circles start anywhere and overshoot where they began.
 
-type Pt = [number, number]
-
-export type DiagramItem = Record<string, unknown> & { kind: string }
+export type { DiagramItem } from './sketch'
 
 export type DiagramSpec = {
   /** Frame size in points; the height follows the coordinates when left out. */
@@ -65,7 +81,20 @@ const KINDS: Record<string, string> = {
   spring: 'spring',
   pulley: 'pulley',
   wheel: 'pulley',
+  ...CIRCUIT_KINDS,
+  ...OPTICS_KINDS,
+  convex_lens: 'lens',
+  concave_lens: 'lens',
+  converging_lens: 'lens',
+  diverging_lens: 'lens',
+  concave_mirror: 'mirror',
+  convex_mirror: 'mirror',
+  ...FIELD_KINDS,
 }
+
+const CIRCUIT = new Set(Object.values(CIRCUIT_KINDS))
+const OPTICS = new Set(['lens', 'mirror', ...Object.values(OPTICS_KINDS)])
+const FIELDS = new Set(Object.values(FIELD_KINDS))
 
 /**
  * Accepts both `{"kind":"arrow",…}` (or `type`/`shape`) and the docs' `{"arrow":{…}}`.
@@ -88,7 +117,13 @@ export function diagramItems(raw: unknown): DiagramItem[] {
       body = v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : o
     }
     const kind = KINDS[name.toLowerCase()]
-    if (kind) out.push({ ...body, kind })
+    // An alias keeps what it said as the type: "nand" is a gate of type nand.
+    if (kind)
+      out.push({
+        ...(kind !== name.toLowerCase() ? { type: name.toLowerCase() } : {}),
+        ...body,
+        kind,
+      })
   }
   return out
 }
@@ -96,39 +131,6 @@ export function diagramItems(raw: unknown): DiagramItem[] {
 // ---------------------------------------------------------------------------
 // Reading the spec
 // ---------------------------------------------------------------------------
-
-const num = (v: unknown, d: number): number => {
-  const n = typeof v === 'string' ? Number(v) : v
-  return typeof n === 'number' && Number.isFinite(n) ? n : d
-}
-
-const pt = (v: unknown): Pt | null => {
-  if (Array.isArray(v) && v.length >= 2) {
-    const x = num(v[0], Number.NaN)
-    const y = num(v[1], Number.NaN)
-    return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null
-  }
-  if (v && typeof v === 'object') {
-    const o = v as Record<string, unknown>
-    return pt([o.x, o.y])
-  }
-  return null
-}
-
-const pts = (v: unknown): Pt[] =>
-  Array.isArray(v) ? v.map(pt).filter((p): p is Pt => p !== null) : []
-
-const range = (v: unknown): [number, number] | null => {
-  const p = pt(v)
-  return p && p[1] !== p[0] ? [Math.min(p[0], p[1]), Math.max(p[0], p[1])] : null
-}
-
-const text = (o: DiagramItem, key = 'label'): string =>
-  typeof o[key] === 'string' ? (o[key] as string).trim() : ''
-
-const center = (o: DiagramItem): Pt | null => pt(o.center) ?? pt(o.at) ?? pt(o.c)
-
-const deg = (d: number) => (d * Math.PI) / 180
 
 function rectCorners(o: DiagramItem): Pt[] {
   const w = num(o.w ?? o.width, 1)
@@ -246,6 +248,9 @@ function extent(o: DiagramItem, xr: [number, number] | null): Pt[] {
     case 'label':
       return [pt(o.at) ?? pt(o.pos)].filter((p): p is Pt => p !== null)
     default:
+      if (CIRCUIT.has(o.kind)) return circuitExtent(o)
+      if (OPTICS.has(o.kind)) return opticsExtent(o)
+      if (FIELDS.has(o.kind)) return fieldExtent(o)
       return []
   }
 }
@@ -268,138 +273,6 @@ function fitWorld(spec: DiagramSpec): { x: [number, number]; y: [number, number]
     x: xr ?? pad(Math.min(...xs), Math.max(...xs)),
     y: yr ?? pad(Math.min(...ys), Math.max(...ys)),
   }
-}
-
-// ---------------------------------------------------------------------------
-// The pen (all in points, y down)
-// ---------------------------------------------------------------------------
-
-class Pen {
-  readonly paths: Path[] = []
-
-  constructor(
-    private readonly rng: Rng,
-    /** Wobble in points. */
-    private readonly rough: number,
-  ) {}
-
-  private j(n = 1): number {
-    return (this.rng() - 0.5) * 2 * this.rough * n
-  }
-
-  /** A straight stroke: bowed a little, ends a touch off, like a quick ruler-less line. */
-  line(a: Pt, b: Pt, dashed = false): void {
-    const len = Math.hypot(b[0] - a[0], b[1] - a[1])
-    if (len < 0.3) return
-    if (dashed) {
-      const n = Math.max(1, Math.round(len / 7))
-      for (let k = 0; k < n; k++) {
-        const t0 = k / n
-        const t1 = (k + 0.55) / n
-        this.line(lerp(a, b, t0), lerp(a, b, t1))
-      }
-      return
-    }
-    const ux = (b[0] - a[0]) / len
-    const uy = (b[1] - a[1]) / len
-    const bow = (this.rng() - 0.5) * Math.min(0.025 * len, 3.5)
-    const a2: Pt = [a[0] + this.j(0.5), a[1] + this.j(0.5)]
-    const b2: Pt = [b[0] + this.j(0.5), b[1] + this.j(0.5)]
-    const n = Math.max(2, Math.ceil(len / 3))
-    const out: number[] = []
-    for (let k = 0; k <= n; k++) {
-      const t = k / n
-      const s = Math.sin(Math.PI * t) * bow
-      out.push(a2[0] + (b2[0] - a2[0]) * t - uy * s, a2[1] + (b2[1] - a2[1]) * t + ux * s)
-    }
-    this.paths.push(out)
-  }
-
-  /** A path through points, with a slow sideways wobble. */
-  poly(points: readonly Pt[], closed = false, dashed = false): void {
-    const ps = closed && points.length > 2 ? [...points, points[0] as Pt] : [...points]
-    if (ps.length < 2) return
-    if (dashed) {
-      for (let i = 0; i + 1 < ps.length; i++) this.line(ps[i] as Pt, ps[i + 1] as Pt, true)
-      return
-    }
-    const out: number[] = []
-    const phase = this.rng() * 10
-    let dist = 0
-    for (let i = 0; i < ps.length; i++) {
-      const p = ps[i] as Pt
-      if (i > 0) dist += Math.hypot(p[0] - (ps[i - 1] as Pt)[0], p[1] - (ps[i - 1] as Pt)[1])
-      const w = Math.sin(dist / 23 + phase) * this.rough * 0.6
-      out.push(p[0] + w, p[1] - w * 0.7)
-    }
-    this.paths.push(out)
-  }
-
-  /** A loop that starts at a random angle and runs a little past its start. */
-  ellipse(c: Pt, rx: number, ry: number, from = 0, to = Math.PI * 2): void {
-    const full = to - from >= Math.PI * 2 - 1e-6
-    const start = full ? this.rng() * Math.PI * 2 : from
-    const sweep = full ? Math.PI * 2 + 0.25 + this.rng() * 0.3 : to - from
-    const n = Math.max(12, Math.ceil((Math.abs(sweep) * Math.max(rx, ry)) / 2.5))
-    const phase = this.rng() * 6
-    const out: number[] = []
-    for (let k = 0; k <= n; k++) {
-      const u = k / n
-      const t = start + sweep * u
-      const wob = 1 + Math.sin(t * 2 + phase) * 0.025 + (full ? u * 0.035 : 0)
-      out.push(c[0] + Math.cos(t) * rx * wob, c[1] - Math.sin(t) * ry * wob)
-    }
-    this.paths.push(out)
-  }
-
-  /** Two short strokes meeting at the tip, drawn in one go: wing, tip, wing. */
-  head(tip: Pt, from: Pt, size: number): void {
-    const a = Math.atan2(tip[1] - from[1], tip[0] - from[0])
-    const spread = 0.42 + this.j(0.02)
-    const w1: Pt = [tip[0] - Math.cos(a - spread) * size, tip[1] - Math.sin(a - spread) * size]
-    const w2: Pt = [tip[0] - Math.cos(a + spread) * size, tip[1] - Math.sin(a + spread) * size]
-    this.paths.push([...w1, ...tip, ...w2])
-  }
-
-  dot(p: Pt, r: number): void {
-    // A tiny tight spiral reads as a filled pen dot.
-    const out: number[] = []
-    for (let k = 0; k <= 18; k++) {
-      const t = (k / 18) * Math.PI * 4
-      const rr = r * (1 - k / 22)
-      out.push(p[0] + Math.cos(t) * rr, p[1] + Math.sin(t) * rr)
-    }
-    this.paths.push(out)
-  }
-}
-
-const lerp = (a: Pt, b: Pt, t: number): Pt => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
-
-/** Catmull-Rom through the points, for freehand curves. */
-function smooth(points: readonly Pt[], closed: boolean, steps = 10): Pt[] {
-  const n = points.length
-  if (n < 3) return [...points]
-  const get = (i: number): Pt =>
-    closed ? (points[(i + n) % n] as Pt) : (points[Math.min(n - 1, Math.max(0, i))] as Pt)
-  const out: Pt[] = []
-  const segs = closed ? n : n - 1
-  for (let i = 0; i < segs; i++) {
-    const p0 = get(i - 1)
-    const p1 = get(i)
-    const p2 = get(i + 1)
-    const p3 = get(i + 2)
-    for (let s = 0; s < steps; s++) {
-      const t = s / steps
-      const t2 = t * t
-      const t3 = t2 * t
-      const f = (a: number, b: number, c: number, d: number) =>
-        0.5 *
-        (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t2 + (-a + 3 * b - 3 * c + d) * t3)
-      out.push([f(p0[0], p1[0], p2[0], p3[0]), f(p0[1], p1[1], p2[1], p3[1])])
-    }
-  }
-  out.push(closed ? (points[0] as Pt) : (points[n - 1] as Pt))
-  return out
 }
 
 function niceStep(span: number, target = 6): number {
@@ -433,7 +306,12 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
   const yr = world.y[1] - world.y[0]
   const W = Math.min(opts.maxW, Math.max(size * 4, num(spec.w, Math.max(230, size * 11))))
   // Same scale on both axes unless told otherwise, so circles stay round.
-  const H = Math.max(size * 3, num(spec.h, Math.min(W * 1.15, Math.max(W * 0.4, (W * yr) / xr))))
+  // Ray diagrams stretch their heights, as textbooks do, so rays don't lie flat on the axis.
+  const rays = spec.items.some(
+    (o) => o.kind === 'optics' || o.kind === 'lens' || o.kind === 'mirror',
+  )
+  const minH = W * (rays ? 0.62 : 0.4)
+  const H = Math.max(size * 3, num(spec.h, Math.min(W * 1.15, Math.max(minH, (W * yr) / xr))))
   const sx = W / xr
   const sy = H / yr
   const map = (p: Pt): Pt => [(p[0] - world.x[0]) * sx, H - (p[1] - world.y[0]) * sy]
@@ -467,6 +345,8 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
     const len = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1
     return [(b[1] - a[1]) / len, -(b[0] - a[0]) / len]
   }
+
+  const sketch: Sketch = { pen, map, sx, sy, world, size, head: headSize, label, itemLabel }
 
   const yMin = world.y[0] - yr * 0.02
   const yMax = world.y[1] + yr * 0.02
@@ -760,6 +640,10 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
         itemLabel(o, lerp(p, q, 0.5), [n[0], n[1]], amp + 2)
         break
       }
+      default:
+        if (CIRCUIT.has(o.kind)) drawCircuit(o, sketch)
+        else if (OPTICS.has(o.kind)) drawOptics(o, sketch)
+        else if (FIELDS.has(o.kind)) drawField(o, sketch)
     }
   }
 
