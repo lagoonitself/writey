@@ -20,3 +20,10 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm --filter @writey/web build
+
+  helper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+      - run: uv run --directory apps/helper pytest -q

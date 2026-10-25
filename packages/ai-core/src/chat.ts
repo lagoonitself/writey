@@ -17,7 +17,7 @@ export type StreamEvent =
   | { type: 'text'; text: string }
   | { type: 'reasoning'; text: string }
   | { type: 'usage'; usage: Usage }
-  | { type: 'error'; message: string; status?: number }
+  | { type: 'error'; message: string; status?: number; code?: string }
 
 export type ChatRequest = {
   model: string

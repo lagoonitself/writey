@@ -9,6 +9,9 @@ export type KeyProvider = (typeof KEY_PROVIDERS)[number]
 export const isKeyProvider = (s: string): s is KeyProvider =>
   (KEY_PROVIDERS as readonly string[]).includes(s)
 
+export const isAiProvider = (s: string): s is AiProvider =>
+  (AI_PROVIDERS as readonly string[]).includes(s)
+
 /** What the browser may know about a saved key. Never the key itself. */
 export type CredentialInfo = {
   provider: KeyProvider
@@ -20,7 +23,7 @@ export type CredentialInfo = {
 export type SaveCredentialBody = { key: string; label?: string }
 
 /** Per-user AI choice, stored in `profiles.settings.ai`. */
-export type AiSettings = { provider: KeyProvider; model: string }
+export type AiSettings = { provider: AiProvider; model: string }
 
 export const DEFAULT_AI: AiSettings = {
   provider: 'openrouter',

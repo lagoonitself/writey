@@ -1,11 +1,11 @@
-import { PROVIDER_LABEL, type Usage } from '@writey/ai-core'
+import { CHATGPT_USAGE_URL, PROVIDER_LABEL, type Usage } from '@writey/ai-core'
 import type { PageRow } from '@writey/shared'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { askWritey, HelpFailure } from '../help/engine'
 import { appendMessages, clearThread, loadThread, type StoredMessage, turnsOf } from '../lib/ai'
 import { CloseIcon, SendIcon, SparkleIcon, StopIcon, TrashIcon } from '../notebook/icons'
 import type { PageHandle } from '../notebook/tools'
-import type { AiState } from '../settings/useAiState'
+import { type AiState, usable } from '../settings/useAiState'
 import { renderMarkdown } from './markdown'
 
 type Props = {
@@ -19,7 +19,12 @@ type Props = {
   onClose(): void
 }
 
-type Shown = StoredMessage & { seen?: string; stopped?: boolean; settings?: boolean }
+type Shown = StoredMessage & {
+  seen?: string
+  stopped?: boolean
+  settings?: boolean
+  link?: { label: string; url: string }
+}
 type Live = { status: string; seen: string | null; text: string; thinking: boolean }
 
 const EXAMPLES = ["What's next?", 'Is this right?', 'Explain the last step', 'Give me a hint']
@@ -147,6 +152,7 @@ export default function ChatPanel(p: Props) {
               text: help.message,
               error: true,
               settings: help.settings,
+              link: help.link,
             },
           ])
         }
@@ -165,7 +171,7 @@ export default function ChatPanel(p: Props) {
     setMessages([])
   }
 
-  const hasKey = ai.credentials.some((c) => c.provider === ai.settings.provider)
+  const hasKey = usable(ai, ai.settings.provider)
   const modelName = ai.settings.model.split('/').pop() ?? ai.settings.model
 
   return (
@@ -298,6 +304,14 @@ export default function ChatPanel(p: Props) {
           </button>
         )}
       </form>
+      {ai.settings.provider === 'chatgpt' && (
+        <p className="chat-plan">
+          Using ChatGPT plan ·{' '}
+          <a href={CHATGPT_USAGE_URL} target="_blank" rel="noopener noreferrer">
+            Manage usage
+          </a>
+        </p>
+      )}
     </aside>
   )
 }
@@ -329,6 +343,11 @@ function Message({ m, onSettings }: { m: Shown; onSettings(): void }) {
           <button type="button" onClick={onSettings}>
             Open settings
           </button>
+        )}
+        {m.link && (
+          <a className="error-link" href={m.link.url} target="_blank" rel="noopener noreferrer">
+            {m.link.label}
+          </a>
         )}
       </div>
     )

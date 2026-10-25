@@ -1,8 +1,9 @@
-import type { KeyProvider } from '@writey/shared'
+import type { AiProvider } from '@writey/shared'
 
-export const PROVIDER_LABEL: Record<KeyProvider, string> = {
+export const PROVIDER_LABEL: Record<AiProvider, string> = {
   openrouter: 'OpenRouter',
   'opencode-zen': 'OpenCode Zen',
+  chatgpt: 'ChatGPT',
 }
 
 export type ModelInfo = {
@@ -20,10 +21,18 @@ export type ModelInfo = {
 const ZEN_OTHER_FORMAT = /^(gpt-|o\d|grok-|muse-|claude-|gemini-|jev-|qwen3\.\d+-(flash|plus))/
 const ZEN_VISION = /deepseek-v4\.1-flash|-vl\b|-vl-|vision/
 
-type RawModel = { id?: unknown; name?: unknown; architecture?: { input_modalities?: unknown } }
+type RawModel = {
+  id?: unknown
+  name?: unknown
+  architecture?: { input_modalities?: unknown }
+  slug?: unknown
+  display_name?: unknown
+  input_modalities?: unknown
+}
 
 /** Normalizes a provider's model list response. */
-export function parseModels(provider: KeyProvider, json: unknown): ModelInfo[] {
+export function parseModels(provider: AiProvider, json: unknown): ModelInfo[] {
+  if (provider === 'chatgpt') return chatgptModels(json)
   const data = (json as { data?: RawModel[] } | null)?.data
   if (!Array.isArray(data)) return []
   const models: ModelInfo[] = []
@@ -55,4 +64,22 @@ export function parseModels(provider: KeyProvider, json: unknown): ModelInfo[] {
     }
   }
   return models.sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** The Helper's ChatGPT list: models the signed-in plan can use (visibility "list"). */
+function chatgptModels(json: unknown): ModelInfo[] {
+  const data = (json as { models?: RawModel[] } | null)?.models
+  if (!Array.isArray(data)) return []
+  return data.flatMap((m): ModelInfo[] => {
+    if (typeof m.slug !== 'string') return []
+    const inputs = m.input_modalities
+    return [
+      {
+        id: m.slug,
+        name: typeof m.display_name === 'string' ? m.display_name : m.slug,
+        vision: Array.isArray(inputs) ? inputs.includes('image') : null,
+        supported: true,
+      },
+    ]
+  })
 }

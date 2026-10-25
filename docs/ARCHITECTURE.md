@@ -6,7 +6,7 @@
 
 Status: **v0.4** (2026-10-25). Open-source, multi-user, $0 hosting; users bring their own AI keys.
 
-v0.2 changes: Gemini Live dropped (voice is local only, via Writey Helper); ChatGPT sign-in settled as Helper-only; push-to-talk added; ChatGPT merged into the Helper phase. v0.3: voice runs on local Python models (Parakeet STT, Fish S1-mini TTS); the browser owns mic, VAD and playback, the Helper only runs models. v0.4: Phase 2 shipped; key storage goes through two security-definer functions instead of the service role (§6.2). Running decisions log: [HANDOFF.md](../HANDOFF.md).
+v0.2 changes: Gemini Live dropped (voice is local only, via Writey Helper); ChatGPT sign-in settled as Helper-only; push-to-talk added; ChatGPT merged into the Helper phase. v0.3: voice runs on local Python models (Parakeet STT, Fish S1-mini TTS); the browser owns mic, VAD and playback, the Helper only runs models. v0.4: Phase 2 shipped; key storage goes through two security-definer functions instead of the service role (§6.2). v0.5: Sign in with ChatGPT shipped early in Writey Helper, following OpenAI's documented open-source flow (§6.3). Running decisions log: [HANDOFF.md](../HANDOFF.md).
 
 ---
 
@@ -314,6 +314,15 @@ Research findings (Oct 2026):
 
 Consequence: ChatGPT (and voice) need the Helper installed; OpenRouter and OpenCode Zen work from the website alone. Moving ChatGPT tokens into Supabase and calling OpenAI from the Worker would be a hosted integration that needs an OpenAI-issued client ID. Revisit only if one is granted.
 
+**As built (2026-10-25), per developers.openai.com/siwc/token-sharing-open-source:**
+
+- **Registration:** the first sign-in opens `https://auth.openai.com/api/accounts/authorize` with `client_id=dynamic_agent_client`, `agent_name_hint=Writey` and a per-computer `ext_agent_host_id` (`urn:uuid:…`, made once). The callback returns the issued `oaiapp_…` client id, which is saved and reused for later sign-ins (with `id_token_hint` / `login_hint`).
+- **OAuth details:** PKCE S256, `state` and `nonce`. Scopes are `openid profile email offline_access resource.invoke chatgpt.tokens.use.direct`, with `resource=https://api.openai.com/v1`. The callback listens on `http://127.0.0.1:1455/auth/callback`, falling back to any free port. Codes are exchanged at `/api/accounts/oauth/token`. The ID token is verified against OpenAI's JWKS (issuer, audience = issued client id, nonce).
+- **Tokens:** they live in the Helper's per-user folder (atomic, owner-only writes). The access token lasts 1 h and the rotating refresh token 30 days; refreshes are serialized. Sign-out revokes the refresh token at the discovery `revocation_endpoint` and keeps the registration.
+- **Inference:** `POST https://api.openai.com/v1/responses` with `store:false` and `stream:true`. System text goes in `instructions`, and images as `input_image`. The Helper strips forbidden parameters (`temperature`, `max_output_tokens`, …). Only `response.completed` counts as success. Plan-usage error codes map to plain messages, with a **Manage usage** link (https://chatgpt.com/settings/usage).
+- **Browser ↔ Helper:** the browser pairs once with a six-digit code the Helper shows, and gets a token (only its hash is stored). Every request needs that token, an allowed `Origin` and `Host: 127.0.0.1:47823` (which blocks DNS rebinding). Preflights send `Access-Control-Allow-Private-Network`. The website contacts 127.0.0.1 only after pairing, or when you click to connect, so other users never see Chrome's local-network prompt.
+- **UI rules followed:** the button says "Continue with ChatGPT". A one-time "You’re using your ChatGPT plan" notice appears, and "Using ChatGPT plan · Manage usage" shows next to the composer.
+
 ### 6.4 Model capabilities, errors, cancel
 
 - **Vision check.** The help engine sends images, so the reasoning model must accept image input. Model pickers mark text-only models. If a text-only model is chosen, a two-step path runs: a vision model transcribes the focus region line by line to text/LaTeX (cached per line), then the chosen model reasons over that text.
@@ -373,7 +382,7 @@ apps/helper/
     server.py        FastAPI: WS /stt, POST /tts (streamed audio), /chatgpt/*, GET /health
     stt.py           Parakeet TDT 0.6B v2 via onnx-asr (ONNX Runtime CUDA; CPU fallback). Fallback model: faster-whisper distil-large-v3
     tts.py           Fish Audio OpenAudio S1-mini (local, CUDA). Fallback: Kokoro-82M
-    chatgpt.py       Sign in with ChatGPT (loopback 127.0.0.1:1455) + Responses proxy
+    chatgpt.py       Sign in with ChatGPT (dynamic registration, loopback 127.0.0.1:1455) + Responses proxy  ✅
     pairing.py       one-time pairing code, origin allow-list
     models.py        download + cache model weights on first run, report status
   pyproject.toml     installed with `uv`; one command to run (`uv run writey-helper`)
@@ -449,7 +458,7 @@ Each phase ends with something usable.
 | **1b. Math spike**   | Render ~20 typical formulas with the single-stroke handwriting renderer (§5.5) and judge quality.                                                                                                         | next (before 3)               |
 | **2. Ask by typing** | Provider settings (OpenRouter, OpenCode Zen) with encrypted keys, context capture with line labels, PLAN/PRODUCE, chat panel with KaTeX, cancel, errors, vision check. Model eval set (20–30 real pages). | ✅ shipped (eval set pending) |
 | **3. Writey writes** | InkScript, layout engine, handwriting renderer, ghost preview and accept, check-my-work marks.                                                                                                            |                               |
-| **4. Helper**        | Browser voice client (mic, VAD, transcript, trigger, push-to-talk) + Writey Helper (Parakeet STT, Fish TTS) **and** Sign in with ChatGPT + Responses adapter (same process).                              |                               |
+| **4. Helper**        | Browser voice client (mic, VAD, transcript, trigger, push-to-talk) + Writey Helper (Parakeet STT, Fish TTS) **and** Sign in with ChatGPT + Responses adapter (same process).                              | ChatGPT part ✅ shipped early |
 | **5. Diagrams**      | Diagram spec, renderer, plots, SVG export.                                                                                                                                                                |                               |
 | **v1.x / v2**        | Exports, shape snapping, paper styles, study mode, sharing, personal handwriting style, iPad.                                                                                                             |                               |
 

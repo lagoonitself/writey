@@ -1,12 +1,14 @@
 import { type ModelInfo, parseModels, type Turn, type Usage } from '@writey/ai-core'
 import {
+  type AiProvider,
   type AiSettings,
   type CredentialInfo,
   DEFAULT_AI,
-  isKeyProvider,
+  isAiProvider,
   type KeyProvider,
 } from '@writey/shared'
 import { api, authedFetch, errorFrom } from './api'
+import { chatgptModels } from './helper'
 import { supabase } from './supabase'
 
 // ---------------------------------------------------------------------------
@@ -34,7 +36,7 @@ export async function deleteCredential(provider: KeyProvider): Promise<void> {
 export async function loadAiSettings(): Promise<AiSettings> {
   const { data } = await supabase.from('profiles').select('settings').maybeSingle()
   const ai = (data?.settings as { ai?: Partial<AiSettings> } | undefined)?.ai
-  if (ai?.provider && isKeyProvider(ai.provider) && typeof ai.model === 'string' && ai.model) {
+  if (ai?.provider && isAiProvider(ai.provider) && typeof ai.model === 'string' && ai.model) {
     return { provider: ai.provider, model: ai.model }
   }
   return DEFAULT_AI
@@ -51,7 +53,9 @@ export async function saveAiSettings(ai: AiSettings): Promise<void> {
 
 const modelLists = new Map<KeyProvider, Promise<ModelInfo[]>>()
 
-export function listModels(provider: KeyProvider): Promise<ModelInfo[]> {
+export function listModels(provider: AiProvider): Promise<ModelInfo[]> {
+  // ChatGPT's list depends on who is signed in to the Helper, so it isn't cached.
+  if (provider === 'chatgpt') return chatgptModels().then((json) => parseModels(provider, json))
   let p = modelLists.get(provider)
   if (!p) {
     p = api<unknown>(`/ai/${provider}/models`).then((json) => parseModels(provider, json))

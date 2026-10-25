@@ -1,5 +1,12 @@
 import { type ModelInfo, PROVIDER_LABEL } from '@writey/ai-core'
-import { DEFAULT_AI, KEY_PROVIDERS, type KeyProvider } from '@writey/shared'
+import {
+  AI_PROVIDERS,
+  type AiProvider,
+  type AiSettings,
+  DEFAULT_AI,
+  KEY_PROVIDERS,
+  type KeyProvider,
+} from '@writey/shared'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   deleteCredential,
@@ -9,8 +16,10 @@ import {
   startOpenRouterConnect,
 } from '../lib/ai'
 import { ApiRequestError } from '../lib/api'
+import { chatgptWelcomed } from '../lib/helper'
 import { CloseIcon } from '../notebook/icons'
-import type { AiState } from './useAiState'
+import { ChatgptCard, WelcomeNotice } from './ChatgptCard'
+import { type AiState, usable } from './useAiState'
 
 type Props = { ai: AiState; onChange(next: AiState): void; onClose(): void }
 
@@ -24,10 +33,11 @@ const BLURB: Record<KeyProvider, string> = {
   'opencode-zen': 'OpenCode’s curated models, billed to your Zen balance.',
 }
 
-/** A sensible model when switching to a provider for the first time. */
-const DEFAULT_MODEL: Record<KeyProvider, string> = {
+/** A sensible model when switching to a provider; ChatGPT takes the first one its plan lists. */
+const DEFAULT_MODEL: Record<AiProvider, string> = {
   openrouter: DEFAULT_AI.model,
   'opencode-zen': 'deepseek-v4.1-flash',
+  chatgpt: '',
 }
 
 export function SettingsDialog({ ai, onChange, onClose }: Props) {
@@ -43,7 +53,8 @@ export function SettingsDialog({ ai, onChange, onClose }: Props) {
     <dialog
       ref={ref}
       className="settings"
-      onClose={onClose}
+      // The nested welcome dialog's close event reaches here too through React; ignore it.
+      onClose={(e) => e.target === ref.current && onClose()}
       onClick={(e) => e.target === ref.current && ref.current?.close()}
       aria-labelledby="settings-title"
     >
@@ -69,11 +80,19 @@ export function SettingsDialog({ ai, onChange, onClose }: Props) {
           {KEY_PROVIDERS.map((provider) => (
             <ProviderCard key={provider} provider={provider} ai={ai} onChange={onChange} />
           ))}
-          <p className="muted small">ChatGPT sign-in comes with the Writey Helper app, later.</p>
+          <ChatgptCard ai={ai} onChange={onChange} />
         </section>
 
         <ModelSection ai={ai} onChange={onChange} />
       </div>
+      {ai.chatgpt?.welcome && (
+        <WelcomeNotice
+          onDone={() => {
+            if (ai.chatgpt) onChange({ ...ai, chatgpt: { ...ai.chatgpt, welcome: false } })
+            void chatgptWelcomed().catch(() => {})
+          }}
+        />
+      )}
     </dialog>
   )
 }
@@ -101,10 +120,11 @@ function ProviderCard({
       setKey('')
       const credentials = [...ai.credentials.filter((c) => c.provider !== provider), info]
       // First key in: point Writey at it so asking works straight away.
-      const hadOwnKey = ai.credentials.some((c) => c.provider === ai.settings.provider)
-      const settings = hadOwnKey ? ai.settings : { provider, model: DEFAULT_MODEL[provider] }
+      const settings = usable(ai, ai.settings.provider)
+        ? ai.settings
+        : { provider, model: DEFAULT_MODEL[provider] }
       if (settings !== ai.settings) await saveAiSettings(settings)
-      onChange({ settings, credentials })
+      onChange({ ...ai, settings, credentials })
     } catch (e) {
       const code = e instanceof ApiRequestError ? e.message : ''
       setError(
@@ -215,7 +235,7 @@ function ModelSection({ ai, onChange }: { ai: AiState; onChange(next: AiState): 
     }
   }, [provider])
 
-  const choose = async (next: { provider: KeyProvider; model: string }) => {
+  const choose = async (next: AiSettings) => {
     onChange({ ...ai, settings: next })
     setSaved(false)
     try {
@@ -236,20 +256,35 @@ function ModelSection({ ai, onChange }: { ai: AiState; onChange(next: AiState): 
   }, [models, query])
   const current = models?.find((m) => m.id === model)
 
+  // ChatGPT has no fixed default: take the first model the plan offers.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: runs when the list arrives
+  useEffect(() => {
+    const first = models?.find((m) => m.supported)
+    if (provider === 'chatgpt' && first && !models?.some((m) => m.id === model)) {
+      void choose({ provider, model: first.id })
+    }
+  }, [models])
+
   return (
     <section>
       <h3>Model {saved && <span className="saved-tick">Saved</span>}</h3>
       <div className="segmented">
-        {KEY_PROVIDERS.map((p) => {
-          const hasKey = ai.credentials.some((c) => c.provider === p)
+        {AI_PROVIDERS.map((p) => {
+          const ready = usable(ai, p)
           return (
             <button
               type="button"
               key={p}
               aria-pressed={provider === p}
               className={provider === p ? 'on' : ''}
-              disabled={!hasKey && provider !== p}
-              title={hasKey ? undefined : `Add a ${PROVIDER_LABEL[p]} key first`}
+              disabled={!ready && provider !== p}
+              title={
+                ready
+                  ? undefined
+                  : p === 'chatgpt'
+                    ? 'Sign in with ChatGPT first'
+                    : `Add a ${PROVIDER_LABEL[p]} key first`
+              }
               onClick={() =>
                 provider !== p && void choose({ provider: p, model: DEFAULT_MODEL[p] })
               }
@@ -262,7 +297,8 @@ function ModelSection({ ai, onChange }: { ai: AiState; onChange(next: AiState): 
       <p className="model-current">
         <strong>{current?.name ?? model}</strong>
         {current?.vision === false && <span className="tag warn">can’t see images</span>}
-        {model === DEFAULT_MODEL[provider] && <span className="tag">default</span>}
+        {model && model === DEFAULT_MODEL[provider] && <span className="tag">default</span>}
+        {provider === 'chatgpt' && <span className="tag">Using ChatGPT plan</span>}
       </p>
       <input
         type="search"
