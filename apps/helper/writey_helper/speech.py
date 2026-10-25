@@ -3,8 +3,8 @@ Local speech models (docs/ARCHITECTURE.md §7): Parakeet TDT 0.6B v2 for speech-
 Kokoro-82M for text-to-speech, both ONNX on this computer. The browser owns the microphone,
 voice detection and playback; the Helper only turns audio into text and text into audio.
 
-Speech-to-text is the int8 build on the CPU (~660 MB). Text-to-speech runs full precision on an
-NVIDIA GPU when there is one, otherwise int8 on the CPU.
+With an NVIDIA GPU both run there: Parakeet in fp16 (~1.26 GB), Kokoro in full precision.
+Without one, both are int8 builds on the CPU (Parakeet ~660 MB).
 Models download on first use into the Helper's data folder. Nothing here touches the network
 after that, and no audio is ever stored.
 """
@@ -27,19 +27,33 @@ SAMPLE_RATE = 16_000
 MAX_SECONDS = 30
 MAX_TTS_CHARS = 800
 
-PARAKEET_REPO = "istupakov/parakeet-tdt-0.6b-v2-onnx"
-#: The int8 build (~660 MB) on every computer: as accurate as full precision for English
-#: and fast on the CPU. Its quantized ops don't run on CUDA, so speech-to-text stays on the CPU.
-_PARAKEET_INT8 = {
-    "config.json": 1,
-    "vocab.txt": 1,
-    "nemo128.onnx": 1,
-    "encoder-model.int8.onnx": 652_000_000,
-    "decoder_joint-model.int8.onnx": 9_000_000,
+#: Same files as istupakov/parakeet-tdt-0.6b-v2-onnx (onnx-asr's layout), plus an fp16 build.
+PARAKEET_REPO = "ysdede/parakeet-tdt-0.6b-v2-onnx"
+_PARAKEET_COMMON = {"config.json": 1, "vocab.txt": 1, "nemo128.onnx": 1}
+#: fp16 on an NVIDIA GPU (~1.26 GB; ~0.05 s for 4 s of speech on an RTX 4060). int8 on the CPU
+#: (~660 MB; ~0.9 s): its quantized ops have no CUDA kernels.
+PARAKEET_FILES = {
+    "cuda": {
+        **_PARAKEET_COMMON,
+        "encoder-model.fp16.onnx": 1_239_000_000,
+        "decoder_joint-model.fp16.onnx": 18_000_000,
+    },
+    "cpu": {
+        **_PARAKEET_COMMON,
+        "encoder-model.int8.onnx": 652_000_000,
+        "decoder_joint-model.int8.onnx": 9_000_000,
+    },
 }
-PARAKEET_FILES = {"cuda": _PARAKEET_INT8, "cpu": _PARAKEET_INT8}
-#: Left by Helper 0.4.0's full-precision build (2.5 GB); removed on start.
-STALE_FILES = ("encoder-model.onnx", "encoder-model.onnx.data", "decoder_joint-model.onnx")
+PARAKEET_QUANT = {"cuda": "fp16", "cpu": "int8"}
+#: Builds this computer doesn't use (full precision from a 0.4.0 dev build, the other device's
+#: build); removed on start to keep the disk free.
+PARAKEET_BUILDS = (
+    "encoder-model.onnx",
+    "encoder-model.onnx.data",
+    "decoder_joint-model.onnx",
+    *PARAKEET_FILES["cuda"],
+    *PARAKEET_FILES["cpu"],
+)
 KOKORO_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/"
 KOKORO_FILES = {
     "cuda": {"kokoro-v1.0.onnx": 310_000_000, "voices-v1.0.bin": 28_000_000},
@@ -167,26 +181,48 @@ def _session_options() -> Any:
     return opts
 
 
+def _sessions(obj: Any, depth: int = 3) -> list[Any]:
+    """The onnxruntime sessions inside an onnx-asr model."""
+    import onnxruntime as ort
+
+    if isinstance(obj, ort.InferenceSession):
+        return [obj]
+    if depth == 0 or not hasattr(obj, "__dict__"):
+        return []
+    return [s for v in vars(obj).values() for s in _sessions(v, depth - 1)]
+
+
 def _load_parakeet(folder: Path, device: str) -> tuple[Recognizer, str]:
     import numpy as np
     import onnx_asr
 
-    model = onnx_asr.load_model(
-        "nemo-parakeet-tdt-0.6b-v2",
-        folder,
-        quantization="int8",
-        sess_options=_session_options(),
-        providers=["CPUExecutionProvider"],
-    )
-    # The first runs are several times slower than the rest; pay for them while loading.
-    for seconds in (1, 4):
+    def load(providers: list[Any]) -> Any:
+        return onnx_asr.load_model(
+            "nemo-parakeet-tdt-0.6b-v2",
+            folder,
+            quantization=PARAKEET_QUANT[device],
+            sess_options=_session_options(),
+            providers=providers,
+        )
+
+    try:
+        model = load(_providers(device))
+    except Exception as e:  # noqa: BLE001 - e.g. the GPU is out of memory
+        if device != "cuda":
+            raise
+        print(f"  Speech-to-text couldn't start on the GPU ({e}); using the CPU.", flush=True)
+        model = load(["CPUExecutionProvider"])
+    # The first runs are several times slower than the rest (on CUDA, seconds: cuDNN starts
+    # up); pay for them while loading.
+    for seconds in (1, 4, 1, 4):
         model.recognize(np.zeros(SAMPLE_RATE * seconds, dtype=np.float32), sample_rate=SAMPLE_RATE)
 
     class Parakeet:
         def recognize(self, audio: Any) -> str:
             return str(model.recognize(audio, sample_rate=SAMPLE_RATE))
 
-    return Parakeet(), "cpu"
+    on_gpu = any(_on_gpu(s) for s in _sessions(model))
+    return Parakeet(), "cuda" if on_gpu else "cpu"
 
 
 def _download_kokoro(folder: Path, device: str) -> None:
@@ -266,8 +302,10 @@ class Speech:
             ),
             "tts": Model("kokoro-82m", KOKORO_FILES, models / "kokoro-v1.0", self.device),
         }
-        for name in STALE_FILES:
-            (self.models["stt"].folder / name).unlink(missing_ok=True)
+        stt = self.models["stt"]
+        for name in PARAKEET_BUILDS:
+            if name not in stt.files:
+                (stt.folder / name).unlink(missing_ok=True)
 
     def status(self) -> dict[str, Any]:
         return {

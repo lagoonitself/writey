@@ -125,13 +125,16 @@ def test_failed_download_reports_an_error(tmp_path: Path) -> None:
         assert res.status_code == 409 and res.json()["error"] == "not_ready"
 
 
-def test_gpu_keeps_speech_to_text_small(tmp_path: Path) -> None:
-    stale = tmp_path / "models" / "parakeet-tdt-0.6b-v2" / "encoder-model.onnx.data"
-    stale.parent.mkdir(parents=True)
-    stale.write_bytes(b"x")
+def test_gpu_uses_fp16_and_drops_other_builds(tmp_path: Path) -> None:
+    folder = tmp_path / "models" / "parakeet-tdt-0.6b-v2"
+    folder.mkdir(parents=True)
+    stale = [folder / n for n in ("encoder-model.onnx.data", "encoder-model.int8.onnx")]
+    kept = folder / "vocab.txt"
+    for f in (*stale, kept):
+        f.write_bytes(b"x")
     speech = Speech(tmp_path, fake_backends(), device="cuda")
-    assert not stale.exists()
-    assert "encoder-model.int8.onnx" in speech.models["stt"].files
+    assert not any(f.exists() for f in stale) and kept.exists()
+    assert "encoder-model.fp16.onnx" in speech.models["stt"].files
     assert "kokoro-v1.0.onnx" in speech.models["tts"].files
     app = create_app(store=Store(tmp_path), origins=frozenset({ORIGIN}), port=47823, speech=speech)
     with TestClient(app, base_url="http://127.0.0.1:47823") as c:

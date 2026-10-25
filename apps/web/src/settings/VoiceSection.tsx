@@ -23,8 +23,8 @@ const VOICE_NAMES: Record<string, string> = {
   bm_george: 'George (UK)',
 }
 
-/** Download sizes. Speech-to-text is the int8 build everywhere; Kokoro is larger on a GPU. */
-const SIZE = { cuda: { stt: '660 MB', tts: '340 MB' }, cpu: { stt: '660 MB', tts: '120 MB' } }
+/** Download sizes. Both models are larger (and much faster) on an NVIDIA GPU. */
+const SIZE = { cuda: { stt: '1.3 GB', tts: '340 MB' }, cpu: { stt: '660 MB', tts: '120 MB' } }
 const WHERE = { cuda: 'GPU', cpu: 'CPU' }
 
 function describe(m: ModelStatus, size: string): { text: string; ok: boolean } {
@@ -183,7 +183,7 @@ export function VoiceSection() {
                   {missing && (
                     <button type="button" className="primary" onClick={() => void download()}>
                       <DownloadIcon size={16} />
-                      Download (about {status.device === 'cuda' ? '1 GB' : '780 MB'}, once)
+                      Download (about {status.device === 'cuda' ? '1.6 GB' : '780 MB'}, once)
                     </button>
                   )}
                 </>

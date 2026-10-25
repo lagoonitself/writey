@@ -220,6 +220,18 @@ def serve() -> None:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
+    from . import autostart
+
+    running = autostart._running_version()
+    if running == __version__:
+        print(f"\n  Writey Helper {__version__} is already running on http://{HOST}:{PORT}. All set.\n")
+        return
+    if running == "":
+        print(f"\n  Something else is using port {PORT}, so Writey Helper can't start.\n")
+        sys.exit(1)
+    if running is not None and sys.platform == "win32":
+        print(f"  Replacing Writey Helper {running} with {__version__}...", flush=True)
+        autostart._stop_old_helper()
     print(
         f"\n  Writey Helper {__version__} is running on http://{HOST}:{PORT}\n"
         "  In Writey, open Settings to connect ChatGPT or turn on voice.\n"
