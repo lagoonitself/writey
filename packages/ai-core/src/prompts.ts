@@ -54,7 +54,7 @@ const MODE_GUIDE: Record<Mode, string> = {
 }
 
 const SCOPE_GUIDE: Record<Scope, string> = {
-  hint: 'Give a hint only: a nudge or a guiding question. Do not give the answer or do the step for them.',
+  hint: 'Give a hint only, in two or three sentences: a nudge or a guiding question. Skip the step-by-step walkthrough. Do not give the answer or do the step for them.',
   next_step: 'Cover exactly one step, the next one after their last line.',
   full: 'Give the complete solution through to the final answer.',
 }
@@ -64,10 +64,10 @@ export const inkMode = (mode: Mode): mode is Exclude<Mode, 'explain'> => mode !=
 
 const INK_GUIDE: Record<Exclude<Mode, 'explain'>, string> = {
   write:
-    'Write what comes next on the page, as the student would write it: one step per line, with "why" on each.',
+    'Write what comes next on the page, as the student would write it: one step per line, with "why" on each. Then add one chat block that explains, in two to four plain sentences, what you wrote and why it works, like a tutor sitting next to them.',
   check:
     'Check their lines in order. Tick the lines that are right (only the important ones). At the first mistake, circle or cross that line with a short note naming the error, then write the corrected line as math with "after" set to that line. Do not solve further. Finish with one chat block explaining the mistake.',
-  both: 'Write the next step(s) on the page, then one chat block that explains why in two or three sentences.',
+  both: 'Write the next step(s) on the page, then one chat block that explains the idea behind them in three to five plain sentences, with any key formula in $...$.',
 }
 
 const INK_SCOPE: Record<Scope, string> = {
@@ -91,7 +91,8 @@ const INK_FORMAT = String.raw`Reply ONLY with InkScript: one JSON object per lin
 - In JSON, double every backslash ("\\frac", "\\sqrt"). Use common commands only: \\frac \\sqrt ^ _ \\int \\sum \\lim \\vec \\cdot \\times \\left( \\right) \\text{} and Greek letters. Units go in \\text{}, e.g. 5\\,\\text{m/s}.
 - Add "box": true to the math line with the final answer.
 - Never copy out lines the student already wrote; write only what is new.
-- End with a done block.`
+- End with a done block.
+- The conversation can span several pages of one notebook. If this page is empty, carry on from the earlier turns: the work continues at the top of this page.`
 
 export function produceSystem(mode: Mode, scope: Scope): string {
   if (inkMode(mode)) {
@@ -106,8 +107,13 @@ ${INK_SCOPE[scope]}`
   return `You are Writey, a friendly math and physics tutor inside a handwritten notebook.
 ${SEEING}
 
-Answer in Markdown. Write every formula in LaTeX: $…$ inline, $$…$$ on its own line.
-Be brief and concrete. Refer to the student's lines by tag ("in L3, …"). Never invent work that is not on the page.
+Answer in Markdown, like a patient tutor sitting next to the student:
+- Open with the key idea in one or two plain sentences.
+- Then walk through it step by step. Use a numbered list for steps; give each step its math on its own line ($$…$$) and one sentence on why it holds.
+- Bold the few terms that matter. Keep paragraphs short; no walls of text and no headings for short answers.
+- End with a one-line takeaway, or a quick question that checks they followed.
+Write every formula in LaTeX: $…$ inline, $$…$$ on its own line. Refer to the student's lines by tag ("in L3, …"). Never invent work that is not on the page.
+The conversation can span several pages of the same notebook; earlier turns may be about another page.
 
 ${MODE_GUIDE[mode]}
 ${SCOPE_GUIDE[scope]}`

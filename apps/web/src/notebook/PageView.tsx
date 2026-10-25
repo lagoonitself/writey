@@ -1,7 +1,14 @@
 import type { PageRow } from '@writey/shared'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { PageController, type TextEdit } from './pageController'
-import type { GhostView, PageHandle, SaveState, ToolId, ToolState } from './tools'
+import {
+  dotCursor,
+  type GhostView,
+  type PageHandle,
+  type SaveState,
+  type ToolId,
+  type ToolState,
+} from './tools'
 
 type Props = {
   page: PageRow
@@ -62,7 +69,7 @@ export function PageView(props: Props) {
     const el = wrapRef.current
     if (!el) return
     const io = new IntersectionObserver(([entry]) => setVisible(Boolean(entry?.isIntersecting)), {
-      rootMargin: '1500px 0px',
+      rootMargin: '800px 0px',
     })
     io.observe(el)
     return () => io.disconnect()
@@ -112,6 +119,7 @@ export function PageView(props: Props) {
           <canvas
             ref={wetRef}
             className="layer wet"
+            style={{ cursor: cursorFor(tools, scale) }}
             onPointerDown={(e) => ctl.pointerDown(e.nativeEvent)}
             onPointerMove={(e) => ctl.pointerMove(e.nativeEvent)}
             onPointerUp={() => ctl.pointerUp()}
@@ -140,6 +148,14 @@ export function PageView(props: Props) {
       <span className="page-number">{props.number}</span>
     </div>
   )
+}
+
+function cursorFor(tools: ToolState, scale: number): string | undefined {
+  if (tools.tool === 'pen') return dotCursor(tools.pen.color, tools.pen.width * scale + 5)
+  if (tools.tool === 'highlighter') {
+    return dotCursor(tools.highlighter.color, tools.highlighter.width * scale * 0.6, '#1d1c19')
+  }
+  return undefined
 }
 
 /** Accept · Redo · Discard · Why? under Writey's preview ink (docs §5.7). */

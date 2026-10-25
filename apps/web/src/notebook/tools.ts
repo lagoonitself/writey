@@ -37,6 +37,14 @@ export const TOOL_KEYS: Record<string, ToolId> = {
   t: 'text',
 }
 
+/** A round cursor: a dot in the pen's color where the ink lands (no pencil icon). */
+export function dotCursor(fill: string, size: number, ring = '#fff'): string {
+  const d = 2 * Math.round(Math.min(24, Math.max(7, size)) / 2)
+  const s = d + 4
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${s}' height='${s}'><circle cx='${s / 2}' cy='${s / 2}' r='${d / 2}' fill='${fill}' stroke='${ring}' stroke-width='1.5'/></svg>`
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${s / 2} ${s / 2}, crosshair`
+}
+
 /** What the notebook view can ask of a mounted page. */
 export type PageHandle = {
   undo(): void
@@ -50,6 +58,8 @@ export type PageHandle = {
   /** Saves now if there are unsaved edits. */
   flush(): Promise<void>
   isDirty(): boolean
+  /** True once the page's ink has loaded and it can take new ink. */
+  isLoaded(): boolean
   /** What the help engine needs to see this page. */
   snapshot(): PageSnapshot
   /** AI ink preview (docs §5.7): starts empty, grows block by block while the answer streams. */

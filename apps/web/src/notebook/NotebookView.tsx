@@ -54,6 +54,13 @@ function savedTools(): ToolState {
   }
 }
 
+const scrollToPage = (pageId: string) =>
+  requestAnimationFrame(() =>
+    document
+      .getElementById(`page-${pageId}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+  )
+
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))
 
@@ -255,12 +262,41 @@ export function NotebookView({ id }: { id: string }) {
     }
   }
 
-  const scrollToPage = (pageId: string) =>
-    requestAnimationFrame(() =>
-      document
-        .getElementById(`page-${pageId}`)
-        ?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
-    )
+  const pagesRef = useRef(pages)
+  pagesRef.current = pages
+
+  const pageNumber = useCallback(
+    (pageId: string) => pagesRef.current.findIndex((p) => p.id === pageId) + 1,
+    [],
+  )
+
+  // Writey ran out of room: a blank page right after, ready for its ink (docs §5.4).
+  const addPageAfter = useCallback(
+    async (pageId: string): Promise<PageRow | null> => {
+      const list = pagesRef.current
+      const idx = list.findIndex((p) => p.id === pageId)
+      const from = list[idx]
+      if (!from) return null
+      const [row] = await addPages(id, from.sort_key, list[idx + 1]?.sort_key ?? null, [
+        { width: from.width, height: from.height, background: { kind: 'blank' } },
+      ])
+      if (!row) return null
+      setPages((prev) => {
+        const at = prev.findIndex((p) => p.id === pageId) + 1
+        return [...prev.slice(0, at), row, ...prev.slice(at)]
+      })
+      setActiveId(row.id)
+      scrollToPage(row.id)
+      const deadline = performance.now() + 15_000
+      while (performance.now() < deadline) {
+        const h = handles.get(row.id)
+        if (h?.isLoaded()) return row
+        await new Promise((r) => setTimeout(r, 50))
+      }
+      return null
+    },
+    [id, handles],
+  )
 
   const insertAfterActive = (rows: PageRow[]) => {
     setPages((prev) => {
@@ -530,9 +566,11 @@ export function NotebookView({ id }: { id: string }) {
         {chatOpen && (
           <Suspense fallback={<aside className="chat" aria-busy="true" />}>
             <ChatPanel
+              notebookId={id}
               page={pages.find((p) => p.id === activeId) ?? null}
-              pageNumber={pages.findIndex((p) => p.id === activeId) + 1}
+              pageNumber={pageNumber}
               handle={(pageId) => handles.get(pageId)}
+              addPageAfter={addPageAfter}
               ai={ai}
               focusKey={chatFocus}
               onSettings={() => setSettingsOpen(true)}

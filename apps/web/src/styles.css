@@ -41,14 +41,14 @@
   --z-menu: 30;
   --z-chat-mobile: 20;
 
-  /* Pencil cursors: the hotspot is the pencil tip, where ink lands. */
+  /* Round pen cursors: a dot where the ink lands. Pages set one in the pen's color. */
   --cursor-pen:
-    url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'><path d='M3 25l1.6-6.1L18.8 4.7a2.2 2.2 0 013.1 0l1.4 1.4a2.2 2.2 0 010 3.1L9.1 23.4z' fill='%231d1c19' stroke='white' stroke-width='1.8' stroke-linejoin='round'/><path d='M16.6 6.9l4.5 4.5' stroke='white' stroke-width='1.6'/><path d='M3.6 24.4l1.2-4.6 3.4 3.4z' fill='%23f3d9ae'/><path d='M3.2 24.8l.6-2.2 1.6 1.6z' fill='%231d1c19'/></svg>")
-    3 25,
+    url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12'><circle cx='6' cy='6' r='4' fill='%231d1c19' stroke='white' stroke-width='1.5'/></svg>")
+    6 6,
     crosshair;
   --cursor-marker:
-    url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'><path d='M3 25l1.6-6.1L18.8 4.7a2.2 2.2 0 013.1 0l1.4 1.4a2.2 2.2 0 010 3.1L9.1 23.4z' fill='%23ffd21f' stroke='white' stroke-width='1.8' stroke-linejoin='round'/><path d='M16.6 6.9l4.5 4.5' stroke='%231d1c19' stroke-width='1.6'/><path d='M3.6 24.4l1.2-4.6 3.4 3.4z' fill='%23f3d9ae'/><path d='M3.2 24.8l.6-2.2 1.6 1.6z' fill='%231d1c19'/></svg>")
-    3 25,
+    url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><circle cx='8' cy='8' r='6' fill='%23ffd21f' stroke='%231d1c19' stroke-width='1.5'/></svg>")
+    8 8,
     crosshair;
 
   font-family: var(--ui);
@@ -1331,6 +1331,7 @@ kbd {
   }
 }
 .chat-header {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.2rem;
@@ -1375,6 +1376,61 @@ kbd {
   height: 32px;
   padding: 0;
   border-radius: 10px;
+}
+.chat-icon.on {
+  background: var(--desk);
+}
+.chat-history {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0.5rem;
+  left: 0.5rem;
+  z-index: var(--z-menu);
+  max-height: min(360px, 60vh);
+  overflow-y: auto;
+  padding: 0.35rem;
+  border-radius: var(--r-md);
+  background: var(--paper);
+  box-shadow:
+    0 0 0 1px var(--line),
+    var(--shadow-lg);
+  animation: rise 200ms var(--ease) backwards;
+}
+.chat-history-label {
+  margin: 0.35rem 0.6rem 0.4rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+.chat-history button {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  text-align: left;
+  font-size: 0.88rem;
+  font-weight: 400;
+}
+.chat-history button span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-history button small {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  color: var(--faint);
+}
+.chat-history button:hover:not(:disabled) {
+  background: var(--desk);
+}
+.chat-history button.on {
+  background: var(--blue-soft);
+  color: var(--blue-deep);
 }
 .chat-log {
   flex: 1;
@@ -1514,6 +1570,12 @@ kbd {
 }
 
 /* Rendered Markdown replies. */
+.md {
+  color: var(--ink);
+  font-size: 0.95rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
 .md > :first-child {
   margin-top: 0;
 }
@@ -1523,14 +1585,31 @@ kbd {
 .md p,
 .md ul,
 .md ol {
-  margin: 0 0 0.65rem;
+  margin: 0 0 0.75rem;
 }
 .md ul,
 .md ol {
-  padding-left: 1.3rem;
+  padding-left: 1.35rem;
+}
+.md li {
+  padding-left: 0.15rem;
 }
 .md li + li {
-  margin-top: 0.2rem;
+  margin-top: 0.4rem;
+}
+.md li::marker {
+  color: var(--muted);
+  font-weight: 600;
+}
+.md li > p {
+  margin-bottom: 0.35rem;
+}
+.md strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+.md em {
+  color: var(--ink-soft);
 }
 .md h1,
 .md h2,
@@ -1538,7 +1617,12 @@ kbd {
 .md h4 {
   font-size: 1rem;
   font-weight: 600;
-  margin: 1rem 0 0.4rem;
+  margin: 1.1rem 0 0.45rem;
+}
+.md hr {
+  margin: 1rem 0;
+  border: 0;
+  border-top: 1px solid var(--line);
 }
 .md code {
   font-family: var(--mono);
@@ -1557,17 +1641,67 @@ kbd {
   padding: 0;
   background: none;
 }
+.md .katex {
+  font-size: 1.06em;
+}
+/* Display math sits on a strip of desk, like a worked line set apart. */
 .md .katex-display {
-  margin: 0.5rem 0;
+  margin: 0.55rem 0 0.8rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: var(--r-sm);
+  background: var(--desk);
   overflow-x: auto;
   overflow-y: hidden;
-  padding: 0.1rem 0;
+}
+.md li .katex-display {
+  margin: 0.35rem 0 0.4rem;
 }
 .md blockquote {
-  margin: 0 0 0.65rem;
-  padding-left: 0.8rem;
+  margin: 0 0 0.75rem;
+  padding: 0.1rem 0 0.1rem 0.8rem;
   border-left: 3px solid var(--marker);
   color: var(--ink-soft);
+}
+/* The chat's copy of what Writey wrote on the page. */
+.md .ink-copy {
+  margin: 0.25rem 0 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: #fff;
+}
+.md .ink-copy summary {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.8rem;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #5b3fb5;
+}
+.md .ink-copy summary::-webkit-details-marker {
+  display: none;
+}
+.md .ink-copy summary::before {
+  content: "";
+  width: 0.4rem;
+  height: 0.4rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 160ms var(--ease);
+}
+.md .ink-copy[open] summary::before {
+  transform: rotate(45deg);
+}
+.md .ink-copy ol {
+  margin: 0;
+  padding: 0.1rem 0.9rem 0.7rem 2.1rem;
+}
+.md .ink-copy li em {
+  font-size: 0.85em;
+  color: var(--muted);
 }
 
 .chat-input {

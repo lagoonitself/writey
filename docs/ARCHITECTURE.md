@@ -26,7 +26,7 @@ v0.2 changes: Gemini Live dropped (voice is local only, via Writey Helper); Chat
 | Assistant name / trigger | "Writey".                                                                                                                                                                                                    |
 | AI output                | Chat panel **or** handwritten ink on the page, chosen by intent. Both link to each other.                                                                                                                    |
 | AI ink                   | Distinct color, grouped (erasable as one), shown as a ghost preview with **Accept / Redo / Discard**.                                                                                                        |
-| Memory                   | One conversation per page. Nothing global.                                                                                                                                                                   |
+| Memory                   | One conversation per notebook (several kept). Nothing global.                                                                                                                                                |
 | Proactive help           | None in v1. Writey acts only when asked.                                                                                                                                                                     |
 | Paper                    | Plain white in v1; background system built so v2 can add paper styles.                                                                                                                                       |
 | Sharing                  | v2.                                                                                                                                                                                                          |
@@ -273,7 +273,7 @@ AI ink first appears as a faint ghost (40% opacity) with a floating bar: **Accep
 
 ### 5.8 Memory
 
-Each page has one thread (`ai_threads` / `ai_messages`). A request includes the last ~10 turns, summarized beyond that. AI ink already on the page is passed as exact source, so "why did you do that last step?" works. Nothing carries across pages.
+Each notebook has conversations (`ai_threads` / `ai_messages`); the newest is current, and the chat can start a new one or reopen an old one. A request includes the last ~10 turns, from whatever pages they were asked on. AI ink already on the page is passed as exact source, so "why did you do that last step?" works.
 
 ---
 
@@ -432,7 +432,7 @@ pages                (id, notebook_id, owner_id, sort_key, width, height,
                       background jsonb, content_key text,  -- R2 object key
                       version int, updated_at, deleted_at)
 assets               (id, owner_id, kind 'pdf'|'image', r2_key, bytes, sha256, page_count, created_at)
-ai_threads           (id, page_id, owner_id, summary text, updated_at)
+ai_threads           (id, notebook_id, owner_id, title, summary text, created_at, updated_at)
 ai_messages          (id, thread_id, role, content jsonb, model, usage jsonb, created_at)
 provider_credentials (id, owner_id, provider, label, ciphertext bytea, iv bytea,
                       key_version int, last4 text, created_at)

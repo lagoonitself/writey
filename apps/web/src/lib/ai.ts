@@ -122,7 +122,7 @@ export async function finishOpenRouterConnect(code: string): Promise<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Page conversations: one thread per page (docs §5.8)
+// Conversations: per notebook, several per notebook, newest first (docs §5.8)
 // ---------------------------------------------------------------------------
 
 export type StoredMessage = {
@@ -135,6 +135,8 @@ export type StoredMessage = {
   error?: boolean
 }
 
+export type ThreadInfo = { id: string; title: string | null; updated_at: string }
+
 type MessageRow = {
   id: string
   role: 'user' | 'assistant'
@@ -143,17 +145,21 @@ type MessageRow = {
   usage: Usage | null
 }
 
-export async function loadThread(pageId: string): Promise<StoredMessage[]> {
-  const { data: thread } = await supabase
+export async function listThreads(notebookId: string): Promise<ThreadInfo[]> {
+  const { data, error } = await supabase
     .from('ai_threads')
-    .select('id')
-    .eq('page_id', pageId)
-    .maybeSingle()
-  if (!thread) return []
+    .select('id,title,updated_at')
+    .eq('notebook_id', notebookId)
+    .order('updated_at', { ascending: false })
+  if (error) throw new Error(error.message)
+  return data as ThreadInfo[]
+}
+
+export async function loadMessages(threadId: string): Promise<StoredMessage[]> {
   const { data, error } = await supabase
     .from('ai_messages')
     .select('id,role,content,model,usage')
-    .eq('thread_id', thread.id)
+    .eq('thread_id', threadId)
     .order('created_at')
   if (error) throw new Error(error.message)
   return (data as MessageRow[]).map((m) => ({
@@ -167,29 +173,23 @@ export async function loadThread(pageId: string): Promise<StoredMessage[]> {
   }))
 }
 
-const threadIds = new Map<string, string>()
-
-async function threadFor(pageId: string): Promise<string> {
-  const known = threadIds.get(pageId)
-  if (known) return known
+export async function createThread(notebookId: string, title: string): Promise<ThreadInfo> {
   const { data, error } = await supabase
     .from('ai_threads')
-    .upsert({ page_id: pageId }, { onConflict: 'page_id' })
-    .select('id')
+    .insert({ notebook_id: notebookId, title: title.slice(0, 80) })
+    .select('id,title,updated_at')
     .single()
   if (error) throw new Error(error.message)
-  threadIds.set(pageId, data.id)
-  return data.id
+  return data as ThreadInfo
 }
 
 export async function appendMessages(
-  pageId: string,
+  threadId: string,
   messages: Omit<StoredMessage, 'id'>[],
 ): Promise<void> {
-  const thread = await threadFor(pageId)
   const { error } = await supabase.from('ai_messages').insert(
     messages.map((m) => ({
-      thread_id: thread,
+      thread_id: threadId,
       role: m.role,
       content: { text: m.text, mode: m.mode, error: m.error },
       model: m.model ?? null,
@@ -199,11 +199,14 @@ export async function appendMessages(
   if (error) throw new Error(error.message)
 }
 
-export async function clearThread(pageId: string): Promise<void> {
-  const { error } = await supabase.from('ai_threads').delete().eq('page_id', pageId)
+export async function deleteThread(threadId: string): Promise<void> {
+  const { error } = await supabase.from('ai_threads').delete().eq('id', threadId)
   if (error) throw new Error(error.message)
-  threadIds.delete(pageId)
 }
+
+/** The model reads a reply as plain Markdown, without the chat's fold-out markup. */
+const plainReply = (text: string) =>
+  text.replace(/<summary>(.*?)<\/summary>/g, '$1').replace(/<\/?details[^>]*>/g, '')
 
 /** Question-and-answer pairs for the model's history; failed or unanswered asks are left out. */
 export function turnsOf(messages: readonly StoredMessage[]): Turn[] {
@@ -212,7 +215,7 @@ export function turnsOf(messages: readonly StoredMessage[]): Turn[] {
     const q = messages[i] as StoredMessage
     const a = messages[i + 1] as StoredMessage
     if (q.role === 'user' && a.role === 'assistant' && !a.error && a.text) {
-      turns.push({ role: 'user', text: q.text }, { role: 'assistant', text: a.text })
+      turns.push({ role: 'user', text: q.text }, { role: 'assistant', text: plainReply(a.text) })
       i++
     }
   }

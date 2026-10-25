@@ -241,3 +241,18 @@ export const MicOffIcon = (p: P) => (
     <path d="M4 4l16 16" />
   </Svg>
 )
+
+export const HistoryIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M3.5 12a8.5 8.5 0 102.5-6" />
+    <path d="M3.5 4v4h4" />
+    <path d="M12 8v4.5l3 2" />
+  </Svg>
+)
+
+export const NewChatIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M20 12.5V17a2 2 0 01-2 2H9l-4 3v-3a2 2 0 01-2-2V7a2 2 0 012-2h7" />
+    <path d="M18 3v6M15 6h6" />
+  </Svg>
+)

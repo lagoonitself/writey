@@ -47,9 +47,9 @@ export type HelpUpdate =
   | { type: 'plan'; plan: Plan }
   | { type: 'thinking' }
   | { type: 'text'; text: string }
-  /** Ink is about to be written: the page opens a preview. */
-  | { type: 'inkStart' }
-  | { type: 'ink'; written: Written }
+  /** Ink is about to be written on this page: it opens a preview. */
+  | { type: 'inkStart'; page: PageRow }
+  | { type: 'ink'; page: PageRow; written: Written }
 
 export type HelpResult = {
   text: string
@@ -166,6 +166,9 @@ export async function askWritey(opts: {
   turns: readonly Turn[]
   signal: AbortSignal
   onUpdate(u: HelpUpdate): void
+  /** A blank page after this one, for ink that doesn't fit. Null if none can be made. */
+  nextPage(after: PageRow): Promise<PageRow | null>
+  pageNumber(page: PageRow): number
 }): Promise<HelpResult> {
   const { utterance, settings, turns, signal, onUpdate } = opts
   const transport =
@@ -193,6 +196,8 @@ export async function askWritey(opts: {
       capture,
       target: plan.target_line,
       onUpdate,
+      nextPage: opts.nextPage,
+      pageNumber: opts.pageNumber,
       failure: transport.failure,
     })
     return { text: ink.text, plan, usage: addUsage(usage, ink.usage), ink: ink.written }
@@ -217,20 +222,28 @@ export async function askWritey(opts: {
   return { text, plan, usage }
 }
 
-/** How one InkScript block reads in the chat, which keeps a copy of what was written. */
+/** Pages Writey may add for one answer before it gives up and puts the rest in the chat. */
+const MAX_NEW_PAGES = 4
+
+/** How one written line reads in the chat, which keeps a copy of the page. */
 function blockMarkdown(b: InkBlock): string {
-  const why = 'why' in b && b.why ? `*(${b.why})*` : ''
+  const why = 'why' in b && b.why ? ` *— ${b.why}*` : ''
   switch (b.type) {
     case 'math':
-      return why ? `$$${b.latex}$$\n${why}` : `$$${b.latex}$$`
+      return `$\\displaystyle ${b.latex}$${why}`
     case 'text':
-      return why ? `${b.text} ${why}` : b.text
+      return `${b.text}${why}`
     case 'mark':
-      return `**${b.target}**: ${b.note ?? b.kind}`
+      return `**${b.target}** (${b.kind})${b.note ? `: ${b.note}` : ''}`
     default:
       return ''
   }
 }
+
+const list = (lines: readonly string[]) => lines.map((l, i) => `${i + 1}. ${l}`).join('\n')
+
+const pagesLabel = (numbers: readonly number[]) =>
+  numbers.length > 1 ? `pages ${numbers[0]}–${numbers.at(-1)}` : `page ${numbers[0] ?? ''}`.trim()
 
 async function writeInk(
   events: AsyncIterable<StreamEvent>,
@@ -239,24 +252,29 @@ async function writeInk(
     capture: Capture
     target: string | null
     onUpdate(u: HelpUpdate): void
+    nextPage(after: PageRow): Promise<PageRow | null>
+    pageNumber(page: PageRow): number
     failure(ev: Extract<StreamEvent, { type: 'error' }>): HelpError
   },
 ): Promise<{ text: string; written: Written[]; usage: Usage | undefined }> {
   const { capture, onUpdate } = o
-  const writer = new InkWriter(
+  const size = sizeFromLines(capture.lines.map((l) => l.rect.h))
+  const seed = Math.floor(Math.random() * 2 ** 31)
+  const style = { size, color: AI_INK, markColor: MARK_INK, seed }
+  let page = o.page
+  let writer = new InkWriter(
     {
-      page: { width: o.page.width, height: o.page.height },
+      page: { width: page.width, height: page.height },
       lines: capture.lines,
       obstacles: capture.obstacles,
       target: o.target,
     },
-    {
-      size: sizeFromLines(capture.lines.map((l) => l.rect.h)),
-      color: AI_INK,
-      markColor: MARK_INK,
-      seed: Math.floor(Math.random() * 2 ** 31),
-    },
+    style,
   )
+  let onThisPage = 0
+  const pages = [page]
+  /** Pages that got ink, in order. */
+  const inked: PageRow[] = []
   const parser = new InkScriptParser()
   const written: Written[] = []
   const onPage: string[] = []
@@ -266,7 +284,28 @@ async function writeInk(
   let usage: Usage | undefined
   let thinking = false
 
-  const take = (b: InkBlock) => {
+  // The page filled up: carry on at the top of a fresh page after it.
+  const turnPage = async (): Promise<boolean> => {
+    if (!onThisPage || pages.length > MAX_NEW_PAGES) return false
+    onUpdate({ type: 'status', text: 'Page full, turning to a new page…' })
+    const next = await o.nextPage(page).catch(() => null)
+    if (!next) return false
+    page = next
+    pages.push(next)
+    onThisPage = 0
+    writer = new InkWriter(
+      {
+        page: { width: page.width, height: page.height },
+        lines: [],
+        obstacles: [],
+        target: null,
+      },
+      style,
+    )
+    return true
+  }
+
+  const take = async (b: InkBlock) => {
     if (b.type === 'status') onUpdate({ type: 'status', text: b.text })
     else if (b.type === 'chat') chat.push(b.text)
     else if (b.type === 'done') summary = b.summary ?? ''
@@ -276,25 +315,28 @@ async function writeInk(
         unwritten.push(md)
         return
       }
-      const r = writer.write(b)
+      let r = writer.write(b)
+      if (r && 'noRoom' in r && b.type !== 'mark' && (await turnPage())) r = writer.write(b)
       if (!r) return
       if ('noRoom' in r) {
         unwritten.push(md)
         return
       }
-      if (!written.length) {
-        onUpdate({ type: 'inkStart' })
+      if (!onThisPage) {
+        inked.push(page)
+        onUpdate({ type: 'inkStart', page })
         onUpdate({ type: 'status', text: 'Writing on your page…' })
       }
+      onThisPage++
       written.push(r)
       onPage.push(md)
-      onUpdate({ type: 'ink', written: r })
-      onUpdate({ type: 'text', text: `${md}\n\n` })
+      onUpdate({ type: 'ink', page, written: r })
+      onUpdate({ type: 'text', text: `${written.length}. ${md}\n` })
     }
   }
 
   for await (const ev of events) {
-    if (ev.type === 'text') for (const b of parser.push(ev.text)) take(b)
+    if (ev.type === 'text') for (const b of parser.push(ev.text)) await take(b)
     else if (ev.type === 'reasoning' && !thinking && !written.length) {
       thinking = true
       onUpdate({ type: 'thinking' })
@@ -302,25 +344,28 @@ async function writeInk(
     else if (ev.type === 'error') throw new HelpFailure(o.failure(ev))
   }
 
+  // The chat reads as an explanation first; the copy of the page folds away under it.
   const parts: string[] = []
-  const marks = written.filter((w) => w.source.startsWith('[')).length
-  const lines = written.length - marks
+  const explained = chat.length > 0
+  if (explained) parts.push(...chat)
+  else if (summary) parts.push(summary)
   if (written.length) {
+    const marks = written.filter((w) => w.source.startsWith('[')).length
+    const lines = written.length - marks
     const did = [
-      lines && `wrote ${lines} line${lines === 1 ? '' : 's'}`,
-      marks && `marked ${marks} line${marks === 1 ? '' : 's'}`,
+      lines && `${lines} line${lines === 1 ? '' : 's'}`,
+      marks && `${marks} mark${marks === 1 ? '' : 's'}`,
     ].filter(Boolean)
-    parts.push(`*On your page: ${did.join(' and ')}.*`)
-    if (summary) parts.push(summary)
-    parts.push(...onPage)
-  }
-  if (unwritten.length) {
+    const where = pagesLabel(inked.map(o.pageNumber))
     parts.push(
-      '**No room left on this page** for the rest. Add a page and say "continue", or read it here:',
-      ...unwritten,
+      `<details class="ink-copy"${explained ? '' : ' open'}><summary>Written on ${where} · ${did.join(', ')}</summary>`,
+      list(onPage),
+      '</details>',
     )
   }
-  parts.push(...chat)
+  if (unwritten.length) {
+    parts.push(`**This didn't fit on the page**, so here's the rest:`, list(unwritten))
+  }
   // A model that ignored the format: show what it said rather than nothing.
   if (!parts.length && parser.leftover()) parts.push(parser.leftover())
   if (!parts.length) throw new HelpFailure({ message: 'The model sent an empty reply. Try again.' })

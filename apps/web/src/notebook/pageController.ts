@@ -33,7 +33,8 @@ import {
   type ToolState,
 } from './tools'
 
-const MAX_CANVAS_PIXELS = 16_000_000
+/** Per canvas. Three canvases per mounted page; Chrome blanks canvases (black) past its GPU budget. */
+const MAX_CANVAS_PIXELS = 8_000_000
 const ERASER_PX = 9
 const HANDLE_PX = 12
 const SAVE_DELAY_MS = 1500
@@ -110,6 +111,8 @@ export class PageController {
   /** When the user wrote each item this session. */
   private written = new Map<string, number>()
   private ghost: Ghost | null = null
+  /** The wet layer's cursor, put back after a stroke. */
+  private cursor = ''
 
   private loaded = false
   private version = 0
@@ -135,6 +138,7 @@ export class PageController {
       insertImage: (asset, w, h) => this.insertImage(asset, w, h),
       flush: () => this.flush(),
       isDirty: () => this.isDirty(),
+      isLoaded: () => this.loaded,
       snapshot: () => this.snapshot(),
       ghostStart: (actions) => this.ghostStart(actions),
       ghostAdd: (block) => this.ghostAdd(block),
@@ -400,11 +404,19 @@ export class PageController {
     this.bg = bg
     this.ink = ink
     this.wet = wet
-    // The first getContext call fixes the options; a desynchronized context cuts pen latency.
-    wet.getContext('2d', { desynchronized: true })
+    // No `desynchronized` context: on some Windows GPUs it shows the whole page black.
+    // If the GPU drops the canvases anyway, Chrome restores them blank, so draw everything again.
+    for (const c of [bg, ink, wet]) c.addEventListener('contextrestored', this.onRestored)
+  }
+
+  private onRestored = (): void => {
+    if (this.bg) this.layout(this.scale)
   }
 
   detach(): void {
+    for (const c of [this.bg, this.ink, this.wet]) {
+      c?.removeEventListener('contextrestored', this.onRestored)
+    }
     this.cancelBackground?.()
     this.cancelBackground = null
     cancelAnimationFrame(this.wetFrame)
@@ -497,7 +509,10 @@ export class PageController {
     if (!ctx) return
     if (this.drawGhost(ctx)) this.requestWet()
     const g = this.gesture
-    if (g?.type === 'draw') drawStroke(ctx, g.live, { live: true })
+    if (g?.type === 'draw') {
+      drawStroke(ctx, g.live, { live: true })
+      this.drawTip(ctx, g.live)
+    }
     if (this.hover) this.drawEraserRing(ctx, this.hover[0], this.hover[1], g?.type === 'erase')
     if (g?.type === 'lasso' && g.poly.length >= 4) {
       ctx.save()
@@ -528,6 +543,22 @@ export class PageController {
     if (g?.type === 'move' || g?.type === 'scale') drawItems(ctx, selected, { images: this.image })
     ctx.restore()
     this.drawSelectionBox(ctx, this.transformedBox(box))
+  }
+
+  /** The pen's dot at the end of the live stroke, so you see the tip while the OS hides its cursor. */
+  private drawTip(ctx: CanvasRenderingContext2D, live: LiveStroke): void {
+    const p = live.points
+    const px = 1 / this.scale
+    const r = Math.max(3.5 * px, live.width / 2 + 1.5 * px)
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(p[p.length - 3] as number, p[p.length - 2] as number, r, 0, Math.PI * 2)
+    ctx.fillStyle = live.tool === 'pen' ? live.color : 'rgba(29, 28, 25, 0.75)'
+    ctx.fill()
+    ctx.lineWidth = 1.2 * px
+    ctx.strokeStyle = '#fff'
+    ctx.stroke()
+    ctx.restore()
   }
 
   private drawEraserRing(ctx: CanvasRenderingContext2D, x: number, y: number, pressed: boolean) {
@@ -608,6 +639,9 @@ export class PageController {
           live: { tool, color: style.color, width: style.width, points: [x, y, 0] },
           t0: e.timeStamp,
         }
+        // The canvas draws the tip while writing; the OS cursor would trail a frame ahead of it.
+        this.cursor = this.wet.style.cursor
+        this.wet.style.cursor = 'none'
         break
       }
       case 'eraser':
@@ -701,6 +735,7 @@ export class PageController {
   pointerUp(): void {
     const g = this.gesture
     this.gesture = null
+    if (g?.type === 'draw' && this.wet) this.wet.style.cursor = this.cursor
     if (!g) return
     switch (g.type) {
       case 'draw': {
