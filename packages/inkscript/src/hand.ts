@@ -11,7 +11,15 @@ const RESAMPLE_PT = 0.7
 
 export type TimedStroke = { stroke: Stroke; at: number }
 
-export type PenOptions = { color: string; width: number; groupId: string; startAt: number }
+export type PenOptions = {
+  color: string
+  width: number
+  groupId: string
+  startAt: number
+  tool?: 'pen' | 'highlighter'
+  /** Speed factor: diagrams go a little quicker than writing. */
+  speed?: number
+}
 
 function resample(p: Path): number[][] {
   const pts: number[][] = []
@@ -49,6 +57,7 @@ export function penStrokes(
   opts: PenOptions,
 ): { strokes: TimedStroke[]; end: number } {
   const strokes: TimedStroke[] = []
+  const speed = SPEED * (opts.speed ?? 1)
   let t = opts.startAt
   let prev: number[] | null = null
   for (const path of paths) {
@@ -60,7 +69,7 @@ export function penStrokes(
         (first[0] as number) - (prev[0] as number),
         (first[1] as number) - (prev[1] as number),
       )
-      t += PEN_UP_MS + travel / (SPEED * 4)
+      t += PEN_UP_MS + travel / (speed * 4)
     }
     const flat: number[] = []
     let local = 0
@@ -69,7 +78,7 @@ export function penStrokes(
         const q = pts[i - 1] as number[]
         local +=
           Math.hypot((p[0] as number) - (q[0] as number), (p[1] as number) - (q[1] as number)) /
-          SPEED
+          speed
       }
       flat.push(p[0] as number, p[1] as number, Math.round(local))
     })
@@ -78,7 +87,7 @@ export function penStrokes(
       stroke: {
         kind: 'stroke',
         id: newId(),
-        tool: 'pen',
+        tool: opts.tool ?? 'pen',
         color: opts.color,
         width: opts.width,
         points: flat,

@@ -267,6 +267,8 @@ The model never draws pixels. It writes a small spec, and Writey draws it in the
 
 Primitives: `line, arrow, vector, polyline, polygon, rect, circle, ellipse, arc, angle, axes, plot (evaluated with math.js, sampled adaptively), point, label (text or LaTeX), dimension, hatch (ground/wall), spring, pulley`. Diagrams stay editable objects (move, scale, delete) and export as SVG.
 
+**As built (`packages/inkscript/src/diagram.ts`, HANDOFF D38):** the block is flat, `{"type":"diagram","x":[…],"y":[…],"items":[{"kind":"plot","expr":"sin(x)"},…]}`; the nested `spec`/`frame` form above and `{"arrow":{…}}` items are accepted too. Coordinates are the model's own math units with y up; missing ranges are fitted to the items, and the height follows the ranges so circles stay round. Plots go through a small safe compiler (`expr.ts`) instead of math.js. The drawing is placed like a text block (below the anchor, shrunk to fit) and becomes one AI group whose source is the spec. Extra kinds: `curve` (smooth freehand through points) and `parametric`. While any AI ink animates, the page draws Writey's pen cursor at the stroke tip (D39).
+
 ### 5.7 Ghost preview and accept
 
 AI ink first appears as a faint ghost (40% opacity) with a floating bar: **Accept · Redo · Discard · Why?**. Saying "Writey, keep it" or "redo that" works too. Accepting turns it into normal AI-colored ink, still grouped. **Why?** opens the chat with that step's explanation.

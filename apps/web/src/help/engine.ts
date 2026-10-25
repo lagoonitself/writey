@@ -275,6 +275,8 @@ function blockMarkdown(b: InkBlock): string {
       return `${b.text}${why}`
     case 'mark':
       return `**${b.target}** (${b.kind})${b.note ? `: ${b.note}` : ''}`
+    case 'diagram':
+      return `*Diagram${b.title ? `: ${b.title}` : ''}*${why}`
     default:
       return ''
   }
@@ -326,9 +328,12 @@ async function writeInk(
   let thinking = false
 
   // The page filled up: carry on at the top of a fresh page after it.
-  const turnPage = async (): Promise<boolean> => {
-    if (!onThisPage || pages.length > MAX_NEW_PAGES) return false
-    onUpdate({ type: 'status', text: 'Page full, turning to a new page…' })
+  const turnPage = async (asked = false): Promise<boolean> => {
+    if ((!onThisPage && !asked) || pages.length > MAX_NEW_PAGES) return false
+    onUpdate({
+      type: 'status',
+      text: asked ? 'Starting a new page…' : 'Page full, turning to a new page…',
+    })
     const next = await o.nextPage(page).catch(() => null)
     if (!next) return false
     page = next
@@ -357,7 +362,9 @@ async function writeInk(
       onUpdate({ type: 'text', text: `${chat.length ? '\n\n' : ''}${b.text}` })
       chat.push(b.text)
     } else if (b.type === 'done') summary = b.summary ?? ''
-    else {
+    else if (b.type === 'page') {
+      if (!unwritten.length) await turnPage(true)
+    } else {
       const md = blockMarkdown(b)
       if (unwritten.length) {
         unwritten.push(md)
@@ -399,10 +406,12 @@ async function writeInk(
   if (chat.length) parts.push(...chat)
   else if (summary) parts.push(summary)
   if (written.length) {
-    const marks = written.filter((w) => w.source.startsWith('[')).length
-    const lines = written.length - marks
+    const drawings = written.filter((w) => w.source.startsWith('[diagram')).length
+    const marks = written.filter((w) => w.source.startsWith('[')).length - drawings
+    const lines = written.length - marks - drawings
     const did = [
       lines && `${lines} line${lines === 1 ? '' : 's'}`,
+      drawings && `${drawings} diagram${drawings === 1 ? '' : 's'}`,
       marks && `${marks} mark${marks === 1 ? '' : 's'}`,
     ].filter(Boolean)
     const where = pagesLabel(inked.map(o.pageNumber))

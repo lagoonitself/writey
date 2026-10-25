@@ -1,7 +1,9 @@
+import { type DiagramSpec, diagramItems } from './diagram'
+
 // InkScript: the AI's drawing language (docs §5.4). The model streams one JSON object
 // per block; each block is drawn as soon as it arrives.
 
-export type MarkKind = 'circle' | 'underline' | 'cross' | 'tick' | 'arrow'
+export type MarkKind = 'circle' | 'underline' | 'cross' | 'tick' | 'arrow' | 'highlight'
 
 export type InkBlock =
   | { type: 'status'; text: string }
@@ -9,13 +11,17 @@ export type InkBlock =
   | { type: 'text'; text: string; after?: string; why?: string }
   | { type: 'math'; latex: string; after?: string; box?: boolean; why?: string }
   | { type: 'mark'; kind: MarkKind; target: string; note?: string }
+  /** A hand-drawn diagram or graph (docs §5.6). */
+  | ({ type: 'diagram'; after?: string; title?: string; why?: string } & DiagramSpec)
+  /** Start a fresh page and carry on at its top. */
+  | { type: 'page' }
   /** Markdown for the chat panel: explanations that don't belong on the page. */
   | { type: 'chat'; text: string }
   /** Plain words Writey says out loud (spoken replies), math read as words. */
   | { type: 'say'; text: string }
   | { type: 'done'; summary?: string }
 
-const MARKS: readonly string[] = ['circle', 'underline', 'cross', 'tick', 'arrow']
+const MARKS: readonly string[] = ['circle', 'underline', 'cross', 'tick', 'arrow', 'highlight']
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
 
@@ -53,6 +59,42 @@ export function toBlock(raw: unknown): InkBlock | null {
         note: str(o.note) || undefined,
       }
     }
+    case 'diagram':
+    case 'graph':
+    case 'plot':
+    case 'sketch':
+    case 'figure': {
+      // The docs' nested form: {"type":"diagram","spec":{"frame":{…},"items":[…]}}.
+      const spec = (o.spec && typeof o.spec === 'object' ? o.spec : o) as Record<string, unknown>
+      const frame = (spec.frame && typeof spec.frame === 'object' ? spec.frame : spec) as Record<
+        string,
+        unknown
+      >
+      let items = diagramItems(spec.items ?? spec.shapes ?? o.items)
+      // A bare {"type":"plot","expr":"sin(x)"} is a one-curve graph.
+      if (!items.length && (o.expr || o.fn)) items = diagramItems([{ ...o, kind: 'plot' }])
+      if (!items.length) return null
+      const range = (v: unknown) =>
+        Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === 'number')
+          ? (v as [number, number])
+          : undefined
+      const size = (v: unknown) => (typeof v === 'number' && v > 0 ? v : undefined)
+      return {
+        type: 'diagram',
+        items,
+        w: size(frame.w ?? frame.width),
+        h: size(frame.h ?? frame.height),
+        x: range(spec.x ?? spec.xrange),
+        y: range(spec.y ?? spec.yrange),
+        title: str(o.title) || str(spec.title) || undefined,
+        after: after(o.after),
+        why,
+      }
+    }
+    case 'page':
+    case 'new_page':
+    case 'newpage':
+      return { type: 'page' }
     case 'chat':
     case 'explain':
       return str(o.text) ? { type: 'chat', text: str(o.text) } : null

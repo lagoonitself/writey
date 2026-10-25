@@ -1,4 +1,5 @@
 import { newId, type Rect } from '@writey/ink-engine'
+import { drawDiagram } from './diagram'
 import { penStrokes, type TimedStroke } from './hand'
 import { type Box, handLine, layoutMath, type Path, type Rng, seeded } from './layout'
 import { type PlaceEnv, Placer } from './place'
@@ -25,6 +26,9 @@ export type Written = {
 }
 
 export type WriteResult = Written | { noRoom: true } | null
+
+/** Writey's highlighter: the yellow from the toolbar. */
+const HIGHLIGHT = '#ffe14a'
 
 /** Pause between blocks, ms. */
 const BLOCK_PAUSE = 260
@@ -78,6 +82,8 @@ export class InkWriter {
       }
       case 'mark':
         return this.mark(block.kind, block.target, block.note)
+      case 'diagram':
+        return this.diagram(block)
       default:
         return null
     }
@@ -108,19 +114,48 @@ export class InkWriter {
     })
   }
 
+  private diagram(block: Extract<InkBlock, { type: 'diagram' }>): WriteResult {
+    const { size } = this.opts
+    const x = this.placer.startX(block.after)
+    const drawn = drawDiagram(block, {
+      size,
+      maxW: Math.max(size * 5, this.placer.room(x) - size),
+      rng: this.rng,
+    })
+    if (!drawn.paths.length) return null
+    const spot = this.placer.place(drawn.w, drawn.h, block.after, size * 0.6)
+    if (!spot) return { noRoom: true }
+    const paths = drawn.paths.map((p) =>
+      p.map((n, i) => (i % 2 === 0 ? spot.x : spot.y) + n * spot.scale),
+    )
+    const { type: _, why, after: __, ...spec } = block
+    const source = `[diagram${block.title ? `: ${block.title}` : ''}] ${JSON.stringify(spec).slice(0, 1500)}`
+    return this.pen(
+      paths,
+      this.opts.color,
+      source,
+      why,
+      { x: spot.x, y: spot.y, w: drawn.w * spot.scale, h: drawn.h * spot.scale },
+      { width: this.penWidth * 0.85, speed: 1.6 },
+    )
+  }
+
   private pen(
     paths: Path[],
     color: string,
     source: string,
     why: string | undefined,
     rect: Rect,
+    style: { width?: number; speed?: number; tool?: 'pen' | 'highlighter' } = {},
   ): Written {
     const groupId = newId()
     const { strokes, end } = penStrokes(paths, {
       color,
-      width: this.penWidth,
+      width: style.width ?? this.penWidth,
       groupId,
       startAt: this.time,
+      speed: style.speed,
+      tool: style.tool,
     })
     this.time = end + BLOCK_PAUSE
     return { groupId, source, why, strokes, rect }
@@ -129,6 +164,17 @@ export class InkWriter {
   private mark(kind: MarkKind, target: string, note: string | undefined): WriteResult {
     const line = this.placer.line(target)
     if (!line) return null
+    if (kind === 'highlight') {
+      // One highlighter pass along the middle of the line, as wide as the writing is tall.
+      const y = line.y + line.h / 2
+      const path = handLine(line.x - 2, y, line.x + line.w + 2, y + 0.5, this.rng)
+      this.placer.reserve(line)
+      return this.pen([path], HIGHLIGHT, `[highlight on ${target}]`, undefined, line, {
+        tool: 'highlighter',
+        width: Math.min(26, Math.max(8, line.h * 0.9)),
+        speed: 2,
+      })
+    }
     const paths = markPaths(kind, line, this.rng)
     const { size } = this.opts
     if (note) {
@@ -194,6 +240,8 @@ export function markPaths(kind: MarkKind, r: Rect, rng: Rng): Path[] {
       const x = r.x + r.w + 10
       return [[x, cy, x + s * 0.35, cy + s * 0.4, x + s, cy - s * 0.6]]
     }
+    case 'highlight':
+      return [handLine(r.x, cy, r.x + r.w, cy, rng)]
     case 'arrow': {
       const x = r.x + r.w + 6
       const tail: Path = handLine(x + 34, cy - 12, x, cy, rng)

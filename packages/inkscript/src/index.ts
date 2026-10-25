@@ -1,3 +1,5 @@
+export * from './diagram'
+export * from './expr'
 export * from './font'
 export * from './hand'
 export * from './latex'

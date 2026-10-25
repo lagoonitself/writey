@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  compile,
+  diagramItems,
+  drawDiagram,
   glyph,
+  type InkBlock,
   InkScriptParser,
   InkWriter,
   layoutMath,
@@ -218,5 +222,136 @@ describe('InkWriter', () => {
     expect(sizeFromLines([])).toBe(22)
     expect(sizeFromLines([20, 22, 24])).toBeCloseTo(22 * 1.15)
     expect(sizeFromLines([200])).toBe(34)
+  })
+})
+
+describe('expressions', () => {
+  const at = (src: string, x: number) => compile(src)({ x })
+
+  it('reads the way people write math', () => {
+    expect(at('2x^2 - 3x + 1', 2)).toBeCloseTo(3)
+    expect(at('sin(x)/x', 0.5)).toBeCloseTo(Math.sin(0.5) / 0.5)
+    expect(at('e^(-x) cos(2x)', 1)).toBeCloseTo(Math.exp(-1) * Math.cos(2))
+    expect(at('x(x+1)', 3)).toBe(12)
+    expect(at('-x^2', 3)).toBe(-9)
+    expect(at('2pix', 1)).toBeCloseTo(2 * Math.PI)
+    expect(at('sin^2 x + cos^2 x', 0.7)).toBeCloseTo(1)
+    expect(at('Math.sqrt(x)**3', 4)).toBeCloseTo(8)
+    expect(at('|x - 5|', 2)).toBe(3)
+    expect(at('y = x^2', 3)).toBeNaN()
+  })
+
+  it('never throws on junk', () => {
+    for (const src of ['', ')(', 'foo(x)', '2 +', 'x^^2', 'alert(1)']) {
+      expect(() => at(src, 1)).not.toThrow()
+    }
+  })
+})
+
+describe('diagrams', () => {
+  it('parse both item forms and nested specs', () => {
+    const [a, b, c] = parseInkScript(`
+{"type":"diagram","items":[{"kind":"arrow","from":[0,0],"to":[1,1]},{"axes":{"x":[-1,1],"y":[-1,1]}},{"kind":"teapot"}]}
+{"type":"diagram","spec":{"frame":{"w":200,"h":120},"items":[{"plot":{"expr":"sin(x)"}}]}}
+{"type":"plot","expr":"x^2","x":[-2,2]}`)
+    expect(a).toMatchObject({ type: 'diagram', items: [{ kind: 'arrow' }, { kind: 'axes' }] })
+    expect(b).toMatchObject({ type: 'diagram', w: 200, h: 120, items: [{ kind: 'plot' }] })
+    expect(c).toMatchObject({ type: 'diagram', items: [{ kind: 'plot', expr: 'x^2' }] })
+    expect(parseInkScript('{"type":"diagram","items":[]}')).toEqual([])
+    expect(parseInkScript('{"type":"page"}')).toEqual([{ type: 'page' }])
+  })
+
+  it('draws every primitive as finite pen paths inside its frame', () => {
+    const items = diagramItems([
+      { kind: 'axes', x: [-1, 7], y: [-2, 2] },
+      { kind: 'plot', expr: '1/(x-3)', label: '$y=1/x$' },
+      { kind: 'parametric', x: 'cos(t)', y: 'sin(t)' },
+      { kind: 'line', from: [0, 0], to: [2, 1], dashed: true },
+      { kind: 'rect', at: [1, 1], w: 1, h: 0.5, angle: 30, label: 'm' },
+      { kind: 'circle', center: [4, 0], r: 0.5 },
+      { kind: 'ellipse', center: [4, 0], rx: 1, ry: 0.4 },
+      { kind: 'arc', center: [0, 0], r: 1, from: 0, to: 90 },
+      { kind: 'angle', vertex: [0, 0], from: [1, 0], to: [0, 1], right: true },
+      {
+        kind: 'curve',
+        points: [
+          [0, 0],
+          [1, 1],
+          [2, 0],
+          [3, 1],
+        ],
+      },
+      {
+        kind: 'polygon',
+        points: [
+          [0, 0],
+          [1, 0],
+          [0, 1],
+        ],
+      },
+      { kind: 'point', at: [3, 0], label: 'P' },
+      { kind: 'label', at: [5, 1], text: 'hello', side: 'above' },
+      { kind: 'dimension', from: [0, -1], to: [3, -1], label: 'd' },
+      { kind: 'hatch', from: [0, -2], to: [6, -2] },
+      { kind: 'spring', from: [0, 1], to: [3, 1] },
+      { kind: 'pulley', center: [6, 1.5], r: 0.3 },
+    ])
+    expect(items).toHaveLength(17)
+    const d = drawDiagram({ items }, { size: 20, maxW: 400, rng: seeded(1) })
+    expect(d.paths.length).toBeGreaterThan(40)
+    expect(allFinite(d.paths)).toBe(true)
+    for (const p of d.paths) {
+      for (let i = 0; i < p.length; i += 2) {
+        expect(p[i]).toBeGreaterThanOrEqual(-0.01)
+        expect(p[i]).toBeLessThanOrEqual(d.w + 0.01)
+        expect(p[i + 1]).toBeGreaterThanOrEqual(-0.01)
+        expect(p[i + 1]).toBeLessThanOrEqual(d.h + 0.01)
+      }
+    }
+  })
+
+  it('keeps circles round and graphs inside the y range', () => {
+    const d = drawDiagram(
+      { items: diagramItems([{ kind: 'circle', center: [0, 0], r: 1 }]) },
+      { size: 20, maxW: 400, rng: seeded(2) },
+    )
+    expect(d.w / d.h).toBeGreaterThan(0.85)
+    expect(d.w / d.h).toBeLessThan(1.15)
+    const g = drawDiagram(
+      {
+        x: [-3, 3],
+        y: [-1, 1],
+        w: 240,
+        h: 100,
+        items: diagramItems([{ plot: { expr: 'tan(x)' } }]),
+      },
+      { size: 20, maxW: 400, rng: seeded(2) },
+    )
+    expect(g.h).toBeLessThan(110)
+    expect(g.paths.length).toBeGreaterThan(1)
+  })
+
+  it('is placed below the line it follows, as one group', () => {
+    const w = new InkWriter(
+      {
+        page: { width: 595, height: 842 },
+        lines: [{ label: 'L1', rect: { x: 60, y: 100, w: 200, h: 24 } }],
+        obstacles: [{ x: 60, y: 100, w: 200, h: 24 }],
+        target: 'L1',
+      },
+      { size: 20, color: '#53c', markColor: '#d22', seed: 1 },
+    )
+    const [block] = parseInkScript(
+      '{"type":"diagram","title":"sine","items":[{"kind":"axes","x":[0,7],"y":[-1,1]},{"kind":"plot","expr":"sin(x)"}],"why":"shape"}',
+    )
+    const out = w.write(block as InkBlock)
+    if (!out || 'noRoom' in out) throw new Error('expected a diagram')
+    expect(out.rect.y).toBeGreaterThan(124)
+    expect(out.source).toMatch(/^\[diagram: sine\] \{/)
+    expect(out.why).toBe('shape')
+    expect(new Set(out.strokes.map((s) => s.stroke.groupId))).toEqual(new Set([out.groupId]))
+    const hl = w.write({ type: 'mark', kind: 'highlight', target: 'L1' })
+    if (!hl || 'noRoom' in hl) throw new Error('expected a highlight')
+    expect(hl.strokes[0]?.stroke.tool).toBe('highlighter')
   })
 })

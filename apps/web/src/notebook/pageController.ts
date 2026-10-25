@@ -43,6 +43,9 @@ const SELECTION_COLOR = '#2f4bf0'
 const RECENT_MS = 90_000
 /** AI ink preview opacity (docs §5.7). */
 const GHOST_ALPHA = 0.45
+/** Writey's pen cursor and its touch-down ripple. */
+const WRITEY_INK = '#5b3fb5'
+const TOUCH_MS = 260
 
 /** AI ink being previewed: blocks arrive while the answer streams and animate in. */
 type Ghost = {
@@ -196,6 +199,7 @@ export class PageController {
     }
     this.ghost.writing = false
     this.emitGhost()
+    this.requestWet()
   }
 
   /** Shows the whole preview at once instead of waiting for the animation. */
@@ -295,7 +299,100 @@ export class PageController {
       }
     }
     ctx.restore()
+    if (!g.skipped) this.drawWriteyPen(ctx, g, elapsed)
     return animating
+  }
+
+  /**
+   * Writey's pen: where it is writing now, gliding between strokes while lifted, with a small
+   * ripple each time it touches down. It stays parked at the last stroke while more is coming.
+   */
+  private drawWriteyPen(ctx: CanvasRenderingContext2D, g: Ghost, elapsed: number): void {
+    let tip: [number, number] | null = null
+    let down = false
+    let touch: { x: number; y: number; age: number } | null = null
+    let prev: { x: number; y: number; t: number } | null = null
+    let next: { x: number; y: number; t: number } | null = null
+    for (const { written, offset } of g.blocks) {
+      for (const { stroke, at } of written.strokes) {
+        const p = stroke.points
+        const start = at + offset
+        const end = start + (p[p.length - 1] as number)
+        if (elapsed >= end) {
+          if (!prev || end >= prev.t)
+            prev = { x: p[p.length - 3] as number, y: p[p.length - 2] as number, t: end }
+          continue
+        }
+        if (elapsed < start) {
+          if (!next || start < next.t) next = { x: p[0] as number, y: p[1] as number, t: start }
+          continue
+        }
+        const local = elapsed - start
+        let i = 0
+        while (i + 3 < p.length && (p[i + 5] as number) <= local) i += 3
+        tip = [p[i] as number, p[i + 1] as number]
+        down = true
+        if (local < TOUCH_MS) touch = { x: p[0] as number, y: p[1] as number, age: local }
+      }
+    }
+    if (!tip) {
+      if (prev && next) {
+        const u = Math.min(1, Math.max(0, (elapsed - prev.t) / Math.max(1, next.t - prev.t)))
+        const e = u * u * (3 - 2 * u)
+        tip = [prev.x + (next.x - prev.x) * e, prev.y + (next.y - prev.y) * e]
+      } else if (next) tip = [next.x, next.y]
+      else if (prev && g.writing) tip = [prev.x, prev.y]
+    }
+    if (!tip) return
+    const px = 1 / this.scale
+    ctx.save()
+    if (touch) {
+      // The "click" of the pen touching the paper.
+      const k = touch.age / TOUCH_MS
+      ctx.beginPath()
+      ctx.arc(touch.x, touch.y, (3 + k * 9) * px, 0, Math.PI * 2)
+      ctx.strokeStyle = WRITEY_INK
+      ctx.globalAlpha = 0.45 * (1 - k)
+      ctx.lineWidth = 1.5 * px
+      ctx.stroke()
+      ctx.globalAlpha = 1
+    }
+    // Lifted pens float a little up and to the right of the paper.
+    const lift = down ? 0 : 5 * px
+    ctx.translate(tip[0] + lift, tip[1] - lift)
+    ctx.scale(px, px)
+    ctx.rotate(Math.PI / 5)
+    ctx.lineJoin = 'round'
+    // Nib, then the barrel, leaning up and to the right like a pen in a right hand.
+    ctx.beginPath()
+    ctx.moveTo(0, 0)
+    ctx.lineTo(4, -9)
+    ctx.lineTo(-4, -9)
+    ctx.closePath()
+    ctx.fillStyle = '#2b1d63'
+    ctx.fill()
+    ctx.beginPath()
+    ctx.roundRect(-4.5, -34, 9, 25, 2.5)
+    ctx.fillStyle = WRITEY_INK
+    ctx.fill()
+    ctx.lineWidth = 1.5
+    ctx.strokeStyle = '#fff'
+    ctx.stroke()
+    ctx.rotate(-Math.PI / 5)
+    // The name tag, like a collaborator's cursor, below and to the right of the tip.
+    ctx.font = '600 11px Geist, system-ui, sans-serif'
+    const label = 'Writey'
+    const w = ctx.measureText(label).width + 12
+    const x = 10
+    const y = 8
+    ctx.beginPath()
+    ctx.roundRect(x, y, w, 18, 9)
+    ctx.fillStyle = WRITEY_INK
+    ctx.fill()
+    ctx.fillStyle = '#fff'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(label, x + 6, y + 9.5)
+    ctx.restore()
   }
 
   // -------------------------------------------------------------------------

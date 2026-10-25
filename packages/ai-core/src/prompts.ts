@@ -39,7 +39,7 @@ Work out what the student is doing and how to help. Reply with ONE JSON object a
 
 - problem: the problem being solved, one sentence. Math in LaTeX between $…$.
 - user_progress: what they have done and where they are now, one sentence.
-- mode: "write" if they want the next step(s) written out, "explain" if they want something explained, "check" if they want their work checked, "both" for a short step plus an explanation. If unsure, "explain".
+- mode: "write" if they want the next step(s) written out or something drawn on the page (a diagram, graph or sketch), "explain" if they want something explained, "check" if they want their work checked, "both" for a short step plus an explanation. If unsure, "explain".
 - scope: "hint" for a nudge only, "next_step" for exactly one step, "full" for the complete solution.
 - target_line: the line the request is about (e.g. "L3"), else their last line, or null if the page is empty.
 - status_line: at most 12 words, spoken to the student, saying what you see. Example: "Integration by parts — you're on step 2".`
@@ -90,6 +90,14 @@ const INK_SCOPE: Record<Scope, string> = {
   full: 'Write the complete solution through to the final answer, and box the final answer.',
 }
 
+/** Diagrams and graphs (docs §5.6): a spec Writey draws by hand, never pixels or SVG. */
+const DIAGRAMS = String.raw`- diagram: a hand-drawn figure or graph. Draw one whenever a picture helps (free-body diagrams, graphs of functions, geometry, circuits as boxes and lines, motion sketches) or when asked to draw, sketch, plot or graph. Give coordinates in your own math units with y pointing UP; Writey scales, places and draws it by hand. Example:
+{"type":"diagram","title":"block on a slope","after":"prev","x":[-1,7],"y":[-1,5],"items":[{"kind":"polygon","points":[[0,0],[6,0],[0,3.5]]},{"kind":"hatch","from":[-0.5,0],"to":[6.5,0]},{"kind":"rect","at":[1.5,2.6],"w":1.2,"h":0.9,"angle":-30,"label":"m"},{"kind":"arrow","from":[2.3,2.4],"to":[2.3,0.8],"label":"$mg$"},{"kind":"angle","vertex":[6,0],"from":[0,0],"to":[0,3.5],"label":"$\\theta$"}],"why":"forces on the block"}
+  Graph example: {"type":"diagram","x":[-1,7],"y":[-1.5,1.5],"items":[{"kind":"axes","labels":["x","y"]},{"kind":"plot","expr":"sin(x)","domain":[0,6.28],"label":"$y=\\sin x$"},{"kind":"point","at":[3.14,0],"label":"$\\pi$"}]}
+  Item kinds (every item may have "label", text with $math$, and "dashed":true):
+  line {from,to} · arrow {from,to, both?} (forces, vectors, velocities) · polyline {points} · polygon {points} · curve {points, closed?} (a smooth freehand curve through the points) · rect {at (lower-left), w, h, angle? in degrees} · circle {center, r} · ellipse {center, rx, ry} · arc {center, r, from, to} (degrees) · angle {vertex, from, to, right?} (arc between two rays; right:true draws the square mark) · axes {x?, y?, labels?, ticks? (step), numbers?} · plot {expr, domain?} (y as a function of x, e.g. "x^2 - 3x", "e^(-x) sin(2x)", "1/x"; use * or juxtaposition, ^ for powers) · parametric {x, y, t} (expressions in t) · point {at} · label {at, text, side? (above, below, left, right)} · dimension {from, to} (a measured length with arrows) · hatch {from, to, side?} (ground, wall or ceiling) · spring {from, to, coils?} · pulley {center, r}
+  "x" and "y" give the visible ranges (fitted to the items when left out); "w" and "h" the size in points (about 240 wide by default; the page is 595 wide). Keep a diagram simple and clear: the fewest items that make the point, labels short.`
+
 const INK_FORMAT = String.raw`Reply ONLY with InkScript: one JSON object per line. No prose, no Markdown, no code fences.
 {"type":"chat","text":"The explanation for the side chat, in plain Markdown"}
 {"type":"math","latex":"\\frac{d}{dx}x^2 = 2x","after":"L3","why":"power rule"}
@@ -99,13 +107,15 @@ const INK_FORMAT = String.raw`Reply ONLY with InkScript: one JSON object per lin
 
 - Start with the one chat block, then write the page lines.
 - math: one line of an equation in LaTeX. text: a short line of words, with inline math in $...$.
-- mark: red pen on one of the student's lines (target is its tag). kind: circle, underline, cross, tick or arrow. note: at most six words, or leave it out.
+- mark: red pen on one of the student's lines (target is its tag). kind: circle, underline, cross, tick, arrow, or highlight (a yellow highlighter pass). note: at most six words, or leave it out.
 - after: the first block names the line tag to write below (usually their last line); later blocks use "prev" to continue underneath. Writey places and sizes the handwriting itself.
 - Keep every line short, like a notebook line. A long equation continues on the next math line, starting with "=". One line per block: never use align environments or \\ line breaks.
 - In JSON, double every backslash ("\\frac", "\\sqrt"). Use common commands only: \\frac \\sqrt ^ _ \\int \\sum \\lim \\vec \\cdot \\times \\left( \\right) \\text{} and Greek letters. Units go in \\text{}, e.g. 5\\,\\text{m/s}.
 - Add "box": true to the math line with the final answer.
 - Never copy out lines the student already wrote; write only what is new.
 - End with a done block.
+- {"type":"page"} starts a fresh page and carries on at its top. Use it when the student asks for a new page, or before a big diagram that needs a clean page. Writey also turns the page by itself when one fills up.
+${DIAGRAMS}
 - The conversation can span several pages of one notebook. If this page is empty, carry on from the earlier turns: the work continues at the top of this page.`
 
 export function produceSystem(mode: Mode, scope: Scope, spoken = false): string {
