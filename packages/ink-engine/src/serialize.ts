@@ -1,4 +1,4 @@
-import type { Item, PageDoc } from './model'
+import type { AiSource, Item, PageDoc } from './model'
 
 const round2 = (n: number) => Math.round(n * 100) / 100
 
@@ -9,7 +9,7 @@ export function encodePage(doc: PageDoc): string {
     const points = item.points.map((n, i) => (i % 3 === 2 ? Math.round(n) : round2(n)))
     return { ...item, points }
   })
-  return JSON.stringify({ v: 1, items })
+  return JSON.stringify(doc.ai ? { v: 1, items, ai: doc.ai } : { v: 1, items })
 }
 
 const isNum = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n)
@@ -41,14 +41,24 @@ function validItem(raw: unknown): raw is Item {
 
 /** Parses a stored page. Unknown or malformed items are dropped rather than failing the page. */
 export function decodePage(json: string): PageDoc {
-  const raw = JSON.parse(json) as { v?: unknown; items?: unknown }
+  const raw = JSON.parse(json) as { v?: unknown; items?: unknown; ai?: unknown }
   if (raw.v !== 1 || !Array.isArray(raw.items)) throw new Error('Unsupported page format')
-  return {
+  const doc: PageDoc = {
     v: 1,
     items: raw.items
       .filter(validItem)
       .map((i) => (i.kind === 'stroke' && !i.author ? { ...i, author: 'user' } : i)),
   }
+  if (raw.ai && typeof raw.ai === 'object') {
+    const ai: Record<string, AiSource> = {}
+    for (const [id, v] of Object.entries(raw.ai as Record<string, unknown>)) {
+      const src = v as { source?: unknown; why?: unknown }
+      if (!isStr(src?.source)) continue
+      ai[id] = isStr(src.why) ? { source: src.source, why: src.why } : { source: src.source }
+    }
+    doc.ai = ai
+  }
+  return doc
 }
 
 export async function gzip(text: string): Promise<Uint8Array> {

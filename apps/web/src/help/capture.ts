@@ -1,4 +1,10 @@
-import { type Block, focusRegion, type PageContext, type Rect } from '@writey/ai-core'
+import {
+  type Block,
+  focusRegion,
+  type LabeledLine,
+  type PageContext,
+  type Rect,
+} from '@writey/ai-core'
 import { drawItems, type Item, itemBounds } from '@writey/ink-engine'
 import type { PageRow } from '@writey/shared'
 import { loadImage } from '../lib/assets'
@@ -13,7 +19,14 @@ const FOCUS_MAX_SCALE = 4
 const THUMB_MAX_PX = 512
 const TAG_COLOR = '#d4148c'
 
-export type Capture = { ctx: PageContext; focusRect: Rect }
+export type Capture = {
+  ctx: PageContext
+  focusRect: Rect
+  /** The tagged lines, in page points, for placing AI ink (docs §5.4). */
+  lines: LabeledLine[]
+  /** Everything AI ink must not overlap: items and printed PDF text. */
+  obstacles: Rect[]
+}
 
 export async function capturePage(page: PageRow, snap: PageSnapshot): Promise<Capture> {
   const bg = page.background
@@ -51,8 +64,15 @@ export async function capturePage(page: PageRow, snap: PageSnapshot): Promise<Ca
     bg.kind === 'blank' ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.85)
 
   const inFocus = new Set(focus.lines.flatMap((l) => l.ids))
+  const aiGroups = new Set(
+    snap.items.flatMap((i) =>
+      i.kind === 'stroke' && i.groupId && inFocus.has(i.id) ? [i.groupId] : [],
+    ),
+  )
   return {
     focusRect: r,
+    lines: focus.lines,
+    obstacles: [...snap.items.map(itemBounds), ...pdfLines],
     ctx: {
       focusImage: encode(focusCanvas),
       pageImage: encode(thumb),
@@ -65,6 +85,11 @@ export async function capturePage(page: PageRow, snap: PageSnapshot): Promise<Ca
         .map((l: PdfTextLine) => l.text)
         .join('\n'),
       selection: Boolean(snap.selection),
+      aiInk: [...aiGroups].flatMap((g) => {
+        const src = snap.aiSource(g)?.source
+        return src ? [src] : []
+      }),
+      transcript: snap.transcript,
     },
   }
 }

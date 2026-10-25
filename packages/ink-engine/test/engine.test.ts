@@ -184,6 +184,24 @@ describe('serialize', () => {
   it('rejects unknown versions', () => {
     expect(() => decodePage('{"v":2,"items":[]}')).toThrow()
   })
+
+  it('keeps AI ink sources, and drops them once their strokes are gone', () => {
+    const ai: Stroke = {
+      ...stroke('a', [
+        [0, 0],
+        [5, 5],
+      ]),
+      author: 'ai',
+      groupId: 'g1',
+    }
+    const editor = new PageEditor()
+    editor.addAi([ai], { g1: { source: '$$x=1$$', why: 'solve' }, g2: { source: 'gone' } })
+    const doc = decodePage(encodePage(editor.toDoc()))
+    expect(doc.ai).toEqual({ g1: { source: '$$x=1$$', why: 'solve' } })
+    expect(new PageEditor(doc).aiSource('g1')?.source).toBe('$$x=1$$')
+    editor.undo()
+    expect(editor.toDoc().ai).toBeUndefined()
+  })
 })
 
 describe('partial erase', () => {

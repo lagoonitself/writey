@@ -4,9 +4,9 @@
 > Say "Writey, what's next?" and it continues your work in handwriting on the page.
 > Say "Writey, why does this work?" and it explains in a side chat.
 
-Status: **v0.4** (2026-10-25). Open-source, multi-user, $0 hosting; users bring their own AI keys.
+Status: **v0.6** (2026-10-25). Open-source, multi-user, $0 hosting; users bring their own AI keys.
 
-v0.2 changes: Gemini Live dropped (voice is local only, via Writey Helper); ChatGPT sign-in settled as Helper-only; push-to-talk added; ChatGPT merged into the Helper phase. v0.3: voice runs on local Python models (Parakeet STT, Fish S1-mini TTS); the browser owns mic, VAD and playback, the Helper only runs models. v0.4: Phase 2 shipped; key storage goes through two security-definer functions instead of the service role (§6.2). v0.5: Sign in with ChatGPT shipped early in Writey Helper, following OpenAI's documented open-source flow (§6.3). Running decisions log: [HANDOFF.md](../HANDOFF.md).
+v0.2 changes: Gemini Live dropped (voice is local only, via Writey Helper); ChatGPT sign-in settled as Helper-only; push-to-talk added; ChatGPT merged into the Helper phase. v0.3: voice runs on local Python models (Parakeet STT, Fish S1-mini TTS); the browser owns mic, VAD and playback, the Helper only runs models. v0.4: Phase 2 shipped; key storage goes through two security-definer functions instead of the service role (§6.2). v0.5: Sign in with ChatGPT shipped early in Writey Helper, following OpenAI's documented open-source flow (§6.3). v0.6: Phases 3 and 4 shipped: handwriting in EMS Allure with Writey's own math layout (§5.5), ghost ink (§5.7), and local voice with Parakeet + Kokoro (§7.3); Fish S1-mini waits on its gated weights. Running decisions log: [HANDOFF.md](../HANDOFF.md).
 
 ---
 
@@ -238,7 +238,14 @@ Goal: AI ink that looks hand-drawn and animates stroke by stroke.
 - **Fallback:** a glyph with no single-stroke version renders as a filled outline and appears with a fade-in.
 - Style B (your own handwriting) later replaces the glyph source only. Nothing else changes.
 
-> **Risk spike, done in Phase 1:** render 20 typical formulas this way and judge quality before building on it.
+> **Risk spike, done 2026-10-25:** 20 typical formulas rendered and judged.
+
+**As built (`packages/inkscript`):** the text font is **EMS Allure** (single-stroke cursive, SIL OFL); Greek and math
+symbols come from Hershey, scaled to Allure's x-height and digit height; a few symbols are composed. Instead of MathJax,
+math goes through Writey's own small LaTeX parser and TeX-like box layout (`latex.ts`, `layout.ts`): Allure's metrics
+don't match Computer Modern, and drawing fraction bars, radicals and stretchy brackets ourselves keeps them hand-drawn.
+Per-glyph jitter is seeded, so Redo writes differently. Paths become pen strokes timed at about twice a calm hand's speed
+(`hand.ts`), placed by `place.ts` and animated by the page controller. The writing size follows the student's line height.
 
 ### 5.6 Diagrams
 
@@ -388,6 +395,7 @@ apps/helper/
   pyproject.toml     installed with `uv`; one command to run (`uv run writey-helper`)
 ```
 
+- **As built (Helper 0.3.0):** `speech.py` serves `POST /stt` (one 16 kHz 16-bit PCM segment → text), `POST /tts` (text → WAV), `GET /voice/status` and `POST /voice/prepare` (download with progress, then load in the background). Parakeet runs as int8 ONNX via onnx-asr and Kokoro-82M as int8 ONNX via kokoro-onnx, both on CPU with 6 threads and a warm-up run. Fish S1-mini is not shipped: its weights are gated on Hugging Face and need PyTorch. The browser side is `apps/web/src/voice` (Silero VAD v5 via `@ricky0123/vad-web`, assets served under `/vad/`); push-to-talk is the backquote key.
 - **Models:** Parakeet TDT 0.6B v2 (English-only, fastest, more accurate than Whisper large-v3, doesn't invent text in silence; ~2 GB VRAM). Fish OpenAudio S1-mini (0.5B; weights are CC BY-NC-SA, non-commercial; users download them on first run). Measure S1-mini latency and VRAM early; Kokoro-82M is the light fallback.
 - **Security:** binds to 127.0.0.1 only and answers only the Writey site's origins (Host and Origin checks). Chrome asks once for Local Network Access permission.
 - **Listening toggle** in the toolbar, auto-paused after 10 minutes of silence; mic indicator whenever the mic is open.
@@ -451,16 +459,16 @@ provider_credentials (id, owner_id, provider, label, ciphertext bytea, iv bytea,
 
 Each phase ends with something usable.
 
-| Phase                | Delivers                                                                                                                                                                                                  | Status                        |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| **0. Foundations**   | Monorepo, Supabase project with Google login, Worker deployed on workers.dev, CI.                                                                                                                         | ✅ shipped                    |
-| **1. Notebook**      | Ink engine, v1 tools, pages, notebooks, save/load, PDF and image import. A full notebook app without AI.                                                                                                  | ✅ shipped                    |
-| **1b. Math spike**   | Render ~20 typical formulas with the single-stroke handwriting renderer (§5.5) and judge quality.                                                                                                         | next (before 3)               |
-| **2. Ask by typing** | Provider settings (OpenRouter, OpenCode Zen) with encrypted keys, context capture with line labels, PLAN/PRODUCE, chat panel with KaTeX, cancel, errors, vision check. Model eval set (20–30 real pages). | ✅ shipped (eval set pending) |
-| **3. Writey writes** | InkScript, layout engine, handwriting renderer, ghost preview and accept, check-my-work marks.                                                                                                            |                               |
-| **4. Helper**        | Browser voice client (mic, VAD, transcript, trigger, push-to-talk) + Writey Helper (Parakeet STT, Fish TTS) **and** Sign in with ChatGPT + Responses adapter (same process).                              | ChatGPT part ✅ shipped early |
-| **5. Diagrams**      | Diagram spec, renderer, plots, SVG export.                                                                                                                                                                |                               |
-| **v1.x / v2**        | Exports, shape snapping, paper styles, study mode, sharing, personal handwriting style, iPad.                                                                                                             |                               |
+| Phase                | Delivers                                                                                                                                                                                                  | Status                          |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| **0. Foundations**   | Monorepo, Supabase project with Google login, Worker deployed on workers.dev, CI.                                                                                                                         | ✅ shipped                      |
+| **1. Notebook**      | Ink engine, v1 tools, pages, notebooks, save/load, PDF and image import. A full notebook app without AI.                                                                                                  | ✅ shipped                      |
+| **1b. Math spike**   | Render ~20 typical formulas with the single-stroke handwriting renderer (§5.5) and judge quality.                                                                                                         | ✅ done                         |
+| **2. Ask by typing** | Provider settings (OpenRouter, OpenCode Zen) with encrypted keys, context capture with line labels, PLAN/PRODUCE, chat panel with KaTeX, cancel, errors, vision check. Model eval set (20–30 real pages). | ✅ shipped (eval set pending)   |
+| **3. Writey writes** | InkScript, layout engine, handwriting renderer, ghost preview and accept, check-my-work marks.                                                                                                            | ✅ shipped                      |
+| **4. Helper**        | Browser voice client (mic, VAD, transcript, trigger, push-to-talk) + Writey Helper (Parakeet STT, Fish TTS) **and** Sign in with ChatGPT + Responses adapter (same process).                              | ✅ shipped (Kokoro TTS for now) |
+| **5. Diagrams**      | Diagram spec, renderer, plots, SVG export.                                                                                                                                                                |                                 |
+| **v1.x / v2**        | Exports, shape snapping, paper styles, study mode, sharing, personal handwriting style, iPad.                                                                                                             |                                 |
 
 ---
 

@@ -222,3 +222,22 @@ export const GoogleIcon = ({ size = 18 }: P) => (
     />
   </svg>
 )
+
+export const MicIcon = (p: P) => (
+  <Svg {...p}>
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M5.5 11a6.5 6.5 0 0013 0" />
+    <path d="M12 17.5V21" />
+  </Svg>
+)
+
+export const MicOffIcon = (p: P) => (
+  <Svg {...p}>
+    <path d="M15 9.5V6a3 3 0 00-5.6-1.5" />
+    <path d="M9 9v2a3 3 0 004.5 2.6" />
+    <path d="M5.5 11a6.5 6.5 0 0010.6 5" />
+    <path d="M18.5 11a6.4 6.4 0 01-.4 2.2" />
+    <path d="M12 17.5V21" />
+    <path d="M4 4l16 16" />
+  </Svg>
+)

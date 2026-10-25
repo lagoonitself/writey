@@ -1,4 +1,5 @@
-import type { Item, Rect } from '@writey/ink-engine'
+import type { AiSource, Item, Rect } from '@writey/ink-engine'
+import type { Written } from '@writey/inkscript'
 import type { AssetRow } from '@writey/shared'
 
 export type ToolId = 'pen' | 'highlighter' | 'eraser' | 'lasso' | 'text'
@@ -51,6 +52,32 @@ export type PageHandle = {
   isDirty(): boolean
   /** What the help engine needs to see this page. */
   snapshot(): PageSnapshot
+  /** AI ink preview (docs §5.7): starts empty, grows block by block while the answer streams. */
+  ghostStart(actions: GhostActions): void
+  ghostAdd(block: Written): void
+  /** The answer finished streaming; the bar shows Accept / Redo / Discard / Why?. */
+  ghostEnd(): void
+  /** Accepts or throws away the current preview. Returns false if there is none. */
+  ghostAccept(): boolean
+  ghostDiscard(): boolean
+  /** Throws the preview away and asks again. */
+  ghostRedo(): boolean
+  hasGhost(): boolean
+}
+
+/** What the ghost bar's Redo and Why? do: the chat panel owns those. */
+export type GhostActions = {
+  redo(): void
+  why(): void
+  /** Called once the preview is accepted or discarded (or replaced). */
+  settled(outcome: 'accepted' | 'discarded'): void
+}
+
+/** What the page shows over its ink while a preview is up. */
+export type GhostView = {
+  /** Bounds of the preview, page points. */
+  rect: Rect
+  writing: boolean
 }
 
 export type PageSnapshot = {
@@ -59,6 +86,10 @@ export type PageSnapshot = {
   recent: ReadonlySet<string>
   /** Bounds of the lasso selection, if any. */
   selection: Rect | null
+  /** Exact source of an AI ink group. */
+  aiSource(groupId: string): AiSource | undefined
+  /** Spoken transcript to send along (set by the help engine's caller). */
+  transcript?: string
 }
 
 export type SaveState = 'saved' | 'dirty' | 'saving' | 'error'

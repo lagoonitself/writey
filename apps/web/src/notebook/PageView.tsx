@@ -1,7 +1,7 @@
 import type { PageRow } from '@writey/shared'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { PageController, type TextEdit } from './pageController'
-import type { PageHandle, SaveState, ToolId, ToolState } from './tools'
+import type { GhostView, PageHandle, SaveState, ToolId, ToolState } from './tools'
 
 type Props = {
   page: PageRow
@@ -32,6 +32,7 @@ export function PageView(props: Props) {
   const [visible, setVisible] = useState(false)
   const [loadState, setLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [textEdit, setTextEdit] = useState<TextEdit | null>(null)
+  const [ghost, setGhost] = useState<GhostView | null>(null)
 
   // One controller per page for the component's lifetime (the parent keys us by page id).
   // biome-ignore lint/correctness/useExhaustiveDependencies: deliberately created once
@@ -43,6 +44,7 @@ export function PageView(props: Props) {
         onTextEdit: setTextEdit,
         onActivate: () => latest.current.onActivate(page.id),
         onRequestTool: (t) => latest.current.onRequestTool(t),
+        onGhost: setGhost,
       }),
     [],
   )
@@ -134,7 +136,76 @@ export function PageView(props: Props) {
           onDone={(text) => ctl.commitText(textEdit, text)}
         />
       )}
+      {ghost && <GhostBar view={ghost} scale={scale} page={page} ctl={ctl} />}
       <span className="page-number">{props.number}</span>
+    </div>
+  )
+}
+
+/** Accept · Redo · Discard · Why? under Writey's preview ink (docs §5.7). */
+function GhostBar({
+  view,
+  scale,
+  page,
+  ctl,
+}: {
+  view: GhostView
+  scale: number
+  page: PageRow
+  ctl: PageController
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const shown = view.rect.w > 0
+  // Bring the new ink into view once it starts appearing.
+  useEffect(() => {
+    if (shown) ref.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [shown])
+  if (!shown) return null
+  const top = Math.min((view.rect.y + view.rect.h) * scale + 10, page.height * scale - 48)
+  const left = Math.max(8, Math.min(view.rect.x * scale, page.width * scale - 330))
+  return (
+    <div
+      className="ghost-bar"
+      ref={ref}
+      style={{ top, left }}
+      role="toolbar"
+      aria-label="Writey's ink"
+    >
+      {view.writing ? (
+        <>
+          <span className="ghost-status">
+            <span className="thinking-dot" aria-hidden="true" />
+            Writing…
+          </span>
+          <button type="button" onClick={() => ctl.ghostAction('skip')}>
+            Show all
+          </button>
+        </>
+      ) : (
+        <>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => ctl.ghostAction('accept')}
+            title="Keep it (Enter)"
+          >
+            Accept
+          </button>
+          <button type="button" onClick={() => ctl.ghostAction('redo')} title="Write it again">
+            Redo
+          </button>
+          <button
+            type="button"
+            onClick={() => ctl.ghostAction('discard')}
+            title="Throw it away (Esc)"
+          >
+            Discard
+          </button>
+          <button type="button" onClick={() => ctl.ghostAction('why')} title="Explain in the chat">
+            Why?
+          </button>
+        </>
+      )}
     </div>
   )
 }

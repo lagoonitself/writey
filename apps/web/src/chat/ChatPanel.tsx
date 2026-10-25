@@ -1,4 +1,4 @@
-import { CHATGPT_USAGE_URL, PROVIDER_LABEL, type Usage } from '@writey/ai-core'
+import { CHATGPT_USAGE_URL, inkMode, PROVIDER_LABEL, type Usage } from '@writey/ai-core'
 import type { PageRow } from '@writey/shared'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { askWritey, HelpFailure } from '../help/engine'
@@ -6,6 +6,7 @@ import { appendMessages, clearThread, loadThread, type StoredMessage, turnsOf } 
 import { CloseIcon, SendIcon, StopIcon, TrashIcon } from '../notebook/icons'
 import type { PageHandle } from '../notebook/tools'
 import { type AiState, usable } from '../settings/useAiState'
+import { speakable } from '../voice/speech'
 import { renderMarkdown } from './markdown'
 
 type Props = {
@@ -17,11 +18,23 @@ type Props = {
   focusKey: number
   onSettings(): void
   onClose(): void
+  /** A question from outside the text box (voice). Sent once per id. */
+  ask: { id: number; text: string } | null
+  /** Lets the notebook stop an answer or check whether one is running (voice commands). */
+  control: { current: ChatControl | null }
+  /** The spoken transcript to send along with a question. */
+  transcript(): string
+  /** Something worth saying out loud (only used when spoken replies are on). */
+  onSay(text: string): void
 }
+
+export type ChatControl = { stop(): void; busy(): boolean }
 
 type Shown = StoredMessage & {
   seen?: string
   stopped?: boolean
+  /** What happened to the ink this answer wrote. */
+  ink?: 'pending' | 'accepted' | 'discarded'
   settings?: boolean
   link?: { label: string; url: string }
 }
@@ -31,9 +44,14 @@ const EXAMPLES = ["What's next?", 'Is this right?', 'Explain the last step', 'Gi
 
 const MODE_LABEL: Record<string, string> = {
   explain: 'Explained',
-  write: 'Worked it out',
-  check: 'Checked',
-  both: 'Worked it out',
+  write: 'Written on the page',
+  check: 'Checked on the page',
+  both: 'Written on the page',
+}
+
+const INK_OUTCOME: Record<string, string> = {
+  accepted: 'Kept on the page',
+  discarded: 'Discarded',
 }
 
 let tmpId = 0
@@ -89,6 +107,8 @@ export default function ChatPanel(p: Props) {
       if (!utterance || busy || !threadPage) return
       const handle = p.handle(threadPage.id)
       if (!handle) return
+      // A new question replaces a preview that was never accepted.
+      handle.ghostDiscard()
       const pageId = threadPage.id
       const user: Shown = { id: tmp(), role: 'user', text: utterance }
       const turns = turnsOf(messages)
@@ -100,11 +120,15 @@ export default function ChatPanel(p: Props) {
       const controller = new AbortController()
       abort.current = controller
       const model = ai.settings.model
+      const replyId = tmp()
+      let inking = false
+      const setInk = (ink: Shown['ink']) =>
+        setMessages((m) => m.map((x) => (x.id === replyId ? { ...x, ink } : x)))
       try {
         const result = await askWritey({
           utterance,
           page: threadPage,
-          snapshot: handle.snapshot(),
+          snapshot: { ...handle.snapshot(), transcript: p.transcript() || undefined },
           settings: ai.settings,
           turns,
           signal: controller.signal,
@@ -113,7 +137,21 @@ export default function ChatPanel(p: Props) {
             else if (u.type === 'seen') state = { ...state, seen: u.image }
             else if (u.type === 'thinking') state = { ...state, thinking: true }
             else if (u.type === 'text') state = { ...state, text: state.text + u.text }
-            else return
+            else if (u.type === 'plan') {
+              if (u.plan.status_line) p.onSay(u.plan.status_line)
+              return
+            } else if (u.type === 'inkStart') {
+              inking = true
+              handle.ghostStart({
+                redo: () => void sendRef.current(utterance),
+                why: () => void sendRef.current('Why did you write that? Explain it step by step.'),
+                settled: (outcome) => setInk(outcome),
+              })
+              return
+            } else if (u.type === 'ink') {
+              handle.ghostAdd(u.written)
+              return
+            } else return
             setLive(state)
           },
         })
@@ -126,8 +164,13 @@ export default function ChatPanel(p: Props) {
         }
         setMessages((m) => [
           ...m.map((x) => (x.id === user.id ? { ...x, seen: state.seen ?? undefined } : x)),
-          { ...reply, id: tmp() },
+          {
+            ...reply,
+            id: replyId,
+            ink: result.ink?.length && handle.hasGhost() ? 'pending' : undefined,
+          },
         ])
+        if (!inkMode(result.plan.mode)) p.onSay(speakable(result.text))
         appendMessages(pageId, [user, reply]).catch((e) => console.error('save failed', e))
       } catch (e) {
         const seenOn = (m: Shown[]) =>
@@ -158,11 +201,26 @@ export default function ChatPanel(p: Props) {
         }
       } finally {
         abort.current = null
+        if (inking) handle.ghostEnd()
         setLive(null)
       }
     },
-    [busy, threadPage, messages, ai.settings, p.handle],
+    [busy, threadPage, messages, ai.settings, p.handle, p.transcript, p.onSay],
   )
+  const sendRef = useRef(send)
+  sendRef.current = send
+
+  // Voice: questions arrive as `ask`; "stop" goes through `control`.
+  useEffect(() => {
+    p.control.current = { stop: () => abort.current?.abort(), busy: () => abort.current !== null }
+  })
+  const asked = useRef(0)
+  useEffect(() => {
+    const ask = p.ask
+    if (!ask || ask.id === asked.current || busy || loading) return
+    asked.current = ask.id
+    void send(ask.text)
+  }, [p.ask, busy, loading, send])
 
   const clear = async () => {
     if (!threadPage || busy || !messages.length) return
@@ -249,8 +307,21 @@ export default function ChatPanel(p: Props) {
           </div>
         )}
         {loading && <p className="muted chat-loading">Loading conversation…</p>}
-        {messages.map((m) => (
-          <Message key={m.id} m={m} onSettings={p.onSettings} />
+        {messages.map((m, i) => (
+          <Message
+            key={m.id}
+            m={m}
+            onSettings={p.onSettings}
+            onWrite={
+              i === messages.length - 1 &&
+              !busy &&
+              m.role === 'assistant' &&
+              !m.error &&
+              m.mode === 'explain'
+                ? () => void send('Write this on the page')
+                : undefined
+            }
+          />
         ))}
         {live && <LiveMessage live={live} />}
       </div>
@@ -315,7 +386,15 @@ export default function ChatPanel(p: Props) {
   )
 }
 
-function Message({ m, onSettings }: { m: Shown; onSettings(): void }) {
+function Message({
+  m,
+  onSettings,
+  onWrite,
+}: {
+  m: Shown
+  onSettings(): void
+  onWrite?: () => void
+}) {
   const html = useMemo(
     () => (m.role === 'assistant' && !m.error ? renderMarkdown(m.text) : ''),
     [m.role, m.error, m.text],
@@ -356,6 +435,11 @@ function Message({ m, onSettings }: { m: Shown; onSettings(): void }) {
       {/* biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized in renderMarkdown */}
       <div className="md" dangerouslySetInnerHTML={{ __html: html }} />
       <MessageFooter m={m} />
+      {onWrite && (
+        <button type="button" className="write-on-page" onClick={onWrite}>
+          Write this on the page
+        </button>
+      )}
     </div>
   )
 }
@@ -363,6 +447,7 @@ function Message({ m, onSettings }: { m: Shown; onSettings(): void }) {
 function MessageFooter({ m }: { m: Shown }) {
   const parts: string[] = []
   if (m.stopped) parts.push('Stopped')
+  else if (m.ink && INK_OUTCOME[m.ink]) parts.push(INK_OUTCOME[m.ink] as string)
   else if (m.mode && MODE_LABEL[m.mode]) parts.push(MODE_LABEL[m.mode] as string)
   const usage = usageText(m.usage)
   if (usage) parts.push(usage)

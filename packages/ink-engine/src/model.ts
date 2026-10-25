@@ -40,7 +40,15 @@ export type TextItem = {
 
 export type Item = Stroke | ImageItem | TextItem
 
-export type PageDoc = { v: 1; items: Item[] }
+/** What an AI ink group says, so Writey can re-read its own writing exactly (docs §4.1). */
+export type AiSource = { source: string; why?: string }
+
+export type PageDoc = {
+  v: 1
+  items: Item[]
+  /** Sources of AI ink, by stroke groupId. */
+  ai?: Record<string, AiSource>
+}
 
 export const emptyPage = (): PageDoc => ({ v: 1, items: [] })
 

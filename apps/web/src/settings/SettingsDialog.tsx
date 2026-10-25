@@ -15,6 +15,7 @@ import { ChatgptPanel, WelcomeNotice } from './ChatgptCard'
 import { ModelPicker } from './ModelPicker'
 import { ProviderMark } from './ProviderMark'
 import { type AiState, chatgptReturn, usable } from './useAiState'
+import { VoiceSection } from './VoiceSection'
 
 type Props = { ai: AiState; onChange(next: AiState): void; onClose(): void }
 
@@ -122,6 +123,8 @@ export function SettingsDialog({ ai, onChange, onClose }: Props) {
         </section>
 
         <ModelSection ai={ai} choose={choose} saved={saved} />
+
+        <VoiceSection />
 
         <p className="settings-foot">
           API keys are encrypted on Writey’s server and only ever sent to that provider. Your

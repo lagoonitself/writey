@@ -19,6 +19,7 @@ from writey_helper.chatgpt import (
     sanitize_request,
 )
 from writey_helper.server import create_app
+from writey_helper.speech import Speech
 from writey_helper.store import Store
 
 ORIGIN = "http://localhost:5173"
@@ -275,6 +276,7 @@ def server(store: Store, openai: FakeOpenAI):
         http=httpx.AsyncClient(transport=httpx.MockTransport(openai.handler)),
         origins=frozenset({ORIGIN}),
         port=47823,
+        speech=Speech(store.root),
     )
     with TestClient(app, base_url="http://127.0.0.1:47823") as client:
         yield client
@@ -284,7 +286,7 @@ def test_server_guards_host_and_origin(server) -> None:
     client = server
     assert client.get("/health", headers={"host": "evil.example:47823"}).status_code == 403
     health = client.get("/health", headers=HOST).json()
-    assert health["ok"] is True and health["api"] == 2
+    assert health["ok"] is True and health["api"] == 3
 
     pre = client.options("/chatgpt/status", headers={**HOST, "origin": ORIGIN})
     assert pre.status_code == 204

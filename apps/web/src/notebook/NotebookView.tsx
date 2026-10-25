@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import type { ChatControl } from '../chat/ChatPanel'
 import { uploadAsset } from '../lib/assets'
 import {
   A4,
@@ -24,6 +25,9 @@ import { pdfPageSizes } from '../lib/pdf'
 import { navigate } from '../lib/router'
 import { SettingsDialog } from '../settings/SettingsDialog'
 import { takeOpenSettingsFlag, useAiState } from '../settings/useAiState'
+import type { VoiceCommand } from '../voice/trigger'
+import { useVoice } from '../voice/useVoice'
+import { VoiceButton } from '../voice/VoiceButton'
 import { BackIcon, DownIcon, GearIcon, PlusIcon, SparkleIcon, TrashIcon, UpIcon } from './icons'
 import { PageView } from './PageView'
 import { Toolbar } from './Toolbar'
@@ -71,12 +75,30 @@ export function NotebookView({ id }: { id: string }) {
   const [chatOpen, setChatOpenState] = useState(() => localStorage.getItem(CHAT_KEY) === '1')
   const [chatFocus, bumpChatFocus] = useReducer((n: number) => n + 1, 0)
   const [settingsOpen, setSettingsOpen] = useState(takeOpenSettingsFlag)
+  const chatControl = useRef<ChatControl | null>(null)
+  const [voiceAsk, setVoiceAsk] = useState<{ id: number; text: string } | null>(null)
+  const voiceAskId = useRef(0)
 
   const setChatOpen = useCallback((open: boolean) => {
     setChatOpenState(open)
     localStorage.setItem(CHAT_KEY, open ? '1' : '0')
     if (open) bumpChatFocus()
   }, [])
+
+  // Talking to Writey (docs §7): a request opens the chat and asks; commands act directly.
+  const voice = useVoice({
+    request: (text) => {
+      setChatOpen(true)
+      setVoiceAsk({ id: ++voiceAskId.current, text })
+    },
+    command: (c: VoiceCommand) => {
+      const withGhost = [...handles.values()].find((h) => h.hasGhost())
+      if (c === 'accept') withGhost?.ghostAccept()
+      else if (c === 'discard') withGhost?.ghostDiscard()
+      else if (c === 'redo') withGhost?.ghostRedo()
+      else chatControl.current?.stop()
+    },
+  })
 
   const setTools = useCallback((next: ToolState) => {
     setToolsState(next)
@@ -391,6 +413,7 @@ export function NotebookView({ id }: { id: string }) {
           <span className="save-dot" aria-hidden="true" />
           {saveLabel}
         </span>
+        <VoiceButton voice={voice} onSettings={() => setSettingsOpen(true)} />
         <button
           type="button"
           className="ghost icon-btn"
@@ -514,6 +537,10 @@ export function NotebookView({ id }: { id: string }) {
               focusKey={chatFocus}
               onSettings={() => setSettingsOpen(true)}
               onClose={() => setChatOpen(false)}
+              ask={voiceAsk}
+              control={chatControl}
+              transcript={voice.transcript}
+              onSay={voice.say}
             />
           </Suspense>
         )}

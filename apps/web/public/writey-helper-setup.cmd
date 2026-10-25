@@ -21,7 +21,7 @@ for /f "delims=" %%i in ('uv tool dir --bin') do set "BIN=%%i"
 if errorlevel 1 goto failed
 
 echo.
-echo   Done. Go back to Writey and click Continue with ChatGPT.
+echo   Done. Go back to Writey: Continue with ChatGPT, or turn on Voice.
 echo.
 timeout /t 8 >nul
 exit /b 0

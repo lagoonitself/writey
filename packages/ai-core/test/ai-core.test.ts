@@ -7,12 +7,14 @@ import {
   describeError,
   focusRegion,
   groupLines,
+  inkMode,
   messageText,
   type PageContext,
   parseModels,
   parsePlan,
   planMessages,
   produceMessages,
+  produceSystem,
   routeIntent,
   type StreamEvent,
   sseData,
@@ -216,6 +218,27 @@ describe('prompts', () => {
     expect(msgs).toHaveLength(1 + 10 + 1)
     expect(msgs[1]?.content).toBe('t4')
     expect(String(msgs[0]?.content)).toContain('hint only')
+  })
+
+  it('asks for InkScript in the writing modes, Markdown when explaining', () => {
+    expect(produceSystem('write', 'next_step')).toContain('InkScript')
+    expect(produceSystem('check', 'next_step')).toContain('"type":"mark"')
+    expect(produceSystem('write', 'next_step')).toContain('"latex":"\\\\frac{d}{dx}')
+    expect(produceSystem('explain', 'next_step')).toContain('Markdown')
+    expect(inkMode('both')).toBe(true)
+    expect(inkMode('explain')).toBe(false)
+  })
+
+  it('passes Writey’s own ink and the spoken transcript', () => {
+    const msgs = produceMessages(
+      'next',
+      { ...ctx, aiInk: ['$$x=2$$'], transcript: 'so this is the chain rule' },
+      decide({ mode: 'write', scope: null }, null),
+      [],
+    )
+    const text = JSON.stringify(msgs.at(-1)?.content)
+    expect(text).toContain('$$x=2$$')
+    expect(text).toContain('chain rule')
   })
 })
 

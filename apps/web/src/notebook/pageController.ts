@@ -17,12 +17,15 @@ import {
   translateItem,
   unionBounds,
 } from '@writey/ink-engine'
+import type { Written } from '@writey/inkscript'
 import type { AssetRow, PageRow } from '@writey/shared'
 import { loadImage } from '../lib/assets'
 import { backupPage, clearBackup, loadPage, savePage } from '../lib/pageStore'
 import { renderPdfPage } from '../lib/pdf'
 import {
   clipboard,
+  type GhostActions,
+  type GhostView,
   type PageHandle,
   type PageSnapshot,
   type SaveState,
@@ -38,6 +41,19 @@ const RETRY_DELAY_MS = 5000
 const SELECTION_COLOR = '#2f4bf0'
 /** Writing this recent marks where the user is working (docs §5.1). */
 const RECENT_MS = 90_000
+/** AI ink preview opacity (docs §5.7). */
+const GHOST_ALPHA = 0.45
+
+/** AI ink being previewed: blocks arrive while the answer streams and animate in. */
+type Ghost = {
+  blocks: { written: Written; offset: number }[]
+  /** performance.now() when writing started. */
+  start: number
+  writing: boolean
+  /** Shown in full at once (the Skip button). */
+  skipped: boolean
+  actions: GhostActions
+}
 
 type LiveStroke = { tool: StrokeTool; color: string; width: number; points: number[] }
 
@@ -65,6 +81,7 @@ export type PageCallbacks = {
   onTextEdit(edit: TextEdit | null): void
   onActivate(): void
   onRequestTool(tool: ToolId): void
+  onGhost(view: GhostView | null): void
 }
 
 /**
@@ -92,6 +109,7 @@ export class PageController {
   private hover: [number, number] | null = null
   /** When the user wrote each item this session. */
   private written = new Map<string, number>()
+  private ghost: Ghost | null = null
 
   private loaded = false
   private version = 0
@@ -118,6 +136,17 @@ export class PageController {
       flush: () => this.flush(),
       isDirty: () => this.isDirty(),
       snapshot: () => this.snapshot(),
+      ghostStart: (actions) => this.ghostStart(actions),
+      ghostAdd: (block) => this.ghostAdd(block),
+      ghostEnd: () => this.ghostEnd(),
+      ghostAccept: () => this.ghostAccept(),
+      ghostDiscard: () => this.ghostDiscard(),
+      ghostRedo: () => {
+        if (!this.ghost || this.ghost.writing) return false
+        this.ghostAction('redo')
+        return true
+      },
+      hasGhost: () => this.ghost !== null,
     }
   }
 
@@ -129,7 +158,141 @@ export class PageController {
       items: this.editor.items,
       recent,
       selection: unionBounds(this.selectedItems()),
+      aiSource: (groupId) => this.editor.aiSource(groupId),
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // AI ink preview (docs §5.7)
+  // -------------------------------------------------------------------------
+
+  private ghostStart(actions: GhostActions): void {
+    if (this.ghost) this.settleGhost('discarded')
+    this.ghost = { blocks: [], start: performance.now(), writing: true, skipped: false, actions }
+    this.emitGhost()
+  }
+
+  private ghostAdd(written: Written): void {
+    const g = this.ghost
+    if (!g) return
+    // A block that arrives after its turn starts now instead of popping in half-written.
+    const last = g.blocks.at(-1)
+    const first = written.strokes[0]?.at ?? 0
+    const elapsed = performance.now() - g.start
+    const offset = Math.max(last?.offset ?? 0, elapsed - first)
+    g.blocks.push({ written, offset })
+    this.emitGhost()
+    this.requestWet()
+  }
+
+  private ghostEnd(): void {
+    if (!this.ghost) return
+    if (!this.ghost.blocks.length) {
+      this.settleGhost('discarded')
+      return
+    }
+    this.ghost.writing = false
+    this.emitGhost()
+  }
+
+  /** Shows the whole preview at once instead of waiting for the animation. */
+  skipGhost(): void {
+    if (!this.ghost) return
+    this.ghost.skipped = true
+    this.requestWet()
+  }
+
+  private ghostAccept(): boolean {
+    const g = this.ghost
+    if (!g?.blocks.length) return false
+    const strokes = g.blocks.flatMap((b) => b.written.strokes.map((s) => s.stroke))
+    const sources = Object.fromEntries(
+      g.blocks.map(({ written: w }) => [
+        w.groupId,
+        w.why ? { source: w.source, why: w.why } : { source: w.source },
+      ]),
+    )
+    // Writey's lines count as recent work, so "continue" carries on from them.
+    const now = Date.now()
+    for (const s of strokes) this.written.set(s.id, now)
+    this.settleGhost('accepted')
+    this.editor.addAi(strokes, sources)
+    return true
+  }
+
+  private ghostDiscard(): boolean {
+    if (!this.ghost) return false
+    this.settleGhost('discarded')
+    return true
+  }
+
+  /** Runs a ghost bar button. */
+  ghostAction(action: 'accept' | 'discard' | 'redo' | 'why' | 'skip'): void {
+    const g = this.ghost
+    if (!g) return
+    if (action === 'accept') this.ghostAccept()
+    else if (action === 'discard') this.ghostDiscard()
+    else if (action === 'skip') this.skipGhost()
+    else if (action === 'redo') {
+      this.settleGhost('discarded')
+      g.actions.redo()
+    } else g.actions.why()
+  }
+
+  private settleGhost(outcome: 'accepted' | 'discarded'): void {
+    const g = this.ghost
+    if (!g) return
+    this.ghost = null
+    this.emitGhost()
+    this.requestWet()
+    g.actions.settled(outcome)
+  }
+
+  private emitGhost(): void {
+    const g = this.ghost
+    const rects = g?.blocks.map((b) => b.written.rect) ?? []
+    if (!g || (!rects.length && !g.writing)) {
+      this.cb.onGhost(null)
+      return
+    }
+    const x0 = Math.min(...rects.map((r) => r.x))
+    const y0 = Math.min(...rects.map((r) => r.y))
+    const x1 = Math.max(...rects.map((r) => r.x + r.w))
+    const y1 = Math.max(...rects.map((r) => r.y + r.h))
+    this.cb.onGhost({
+      rect: rects.length ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : { x: 0, y: 0, w: 0, h: 0 },
+      writing: g.writing,
+    })
+  }
+
+  /** Draws the preview as far as it has been written. Returns true while still animating. */
+  private drawGhost(ctx: CanvasRenderingContext2D): boolean {
+    const g = this.ghost
+    if (!g) return false
+    const elapsed = g.skipped ? Number.POSITIVE_INFINITY : performance.now() - g.start
+    let animating = false
+    ctx.save()
+    ctx.globalAlpha = GHOST_ALPHA
+    for (const { written, offset } of g.blocks) {
+      for (const { stroke, at } of written.strokes) {
+        const local = elapsed - (at + offset)
+        if (local < 0) {
+          animating = true
+          continue
+        }
+        const end = stroke.points[stroke.points.length - 1] as number
+        if (local >= end) {
+          drawStroke(ctx, stroke)
+          continue
+        }
+        animating = true
+        let n = 3
+        while (n < stroke.points.length && (stroke.points[n + 2] as number) <= local) n += 3
+        drawStroke(ctx, { ...stroke, points: stroke.points.slice(0, n) }, { live: true })
+      }
+    }
+    ctx.restore()
+    return animating
   }
 
   // -------------------------------------------------------------------------
@@ -332,6 +495,7 @@ export class PageController {
   private drawWet(): void {
     const ctx = this.context(this.wet)
     if (!ctx) return
+    if (this.drawGhost(ctx)) this.requestWet()
     const g = this.gesture
     if (g?.type === 'draw') drawStroke(ctx, g.live, { live: true })
     if (this.hover) this.drawEraserRing(ctx, this.hover[0], this.hover[1], g?.type === 'erase')
@@ -713,6 +877,10 @@ export class PageController {
     if (e.key === 'Escape' && this.selection.size) {
       this.clearSelection()
       return true
+    }
+    if (this.ghost && !this.ghost.writing && !mod) {
+      if (e.key === 'Enter') return this.ghostAccept()
+      if (e.key === 'Escape') return this.ghostDiscard()
     }
     return false
   }

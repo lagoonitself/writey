@@ -46,7 +46,7 @@ export function chatgptUsed(): boolean {
 
 async function call(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers)
-  if (init.body) headers.set('Content-Type', 'application/json')
+  if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   try {
     return await fetch(`${HELPER_URL}${path}`, { ...init, headers })
   } catch (e) {
@@ -110,3 +110,69 @@ export const chatgptModels = () => json<unknown>('/chatgpt/models')
 /** Streams a Responses API call through the Helper. The caller reads the response. */
 export const chatgptResponses = (body: string, signal: AbortSignal) =>
   call('/chatgpt/responses', { method: 'POST', body, signal })
+
+// ---------------------------------------------------------------------------
+// Voice: local speech models in the Helper (docs §7)
+// ---------------------------------------------------------------------------
+
+/** The Helper API level voice needs (3: /stt, /tts, /voice/*). */
+export const VOICE_API = 3
+
+export type ModelStatus = {
+  model: string
+  state: 'missing' | 'downloaded' | 'downloading' | 'loading' | 'ready' | 'error'
+  progress?: number
+  error?: string
+}
+
+export type VoiceStatus = { stt: ModelStatus; tts: ModelStatus & { voices: string[] } }
+
+/** 'ok', 'outdated' (no voice yet) or 'offline'. */
+export async function voiceHelperState(): Promise<HelperState> {
+  try {
+    const h = await json<{ api?: number }>('/health', { signal: AbortSignal.timeout(2000) })
+    return (h.api ?? 1) >= VOICE_API ? 'ok' : 'outdated'
+  } catch {
+    return 'offline'
+  }
+}
+
+export const voiceStatus = () => json<VoiceStatus>('/voice/status')
+
+/** Downloads (the first time) and loads the speech models in the background. */
+export const voicePrepare = (which: { stt?: boolean; tts?: boolean } = {}) =>
+  json<VoiceStatus>('/voice/prepare', { method: 'POST', body: JSON.stringify(which) })
+
+/** One speech segment (16 kHz mono floats) to text. */
+export async function transcribe(audio: Float32Array, signal?: AbortSignal): Promise<string> {
+  const pcm = new Int16Array(audio.length)
+  for (let i = 0; i < audio.length; i++) {
+    pcm[i] = Math.max(-32768, Math.min(32767, Math.round((audio[i] as number) * 32767)))
+  }
+  const res = await call('/stt', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: pcm.buffer,
+    signal,
+  })
+  if (!res.ok) {
+    let code = `http_${res.status}`
+    const body = await res.text()
+    try {
+      code = (JSON.parse(body) as { error?: string }).error ?? code
+    } catch {}
+    throw new HelperError(res.status, code, body)
+  }
+  return ((await res.json()) as { text: string }).text
+}
+
+/** Text to WAV audio. */
+export async function synthesize(
+  text: string,
+  voice: string,
+  signal?: AbortSignal,
+): Promise<ArrayBuffer> {
+  const res = await call('/tts', { method: 'POST', body: JSON.stringify({ text, voice }), signal })
+  if (!res.ok) throw new HelperError(res.status, `http_${res.status}`, await res.text())
+  return res.arrayBuffer()
+}

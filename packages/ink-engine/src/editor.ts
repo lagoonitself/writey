@@ -1,4 +1,4 @@
-import type { Item, PageDoc } from './model'
+import type { AiSource, Item, PageDoc } from './model'
 
 const MAX_UNDO = 200
 
@@ -11,11 +11,16 @@ export class PageEditor {
   private undoStack: (readonly Item[])[] = []
   private redoStack: (readonly Item[])[] = []
   private listeners = new Set<() => void>()
+  /** AI ink sources by group. Not part of undo: entries without strokes are dropped on save. */
+  private ai = new Map<string, AiSource>()
   /** Increments on every change, including undo/redo. Used for dirty tracking. */
   revision = 0
 
   constructor(doc?: PageDoc) {
-    if (doc) this._items = doc.items
+    if (doc) {
+      this._items = doc.items
+      this.ai = new Map(Object.entries(doc.ai ?? {}))
+    }
   }
 
   get items(): readonly Item[] {
@@ -31,12 +36,29 @@ export class PageEditor {
   }
 
   toDoc(): PageDoc {
-    return { v: 1, items: [...this._items] }
+    const doc: PageDoc = { v: 1, items: [...this._items] }
+    const groups = new Set(
+      this._items.flatMap((i) => (i.kind === 'stroke' && i.groupId ? [i.groupId] : [])),
+    )
+    const ai = [...this.ai].filter(([id]) => groups.has(id))
+    if (ai.length) doc.ai = Object.fromEntries(ai)
+    return doc
+  }
+
+  aiSource(groupId: string): AiSource | undefined {
+    return this.ai.get(groupId)
+  }
+
+  /** Adds AI ink and its sources as one undo step. */
+  addAi(items: readonly Item[], sources: Record<string, AiSource>): void {
+    for (const [id, src] of Object.entries(sources)) this.ai.set(id, src)
+    this.add(items)
   }
 
   /** Replaces the whole document and clears history (used when loading). */
   load(doc: PageDoc): void {
     this._items = doc.items
+    this.ai = new Map(Object.entries(doc.ai ?? {}))
     this.undoStack = []
     this.redoStack = []
     this.revision++

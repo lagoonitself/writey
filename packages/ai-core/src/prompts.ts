@@ -15,6 +15,10 @@ export type PageContext = {
   pdfText: string
   /** True when the region came from a lasso selection. */
   selection: boolean
+  /** Exact sources of Writey's own handwriting in the region (docs §5.1). */
+  aiInk?: string[]
+  /** What the student said out loud in the last 30 s (docs §7.2). */
+  transcript?: string
 }
 
 export type Turn = { role: 'user' | 'assistant'; text: string }
@@ -55,7 +59,50 @@ const SCOPE_GUIDE: Record<Scope, string> = {
   full: 'Give the complete solution through to the final answer.',
 }
 
+/** Modes answered in handwriting on the page (HANDOFF D3). Everything else goes to chat. */
+export const inkMode = (mode: Mode): mode is Exclude<Mode, 'explain'> => mode !== 'explain'
+
+const INK_GUIDE: Record<Exclude<Mode, 'explain'>, string> = {
+  write:
+    'Write what comes next on the page, as the student would write it: one step per line, with "why" on each.',
+  check:
+    'Check their lines in order. Tick the lines that are right (only the important ones). At the first mistake, circle or cross that line with a short note naming the error, then write the corrected line as math with "after" set to that line. Do not solve further. Finish with one chat block explaining the mistake.',
+  both: 'Write the next step(s) on the page, then one chat block that explains why in two or three sentences.',
+}
+
+const INK_SCOPE: Record<Scope, string> = {
+  hint: 'Hint only: write one text line starting with "Hint:" that nudges them. Do not write the step or the answer.',
+  next_step:
+    'Write exactly one step: the one after their last line (it may take one or two lines).',
+  full: 'Write the complete solution through to the final answer, and box the final answer.',
+}
+
+const INK_FORMAT = String.raw`Reply ONLY with InkScript: one JSON object per line. No prose, no Markdown, no code fences.
+{"type":"math","latex":"\\frac{d}{dx}x^2 = 2x","after":"L3","why":"power rule"}
+{"type":"text","text":"Let $u = x$, so $du = dx$","after":"prev","why":"choose u"}
+{"type":"mark","kind":"circle","target":"L2","note":"sign error"}
+{"type":"chat","text":"Markdown for the side chat, math in $...$"}
+{"type":"done","summary":"one sentence on what you wrote"}
+
+- math: one line of an equation in LaTeX. text: a short line of words, with inline math in $...$.
+- mark: red pen on one of the student's lines (target is its tag). kind: circle, underline, cross, tick or arrow. note: at most six words, or leave it out.
+- after: the first block names the line tag to write below (usually their last line); later blocks use "prev" to continue underneath. Writey places and sizes the handwriting itself.
+- Keep every line short, like a notebook line. A long equation continues on the next math line, starting with "=". One line per block: never use align environments or \\ line breaks.
+- In JSON, double every backslash ("\\frac", "\\sqrt"). Use common commands only: \\frac \\sqrt ^ _ \\int \\sum \\lim \\vec \\cdot \\times \\left( \\right) \\text{} and Greek letters. Units go in \\text{}, e.g. 5\\,\\text{m/s}.
+- Add "box": true to the math line with the final answer.
+- Never copy out lines the student already wrote; write only what is new.
+- End with a done block.`
+
 export function produceSystem(mode: Mode, scope: Scope): string {
+  if (inkMode(mode)) {
+    return `You are Writey, a friendly math and physics tutor who writes by hand in the student's notebook.
+${SEEING}
+
+${INK_FORMAT}
+
+${INK_GUIDE[mode]}
+${INK_SCOPE[scope]}`
+  }
   return `You are Writey, a friendly math and physics tutor inside a handwritten notebook.
 ${SEEING}
 
@@ -76,6 +123,12 @@ function pageText(ctx: PageContext): string {
   if (ctx.selection) parts.push('The student lassoed this area on purpose.')
   if (ctx.typedText.length) parts.push(`Typed text in the area:\n${ctx.typedText.join('\n')}`)
   if (ctx.pdfText) parts.push(`Printed (PDF) text in the area:\n${ctx.pdfText}`)
+  if (ctx.aiInk?.length) {
+    parts.push(
+      `Writey's own handwriting in the area (what it says exactly):\n${ctx.aiInk.join('\n')}`,
+    )
+  }
+  if (ctx.transcript) parts.push(`What the student said out loud recently:\n${ctx.transcript}`)
   return parts.join('\n\n')
 }
 

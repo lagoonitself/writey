@@ -7,6 +7,7 @@ import {
   describeChatgptError,
   describeError,
   type HelpError,
+  inkMode,
   messageText,
   type Plan,
   parsePlan,
@@ -19,14 +20,26 @@ import {
   type Turn,
   type Usage,
 } from '@writey/ai-core'
+import {
+  type InkBlock,
+  InkScriptParser,
+  InkWriter,
+  sizeFromLines,
+  type Written,
+} from '@writey/inkscript'
 import type { AiSettings, KeyProvider, PageRow } from '@writey/shared'
 import { chatRequest } from '../lib/ai'
 import { chatgptResponses, HelperError } from '../lib/helper'
 import type { PageSnapshot } from '../notebook/tools'
-import { capturePage } from './capture'
+import { type Capture, capturePage } from './capture'
 
 // The help engine (docs §5): capture → PLAN (fast, JSON) → PRODUCE (streamed).
-// In Phase 2 every answer goes to the chat panel; ink output arrives with Phase 3.
+// "explain" answers stream into the chat as Markdown; "write", "check" and "both" stream
+// InkScript, which is written onto the page as a ghost preview, block by block.
+
+/** Writey's own ink, and the teacher's red pen for marks (HANDOFF D5). */
+export const AI_INK = '#5b3fb5'
+export const MARK_INK = '#d0342c'
 
 export type HelpUpdate =
   | { type: 'status'; text: string }
@@ -34,8 +47,17 @@ export type HelpUpdate =
   | { type: 'plan'; plan: Plan }
   | { type: 'thinking' }
   | { type: 'text'; text: string }
+  /** Ink is about to be written: the page opens a preview. */
+  | { type: 'inkStart' }
+  | { type: 'ink'; written: Written }
 
-export type HelpResult = { text: string; plan: Plan; usage: Usage }
+export type HelpResult = {
+  text: string
+  plan: Plan
+  usage: Usage
+  /** Blocks written on the page; absent for chat answers. */
+  ink?: Written[]
+}
 
 export class HelpFailure extends Error {
   constructor(readonly help: HelpError) {
@@ -152,7 +174,8 @@ export async function askWritey(opts: {
       : chatCompletions(settings.provider, settings.model, signal)
 
   onUpdate({ type: 'status', text: 'Looking at your work…' })
-  const { ctx } = await capturePage(opts.page, opts.snapshot)
+  const capture = await capturePage(opts.page, opts.snapshot)
+  const { ctx } = capture
   onUpdate({ type: 'seen', image: ctx.focusImage })
 
   const route = routeIntent(utterance)
@@ -163,9 +186,21 @@ export async function askWritey(opts: {
   onUpdate({ type: 'status', text: plan.status_line || MODE_STATUS[plan.mode] })
 
   const effort = plan.scope === 'full' || plan.mode === 'check' ? 'high' : 'low'
+  const produce = produceMessages(utterance, ctx, plan, turns)
+  if (inkMode(plan.mode)) {
+    const ink = await writeInk(transport.stream(produce, effort), {
+      page: opts.page,
+      capture,
+      target: plan.target_line,
+      onUpdate,
+      failure: transport.failure,
+    })
+    return { text: ink.text, plan, usage: addUsage(usage, ink.usage), ink: ink.written }
+  }
+
   let text = ''
   let thinking = false
-  for await (const ev of transport.stream(produceMessages(utterance, ctx, plan, turns), effort)) {
+  for await (const ev of transport.stream(produce, effort)) {
     if (ev.type === 'text') {
       text += ev.text
       onUpdate({ type: 'text', text: ev.text })
@@ -180,4 +215,114 @@ export async function askWritey(opts: {
   }
   if (!text.trim()) throw new HelpFailure({ message: 'The model sent an empty reply. Try again.' })
   return { text, plan, usage }
+}
+
+/** How one InkScript block reads in the chat, which keeps a copy of what was written. */
+function blockMarkdown(b: InkBlock): string {
+  const why = 'why' in b && b.why ? `*(${b.why})*` : ''
+  switch (b.type) {
+    case 'math':
+      return why ? `$$${b.latex}$$\n${why}` : `$$${b.latex}$$`
+    case 'text':
+      return why ? `${b.text} ${why}` : b.text
+    case 'mark':
+      return `**${b.target}**: ${b.note ?? b.kind}`
+    default:
+      return ''
+  }
+}
+
+async function writeInk(
+  events: AsyncIterable<StreamEvent>,
+  o: {
+    page: PageRow
+    capture: Capture
+    target: string | null
+    onUpdate(u: HelpUpdate): void
+    failure(ev: Extract<StreamEvent, { type: 'error' }>): HelpError
+  },
+): Promise<{ text: string; written: Written[]; usage: Usage | undefined }> {
+  const { capture, onUpdate } = o
+  const writer = new InkWriter(
+    {
+      page: { width: o.page.width, height: o.page.height },
+      lines: capture.lines,
+      obstacles: capture.obstacles,
+      target: o.target,
+    },
+    {
+      size: sizeFromLines(capture.lines.map((l) => l.rect.h)),
+      color: AI_INK,
+      markColor: MARK_INK,
+      seed: Math.floor(Math.random() * 2 ** 31),
+    },
+  )
+  const parser = new InkScriptParser()
+  const written: Written[] = []
+  const onPage: string[] = []
+  const unwritten: string[] = []
+  const chat: string[] = []
+  let summary = ''
+  let usage: Usage | undefined
+  let thinking = false
+
+  const take = (b: InkBlock) => {
+    if (b.type === 'status') onUpdate({ type: 'status', text: b.text })
+    else if (b.type === 'chat') chat.push(b.text)
+    else if (b.type === 'done') summary = b.summary ?? ''
+    else {
+      const md = blockMarkdown(b)
+      if (unwritten.length) {
+        unwritten.push(md)
+        return
+      }
+      const r = writer.write(b)
+      if (!r) return
+      if ('noRoom' in r) {
+        unwritten.push(md)
+        return
+      }
+      if (!written.length) {
+        onUpdate({ type: 'inkStart' })
+        onUpdate({ type: 'status', text: 'Writing on your page…' })
+      }
+      written.push(r)
+      onPage.push(md)
+      onUpdate({ type: 'ink', written: r })
+      onUpdate({ type: 'text', text: `${md}\n\n` })
+    }
+  }
+
+  for await (const ev of events) {
+    if (ev.type === 'text') for (const b of parser.push(ev.text)) take(b)
+    else if (ev.type === 'reasoning' && !thinking && !written.length) {
+      thinking = true
+      onUpdate({ type: 'thinking' })
+    } else if (ev.type === 'usage') usage = addUsage(usage, ev.usage)
+    else if (ev.type === 'error') throw new HelpFailure(o.failure(ev))
+  }
+
+  const parts: string[] = []
+  const marks = written.filter((w) => w.source.startsWith('[')).length
+  const lines = written.length - marks
+  if (written.length) {
+    const did = [
+      lines && `wrote ${lines} line${lines === 1 ? '' : 's'}`,
+      marks && `marked ${marks} line${marks === 1 ? '' : 's'}`,
+    ].filter(Boolean)
+    parts.push(`*On your page: ${did.join(' and ')}.*`)
+    if (summary) parts.push(summary)
+    parts.push(...onPage)
+  }
+  if (unwritten.length) {
+    parts.push(
+      '**No room left on this page** for the rest. Add a page and say "continue", or read it here:',
+      ...unwritten,
+    )
+  }
+  parts.push(...chat)
+  // A model that ignored the format: show what it said rather than nothing.
+  if (!parts.length && parser.leftover()) parts.push(parser.leftover())
+  if (!parts.length) throw new HelpFailure({ message: 'The model sent an empty reply. Try again.' })
+  return { text: parts.join('\n\n'), written, usage }
 }

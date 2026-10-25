@@ -2225,6 +2225,220 @@ dialog.welcome p {
   line-height: 1.55;
 }
 
+/* ------------------------------------------------------- Writey's ink */
+
+/* Accept · Redo · Discard · Why? under the preview ink. */
+.ghost-bar {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem;
+  border-radius: var(--r-md);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-md);
+  animation: rise 220ms var(--ease);
+}
+.ghost-bar button {
+  padding: 0.38rem 0.75rem;
+  font-size: 0.84rem;
+  border-color: transparent;
+  background: transparent;
+}
+.ghost-bar button:hover:not(:disabled) {
+  background: rgba(62, 48, 22, 0.07);
+  border-color: transparent;
+}
+.ghost-bar button.primary {
+  background: #5b3fb5;
+  border-color: #5b3fb5;
+  color: #fff;
+}
+.ghost-bar button.primary:hover:not(:disabled) {
+  background: #4a2f9e;
+  border-color: #4a2f9e;
+}
+.ghost-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.5rem;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+.ghost-status .thinking-dot {
+  background: #5b3fb5;
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+button.write-on-page {
+  margin-top: 0.55rem;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.82rem;
+  color: #5b3fb5;
+  border-color: rgba(91, 63, 181, 0.35);
+}
+button.write-on-page:hover:not(:disabled) {
+  border-color: #5b3fb5;
+}
+
+/* ------------------------------------------------------------------ voice */
+
+.voice {
+  position: relative;
+}
+.voice-btn {
+  padding: 0.45rem 0.75rem 0.45rem 0.6rem;
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+.voice-btn:hover:not(:disabled) {
+  background: rgba(62, 48, 22, 0.07);
+  border-color: transparent;
+}
+.voice-btn.listening,
+.voice-btn.hearing,
+.voice-btn.transcribing,
+.voice-btn.speaking {
+  background: var(--paper);
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+.voice-btn.error {
+  color: var(--error);
+}
+.voice-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+.voice-btn.hearing .voice-dot,
+.voice-btn.speaking .voice-dot {
+  background: #5b3fb5;
+  animation: pulse 700ms ease-in-out infinite;
+}
+.voice-btn.transcribing .voice-dot {
+  background: #d9a514;
+  animation: pulse 900ms ease-in-out infinite;
+}
+.voice-pop {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: var(--z-menu);
+  width: 290px;
+  padding: 0.8rem 0.9rem;
+  border-radius: var(--r-md);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-md);
+  font-size: 0.86rem;
+  animation: rise 200ms var(--ease);
+}
+.voice-pop p {
+  margin: 0 0 0.6rem;
+}
+.voice-pop.error p {
+  color: var(--error);
+}
+.voice-quote {
+  display: block;
+  margin-top: 0.3rem;
+  color: var(--muted);
+}
+.voice-pop-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+.voice-pop-actions button {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.84rem;
+}
+.voice-pop-actions button.ghost {
+  color: var(--ink-soft);
+}
+.voice-heard {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: var(--z-menu);
+  max-width: 320px;
+  margin: 0;
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--r-sm);
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  animation: rise 160ms var(--ease);
+}
+
+/* Voice settings */
+.voice-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: #fff;
+  font-size: 0.88rem;
+}
+.voice-models {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem 1rem;
+  margin: 0;
+}
+.voice-models dt {
+  color: var(--ink-soft);
+}
+.voice-models dd {
+  margin: 0;
+  color: var(--muted);
+  text-align: right;
+}
+.voice-models dd.ok {
+  color: var(--ok);
+}
+.voice-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.voice-row select {
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--paper);
+}
+.voice-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+}
+.voice-settings .note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 /* ------------------------------------------------------------- responsive */
 
 @media (max-width: 860px) {
@@ -2255,6 +2469,7 @@ dialog.welcome p {
   .crumb-sep,
   .ask-writey span,
   .ask-writey kbd,
+  .voice-btn span:not(.voice-dot),
   .save-state {
     display: none;
   }
