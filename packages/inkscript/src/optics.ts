@@ -86,7 +86,49 @@ function setup(o: DiagramItem): { els: El[]; obj: ReturnType<typeof object> } {
   els.sort((a, b) => a.x - b.x)
   const m = els.findIndex((e) => e.mirror)
   if (m >= 0) els = els.slice(0, m + 1)
-  return { els, obj: object(o.object) }
+  const obj = object(o.object)
+  // Real objects are tiny next to focal lengths. Images scale with the object's height and
+  // their positions don't depend on it, so a taller object keeps the diagram exact and readable.
+  if (obj && els.length) {
+    const fmin = Math.min(...els.map((e) => Math.abs(e.f)))
+    const h = Math.max(Math.abs(obj.h), fmin * 0.35)
+    obj.h = obj.h < 0 ? -h : h
+  }
+  return { els, obj }
+}
+
+type Rule = { m: number; ys: number; ye: number; label: string }
+
+/**
+ * The textbook ray rules for one element with no object: a ray parallel to the axis, one
+ * through (or toward) F, one through the optical centre or C, one at the pole.
+ */
+function rules(o: DiagramItem, el: El): Rule[] {
+  const list = Array.isArray(o.rays) ? o.rays : typeof o.rays === 'string' ? [o.rays] : []
+  const f = el.f
+  const xs = el.x - 2.2 * Math.abs(f)
+  const span = el.x - xs
+  return list.flatMap((r, i): Rule[] => {
+    const spec = (typeof r === 'string' ? { type: r } : (r ?? {})) as Record<string, unknown>
+    const type = String(spec.type ?? spec.kind ?? 'parallel').toLowerCase()
+    const h = num(spec.h ?? spec.height, Math.abs(f) * (0.45 - i * 0.12))
+    const label = typeof spec.label === 'string' ? spec.label : ''
+    if (type.includes('focus') || type === 'f') {
+      const m = h / f
+      return [{ m, ys: h - m * span, ye: h, label }]
+    }
+    if (type.includes('centre') || type.includes('center') || type === 'c') {
+      if (el.mirror) {
+        const m = h / (2 * f)
+        return [{ m, ys: h - m * span, ye: h, label }]
+      }
+      return [{ m: -h / span, ys: h, ye: 0, label }]
+    }
+    if (type.includes('pole') || type === 'p' || type.includes('optical')) {
+      return [{ m: -h / span, ys: h, ye: 0, label }]
+    }
+    return [{ m: 0, ys: h, ye: h, label }]
+  })
 }
 
 type Stage = {
@@ -191,7 +233,16 @@ export function opticsExtent(o: DiagramItem): Pt[] {
     if (el.mirror && el.f < 0) out.push([el.x + 2 * f, 0])
   }
   if (!obj) {
-    for (const el of els) out.push([el.x, Math.abs(el.f) * 0.5], [el.x, -Math.abs(el.f) * 0.5])
+    for (const el of els) {
+      const f = Math.abs(el.f)
+      out.push([el.x, f * 0.5], [el.x, -f * 0.5], [el.x - 2.3 * f, 0])
+      if (!el.mirror) out.push([el.x + 2.3 * f, 0])
+      for (const r of rules(o, el)) {
+        const end = el.x + 2.2 * f
+        out.push([el.x - 2.2 * f, r.ys], fold(el, [end, r.ye + (r.m - r.ye / el.f) * (end - el.x)]))
+        out.push([el.x, r.ye * 1.2])
+      }
+    }
     return out
   }
   out.push([obj.x, 0], [obj.x, obj.h])
@@ -227,8 +278,28 @@ export function drawOptics(o: DiagramItem, k: Sketch): void {
   const halves = new Map<El, number>()
   for (const s of st) halves.set(s.el, elementHalf(s, n))
   for (const el of els) {
-    drawElement(el, halves.get(el) ?? Math.abs(el.f) * 0.5, k)
+    const ruled = obj ? [] : rules(o, el)
+    const half = Math.max(Math.abs(el.f) * 0.5, ...ruled.map((r) => Math.abs(r.ye) * 1.25))
+    drawElement(el, halves.get(el) ?? half, k)
     if (o.marks !== false) marks(el, k, els.length > 1)
+    const f = Math.abs(el.f)
+    for (const r of ruled) {
+      const a = k.map([el.x - 2.2 * f, r.ys])
+      const b = k.map([el.x, r.ye])
+      pen.line(a, b)
+      arrowOn(k, a, b, 0.55)
+      const out = r.m - r.ye / el.f
+      const end = el.x + 2.2 * f
+      const c = k.map(fold(el, [end, r.ye + out * (end - el.x)]))
+      pen.line(b, c)
+      arrowOn(k, b, c, 0.5)
+      // Diverging rays seem to come from F behind the element: show that dashed.
+      const back = el.x - 1.3 * f
+      if (el.f < 0 && Math.abs(out) > 1e-9) {
+        pen.line(b, k.map(fold(el, [back, r.ye + out * (back - el.x)])), true)
+      }
+      if (r.label) k.label(r.label, a, [-1, 0], 3)
+    }
   }
   if (!obj) return
   arrowUp(k, [obj.x, 0], [obj.x, obj.h], false)

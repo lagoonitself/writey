@@ -22,6 +22,7 @@ import {
   sizeFromLines,
   splitInline,
   splitRows,
+  svgPath,
   wirePath,
 } from '../src'
 
@@ -377,7 +378,8 @@ describe('physics diagrams', () => {
     )
     expect(magnifier[0]).toMatchObject({ virtual: true })
     expect(magnifier[0]?.x).toBeCloseTo(-10)
-    expect(magnifier[0]?.h).toBeCloseTo(2)
+    // Tiny objects are drawn taller; the image scales with them and keeps its place.
+    expect(magnifier[0]?.h).toBeCloseTo(7)
     const concave = opticsImages(
       one({ kind: 'concave_mirror', x: 0, f: 10, object: { x: -30, h: 4 } }),
     )
@@ -576,5 +578,71 @@ describe('logic circuits', () => {
       [-1, 1],
       [-1, 0.25],
     ])
+  })
+})
+
+describe('freehand pictures', () => {
+  it('reads SVG path data, absolute and relative', () => {
+    const [box] = svgPath('M10 10 h20 v10 H10 z')
+    expect(box).toEqual([
+      [10, 10],
+      [30, 10],
+      [30, 20],
+      [10, 20],
+      [10, 10],
+    ])
+    const curves = svgPath(
+      'M0 0 C10 -10 20 -10 30 0 s20 10 30 0 Q70 10 80 0 t20 0 A10 10 0 0 1 120 0 m5 5 l5 5',
+    )
+    expect(curves).toHaveLength(2)
+    const main = curves[0] as number[][]
+    expect(main.at(-1)?.[0]).toBeCloseTo(120)
+    expect(main.at(-1)?.[1]).toBeCloseTo(0)
+    // The arc bulges out by its radius.
+    expect(Math.min(...main.map((p) => p[1] as number))).toBeLessThan(-9)
+    expect(curves[1]).toEqual([
+      [125, 5],
+      [130, 10],
+    ])
+    expect(svgPath('garbage 12 Z')).toEqual([])
+  })
+
+  it('keeps y-down drawings the right way up and names parts in columns', () => {
+    const items = diagramItems([
+      { kind: 'blob', center: [100, 100], rx: 80, ry: 60 },
+      { kind: 'circle', center: [100, 60], r: 10 },
+      {
+        kind: 'callouts',
+        labels: [
+          { at: [100, 60], text: 'top part' },
+          { at: [105, 62], text: 'second' },
+          { at: [40, 100], text: 'left part' },
+        ],
+      },
+    ])
+    const up = drawDiagram({ items, ydown: true }, { size: 20, maxW: 500, rng: seeded(1) })
+    expect(up.w).toBeLessThanOrEqual(505)
+    expect(up.w).toBeGreaterThan(300)
+    expect(allFinite(up.paths)).toBe(true)
+    const [block] = parseInkScript(
+      '{"type":"diagram","ydown":true,"items":[{"kind":"svg","d":"M0 0 L10 10"},{"kind":"callouts","labels":[{"at":[5,5],"text":"x"}]}]}',
+    )
+    expect(block).toMatchObject({ type: 'diagram', ydown: true })
+    expect(diagramItems([{ kind: 'callouts', labels: [] }])).toHaveLength(1)
+  })
+
+  it('bends the textbook ray rules for a concave mirror', () => {
+    const items = diagramItems([
+      {
+        kind: 'mirror',
+        type: 'concave',
+        x: 0,
+        f: 5,
+        rays: ['parallel', { type: 'focus', h: -1 }, 'centre', 'pole'],
+      },
+    ])
+    const d = drawDiagram({ items }, { size: 20, maxW: 500, rng: seeded(1) })
+    expect(d.paths.length).toBeGreaterThan(10)
+    expect(allFinite(d.paths)).toBe(true)
   })
 })

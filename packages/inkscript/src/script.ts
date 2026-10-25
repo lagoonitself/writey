@@ -86,6 +86,7 @@ export function toBlock(raw: unknown): InkBlock | null {
         h: size(frame.h ?? frame.height),
         x: range(spec.x ?? spec.xrange),
         y: range(spec.y ?? spec.yrange),
+        ydown: spec.ydown === true || spec.coords === 'svg' || undefined,
         title: str(o.title) || str(spec.title) || undefined,
         after: after(o.after),
         why,

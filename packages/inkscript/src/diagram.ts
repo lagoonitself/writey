@@ -8,6 +8,7 @@ import {
 } from './circuit'
 import { compile } from './expr'
 import { drawField, FIELD_KINDS, fieldExtent } from './fields'
+import { calloutRoom, drawFreehand, FREEHAND_KINDS, freehandExtent, type PageBox } from './freehand'
 import { type Box, layoutMath, type Path, type Rng } from './layout'
 import { drawLogic, LOGIC_KINDS, logicExtent } from './logic'
 import { drawOptics, OPTICS_KINDS, opticsExtent } from './optics'
@@ -41,6 +42,8 @@ export type DiagramSpec = {
   /** World ranges, in the model's own units. Fitted to the items when left out. */
   x?: [number, number]
   y?: [number, number]
+  /** Coordinates run downward, as in SVG (for freehand pictures drawn with SVG paths). */
+  ydown?: boolean
   items: DiagramItem[]
 }
 
@@ -99,11 +102,13 @@ const KINDS: Record<string, string> = {
   convex_mirror: 'mirror',
   ...FIELD_KINDS,
   ...LOGIC_KINDS,
+  ...FREEHAND_KINDS,
 }
 
 const CIRCUIT = new Set(Object.values(CIRCUIT_KINDS))
 const OPTICS = new Set(['lens', 'mirror', ...Object.values(OPTICS_KINDS)])
 const FIELDS = new Set(Object.values(FIELD_KINDS))
+const FREEHAND = new Set(Object.values(FREEHAND_KINDS))
 
 /**
  * Accepts both `{"kind":"arrow",…}` (or `type`/`shape`) and the docs' `{"arrow":{…}}`.
@@ -261,16 +266,20 @@ function extent(o: DiagramItem, xr: [number, number] | null): Pt[] {
       if (OPTICS.has(o.kind)) return opticsExtent(o)
       if (FIELDS.has(o.kind)) return fieldExtent(o)
       if (o.kind === 'logic') return logicExtent(o)
+      if (FREEHAND.has(o.kind)) return freehandExtent(o)
       return []
   }
 }
 
+/** The world box, in y-up units (a y-down spec's y values are negated). */
 function fitWorld(spec: DiagramSpec): { x: [number, number]; y: [number, number] } {
+  const fy = spec.ydown ? -1 : 1
   const axes = spec.items.find((o) => o.kind === 'axes')
   const xr = range(spec.x) ?? (axes && range(axes.x))
-  const yr = range(spec.y) ?? (axes && range(axes.y))
+  const y0 = range(spec.y) ?? (axes && range(axes.y))
+  const yr: [number, number] | null | undefined = y0 && (fy > 0 ? y0 : [-y0[1], -y0[0]])
   if (xr && yr) return { x: xr, y: yr }
-  const all = spec.items.flatMap((o) => extent(o, xr ?? null))
+  const all = spec.items.flatMap((o) => extent(o, xr ?? null)).map((p): Pt => [p[0], fy * p[1]])
   const xs = all.map((p) => p[0])
   const ys = all.map((p) => p[1])
   const pad = (lo: number, hi: number): [number, number] => {
@@ -317,18 +326,38 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
   // Circuits get a fixed scale (a gate is about two letters' height across), so a big
   // circuit gets a big drawing instead of being squeezed into the default width.
   const wired = spec.items.some((o) => CIRCUIT.has(o.kind) || o.kind === 'logic')
-  const natural = wired ? Math.max(230, xr * size * 1.25) : Math.max(230, size * 11)
-  const W = Math.min(opts.maxW, Math.max(size * 4, num(spec.w, natural)))
+  const rayItems = spec.items.filter(
+    (o) => o.kind === 'optics' || o.kind === 'lens' || o.kind === 'mirror',
+  )
+  const instrument = rayItems.some((o) => Array.isArray(o.elements) && o.elements.length > 1)
+  const natural = wired
+    ? Math.max(230, xr * size * 1.25)
+    : instrument
+      ? opts.maxW
+      : rayItems.length
+        ? Math.max(300, size * 14)
+        : spec.items.some((o) => FREEHAND.has(o.kind))
+          ? opts.maxW
+          : Math.max(230, size * 11)
+  // Callout names sit beside the drawing, so the drawing leaves them room.
+  const room = calloutRoom(spec.items, { size }, (world.x[0] + world.x[1]) / 2)
+  const W = Math.min(
+    Math.max(size * 6, opts.maxW - room.left - room.right),
+    Math.max(size * 4, num(spec.w, natural)),
+  )
   // Same scale on both axes unless told otherwise, so circles stay round.
   // Ray diagrams stretch their heights, as textbooks do, so rays don't lie flat on the axis.
   const rays = spec.items.some(
     (o) => o.kind === 'optics' || o.kind === 'lens' || o.kind === 'mirror',
   )
   const minH = W * (rays ? 0.62 : 0.4)
-  const H = Math.max(size * 3, num(spec.h, Math.min(W * 1.15, Math.max(minH, (W * yr) / xr))))
+  const natH = Math.min(W * 1.15, Math.max(minH, (W * yr) / xr))
+  // A ray diagram is never squashed flat, even when asked for a short frame.
+  const H = Math.max(size * 3, rays ? Math.max(num(spec.h, natH), minH) : num(spec.h, natH))
   const sx = W / xr
   const sy = H / yr
-  const map = (p: Pt): Pt => [(p[0] - world.x[0]) * sx, H - (p[1] - world.y[0]) * sy]
+  const fy = spec.ydown ? -1 : 1
+  const map = (p: Pt): Pt => [(p[0] - world.x[0]) * sx, H - (fy * p[1] - world.y[0]) * sy]
   const pen = new Pen(rng, Math.max(0.35, size * 0.03))
   const headSize = Math.max(4, size * 0.32)
   const labelK = size * 0.62
@@ -360,6 +389,19 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
     return [(b[1] - a[1]) / len, -(b[0] - a[0]) / len]
   }
 
+  // The drawing's own box on the page (without callout names), for placing those names.
+  const drawn = spec.items
+    .filter((o) => o.kind !== 'callouts')
+    .flatMap((o) => extent(o, world.x))
+    .map(map)
+  const content: PageBox = drawn.length
+    ? {
+        L: Math.min(...drawn.map((p) => p[0])),
+        R: Math.max(...drawn.map((p) => p[0])),
+        T: Math.min(...drawn.map((p) => p[1])),
+        B: Math.max(...drawn.map((p) => p[1])),
+      }
+    : { L: 0, R: W, T: 0, B: H }
   const terminals = circuitTerminals(spec.items)
   const sketch: Sketch = {
     pen,
@@ -671,6 +713,7 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
         else if (OPTICS.has(o.kind)) drawOptics(o, sketch)
         else if (FIELDS.has(o.kind)) drawField(o, sketch)
         else if (o.kind === 'logic') drawLogic(o, sketch)
+        else if (FREEHAND.has(o.kind)) drawFreehand(o, sketch, content)
     }
   }
 
