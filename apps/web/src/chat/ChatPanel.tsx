@@ -636,8 +636,11 @@ function when(iso: string): string {
 function usageText(u: Usage | null | undefined): string {
   if (!u) return ''
   const tokens = (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0)
-  const t = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k tokens` : `${tokens} tokens`
+  const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)
   if (!tokens) return ''
+  // Cached tokens are re-read from the provider's prompt cache: a fraction of the price.
+  const cached = u.cached_tokens ? ` (${k(u.cached_tokens)} cached)` : ''
+  const t = `${k(tokens)} tokens${cached}`
   return u.cost ? `${t} · $${u.cost < 0.01 ? u.cost.toFixed(4) : u.cost.toFixed(2)}` : t
 }
 

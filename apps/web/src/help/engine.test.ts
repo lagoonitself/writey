@@ -127,8 +127,10 @@ describe('askWritey', () => {
     expect(tools[1]).toMatch(/^Done \(W1\), at \[/)
     expect(tools[2]).toContain('no line L9')
     expect(JSON.stringify(second.at(-1))).toContain('base64,2')
-    // The first screenshot is dropped once there is a newer one.
-    expect(JSON.stringify(second)).not.toContain('base64,1"')
+    // The history is append-only: the first screenshot stays, so the request before is a
+    // prefix of this one and the prompt cache covers it.
+    expect(JSON.stringify(second)).toContain('base64,1"')
+    expect(JSON.stringify(second).startsWith(JSON.stringify(sent[0]).slice(0, -1))).toBe(true)
     expect(result.plan.mode).toBe('check')
     expect(result.ink).toHaveLength(2)
     expect(result.text).toContain('The sign flips')

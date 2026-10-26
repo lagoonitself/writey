@@ -137,7 +137,13 @@ describe('responsesEvents', () => {
           { type: 'response.output_text.delta', delta: 'there' },
           {
             type: 'response.completed',
-            response: { usage: { input_tokens: 50, output_tokens: 5 } },
+            response: {
+              usage: {
+                input_tokens: 50,
+                output_tokens: 5,
+                input_tokens_details: { cached_tokens: 40 },
+              },
+            },
           },
         ),
       ),
@@ -146,7 +152,7 @@ describe('responsesEvents', () => {
       { type: 'reasoning', text: 'hmm' },
       { type: 'text', text: 'Hi ' },
       { type: 'text', text: 'there' },
-      { type: 'usage', usage: { prompt_tokens: 50, completion_tokens: 5 } },
+      { type: 'usage', usage: { prompt_tokens: 50, completion_tokens: 5, cached_tokens: 40 } },
     ])
   })
 

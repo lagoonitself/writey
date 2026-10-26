@@ -23,7 +23,13 @@ export type ChatMessage = {
   reasoning?: unknown[]
 }
 
-export type Usage = { prompt_tokens?: number; completion_tokens?: number; cost?: number }
+export type Usage = {
+  prompt_tokens?: number
+  completion_tokens?: number
+  /** Of prompt_tokens, how many came from the provider's prompt cache (cheap and fast). */
+  cached_tokens?: number
+  cost?: number
+}
 
 export type StreamEvent =
   | { type: 'text'; text: string }
@@ -228,7 +234,12 @@ export async function* chatEvents(body: ReadableStream<Uint8Array>): AsyncGenera
     }
     const reason = chunk.choices?.[0]?.finish_reason
     if (reason) finished = reason
-    if (chunk.usage) yield { type: 'usage', usage: chunk.usage }
+    if (chunk.usage) {
+      const { prompt_tokens_details: d, ...u } = chunk.usage as Usage & {
+        prompt_tokens_details?: { cached_tokens?: number }
+      }
+      yield { type: 'usage', usage: { ...u, cached_tokens: d?.cached_tokens } }
+    }
   }
   yield* finish(true)
   if (finished === 'length') {
@@ -256,5 +267,6 @@ export function messageText(json: unknown): string {
 export const addUsage = (a: Usage | undefined, b: Usage | undefined): Usage => ({
   prompt_tokens: (a?.prompt_tokens ?? 0) + (b?.prompt_tokens ?? 0),
   completion_tokens: (a?.completion_tokens ?? 0) + (b?.completion_tokens ?? 0),
+  cached_tokens: (a?.cached_tokens ?? 0) + (b?.cached_tokens ?? 0),
   cost: (a?.cost ?? 0) + (b?.cost ?? 0),
 })

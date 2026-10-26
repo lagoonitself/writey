@@ -4,10 +4,10 @@ import {
   type ChatMessage,
   chatBody,
   chatEvents,
-  DIAGRAM_GUIDE,
   decide,
   describeChatgptError,
   describeError,
+  diagramGuide,
   type Effort,
   type HelpError,
   type Mode,
@@ -100,11 +100,16 @@ export class HelpFailure extends Error {
  * A safety stop on model requests in one answer, not a plan: the model ends its turn
  * itself by replying without tool calls. The last request offers no tools.
  */
-const MAX_STEPS = 12
+const MAX_STEPS = 40
 /** Tries of one request that failed before anything came back. */
 const MAX_RETRIES = 2
 /** From this many steps left, each result reminds the model to wrap up. */
 const WRAP_UP = 3
+/**
+ * Pictures of the page (and close-ups) kept in the history. Older ones are replaced by a
+ * note, which changes the prefix once instead of on every look.
+ */
+const KEEP_IMAGES = 3
 /** Failed tool calls in a row before Writey suggests looking again or finishing. */
 const FAIL_STREAK = 4
 
@@ -173,13 +178,20 @@ function chatCompletions(provider: KeyProvider, model: string, signal: AbortSign
 }
 
 /** ChatGPT plan: the Responses API through Writey Helper on this computer. */
-function chatgptPlan(model: string, signal: AbortSignal): Transport {
+function chatgptPlan(model: string, signal: AbortSignal, cacheKey: string): Transport {
   return {
     async *stream(messages, effort, final) {
       let res: Response
       try {
         res = await chatgptResponses(
-          responsesBody(model, messages, effort, WRITEY_TOOLS, final ? 'none' : undefined),
+          responsesBody(
+            model,
+            messages,
+            effort,
+            WRITEY_TOOLS,
+            final ? 'none' : undefined,
+            cacheKey,
+          ),
           signal,
         )
       } catch (e) {
@@ -222,7 +234,7 @@ export async function askWritey(opts: {
   const { utterance, settings, signal, onUpdate } = opts
   const transport =
     settings.provider === 'chatgpt'
-      ? chatgptPlan(settings.model, signal)
+      ? chatgptPlan(settings.model, signal, `writey-${opts.page.notebook_id}`)
       : chatCompletions(settings.provider, settings.model, signal)
 
   onUpdate({ type: 'status', text: 'Looking at your work…' })
@@ -238,8 +250,8 @@ export async function askWritey(opts: {
     route.scope === 'hint'
       ? 'low'
       : route.mode === 'check' || route.scope === 'full'
-        ? 'medium'
-        : 'low'
+        ? 'high'
+        : 'medium'
 
   const agent = new Agent(transport, capture, opts)
   const out = await agent.run(
@@ -524,22 +536,35 @@ class Agent {
           ? { ...r, content: `${r.content}\n${notes.join('\n')}` }
           : r,
       )
-      // Only the newest picture of the page is sent again, and only the newest close-ups.
-      const base = s.look
-        ? withoutImages(messages)
-        : s.zooms.length
-          ? messages.map((m) => (this.isZoom(m) ? (withoutImages([m])[0] as ChatMessage) : m))
-          : messages
-      messages = [
-        ...base,
+      // Append-only, like a coding agent's history, so every request starts with the last
+      // one and the provider's prompt cache covers it. Only images beyond the newest few
+      // are swapped for a note.
+      messages = this.trimImages([
+        ...messages,
         { role: 'assistant', content: s.text, toolCalls: s.calls, reasoning: s.thoughts },
         ...results,
         ...(s.look ? [s.look] : []),
         ...s.zooms,
-      ]
+      ])
       this.o.onUpdate({ type: 'status', text: 'Thinking…' })
     }
     return this.finish()
+  }
+
+  /** Keeps the newest KEEP_IMAGES pictures of the page and close-ups; older ones become text. */
+  private trimImages(messages: ChatMessage[]): ChatMessage[] {
+    const seen = { page: 0, zoom: 0 }
+    return messages
+      .slice()
+      .reverse()
+      .map((m) => {
+        if (typeof m.content === 'string' || !m.content.some((p) => p.type === 'image_url')) {
+          return m
+        }
+        const kind = this.isZoom(m) ? 'zoom' : 'page'
+        return ++seen[kind] > KEEP_IMAGES ? (withoutImages([m])[0] as ChatMessage) : m
+      })
+      .reverse()
   }
 
   private readonly zoomMessages = new WeakSet<ChatMessage>()
@@ -615,7 +640,10 @@ class Agent {
     if (c.name === 'place_picture') {
       return this.placePicture(JSON.parse(repairJson(c.arguments || '{}')), key)
     }
-    if (c.name === 'diagram_guide') return { result: DIAGRAM_GUIDE }
+    if (c.name === 'diagram_guide') {
+      const a = JSON.parse(repairJson(c.arguments || '{}')) as { topics?: unknown }
+      return { result: diagramGuide(Array.isArray(a.topics) ? a.topics.map(String) : []) }
+    }
     if (c.name === 'write_math') return { result: await this.writeMath(c.arguments, key) }
     if (c.name === 'erase') {
       const a = JSON.parse(repairJson(c.arguments || '{}')) as { id?: unknown }

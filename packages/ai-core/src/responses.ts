@@ -23,6 +23,8 @@ export function responsesBody(
   effort?: Effort,
   tools?: readonly ToolSpec[],
   toolChoice?: 'auto' | 'none',
+  /** Requests sharing a prefix (one notebook's conversation) reach the same cache. */
+  cacheKey?: string,
 ): string {
   const instructions = messages
     .filter((m) => m.role === 'system')
@@ -58,6 +60,7 @@ export function responsesBody(
       ]
     })
   const body: Record<string, unknown> = { model, instructions, input, store: false, stream: true }
+  if (cacheKey) body.prompt_cache_key = cacheKey
   // A summary of the thinking streams back, so the student sees Writey is thinking.
   if (effort && effort !== 'none' && !NO_REASONING.test(model)) {
     body.reasoning = { effort, summary: 'auto' }
@@ -78,7 +81,11 @@ type ResponsesEvent = {
   message?: unknown
   code?: unknown
   response?: {
-    usage?: { input_tokens?: number; output_tokens?: number }
+    usage?: {
+      input_tokens?: number
+      output_tokens?: number
+      input_tokens_details?: { cached_tokens?: number }
+    }
     error?: { code?: string; message?: string }
     incomplete_details?: { reason?: string }
   }
@@ -129,7 +136,11 @@ export async function* responsesEvents(
         if (u) {
           yield {
             type: 'usage',
-            usage: { prompt_tokens: u.input_tokens, completion_tokens: u.output_tokens },
+            usage: {
+              prompt_tokens: u.input_tokens,
+              completion_tokens: u.output_tokens,
+              cached_tokens: u.input_tokens_details?.cached_tokens,
+            },
           }
         }
         return

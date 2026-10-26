@@ -7,6 +7,7 @@ import {
   chatEvents,
   decide,
   describeError,
+  diagramGuide,
   focusRegion,
   groupLines,
   messageText,
@@ -143,7 +144,7 @@ describe('streaming', () => {
           'data: {"choices":[{"delta":{"reasoning":"hmm"}}]}\n\n',
           'data: {"choices":[{"delta":{"content":"Hi "}}]}\n\n',
           'data: {"choices":[{"delta":{"content":"there"}}]}\n\n',
-          'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":0.001}}\n\n',
+          'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":0.001,"prompt_tokens_details":{"cached_tokens":8}}}\n\n',
           'data: [DONE]\n\ndata: {"choices":[{"delta":{"content":"late"}}]}\n\n',
         ),
       ),
@@ -152,7 +153,10 @@ describe('streaming', () => {
       { type: 'reasoning', text: 'hmm' },
       { type: 'text', text: 'Hi ' },
       { type: 'text', text: 'there' },
-      { type: 'usage', usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.001 } },
+      {
+        type: 'usage',
+        usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.001, cached_tokens: 8 },
+      },
     ])
   })
 
@@ -359,15 +363,20 @@ describe('prompts', () => {
       'say',
     ])
     const [system] = agentMessages('find my mistake', ctx, { mode: 'check', scope: null }, [])
-    expect(String(system?.content)).toContain('ONE response')
-    // The diagram guide only comes with requests about pictures; otherwise it's a tool away.
-    expect(String(system?.content)).not.toContain('"kind":"logic"')
-    expect(String(system?.content)).toContain('call diagram_guide')
-    expect(String(system?.content)).not.toContain('Call say once')
+    expect(String(system?.content)).toContain('You decide what to do')
+    // The system prompt is the same for every request (prompt cache); guides load on demand.
     const [drawing] = agentMessages('draw a full adder', ctx, { mode: 'write', scope: null }, [])
-    expect(String(drawing?.content)).toContain('"kind":"logic"')
     const [spoken] = agentMessages('hi', ctx, { mode: null, scope: null }, [], true)
-    expect(String(spoken?.content)).toContain('Call say once')
+    expect(drawing?.content).toBe(system?.content)
+    expect(spoken?.content).toBe(system?.content)
+    expect(String(system?.content)).not.toContain('"kind":"logic"')
+    expect(diagramGuide(['physics'])).toContain('"kind":"logic"')
+    expect(diagramGuide(['physics'])).toContain('"kind":"axes"')
+    expect(diagramGuide(['graphs'])).not.toContain('smiles')
+    expect(diagramGuide(['chemistry'])).toContain('smiles')
+    expect(diagramGuide(['pictures'])).toContain('find_picture')
+    const spokenAsk = agentMessages('hi', ctx, { mode: null, scope: null }, [], true).at(-1)
+    expect(JSON.stringify(spokenAsk?.content)).toContain('Call say early')
   })
 
   it('hands back only the newest picture of the page', () => {
