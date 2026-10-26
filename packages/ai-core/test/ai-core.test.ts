@@ -1,24 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import {
+  agentMessages,
   type Block,
+  type ChatMessage,
   chatBody,
   chatEvents,
   decide,
   describeError,
   focusRegion,
   groupLines,
-  inkMode,
   messageText,
   type PageContext,
+  pageLook,
   parseModels,
   parsePlan,
   planMessages,
-  produceMessages,
-  produceSystem,
-  roundMessages,
   routeIntent,
   type StreamEvent,
   sseData,
+  WRITEY_TOOLS,
+  withoutImages,
 } from '../src'
 
 const stream = (...chunks: string[]) =>
@@ -166,6 +167,66 @@ describe('streaming', () => {
     expect(messageText({ choices: [{ message: { content: '{"a":1}' } }] })).toBe('{"a":1}')
   })
 
+  it('streams tool calls in pieces and hands reasoning back', async () => {
+    const events = await collect(
+      chatEvents(
+        stream(
+          'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":0,"text":"Look "}]}}]}\n\n',
+          'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":0,"text":"first","signature":"s"}]}}]}\n\n',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"point_at","arguments":"{\\"target\\":"}}]}}]}\n\n',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"L2\\"}"}}]}}]}\n\n',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"look_at_page"}}]}}]}\n\n',
+          'data: [DONE]\n\n',
+        ),
+      ),
+    )
+    expect(events).toEqual<StreamEvent[]>([
+      { type: 'tool', call: { id: 'c1', name: 'point_at', arguments: '{"target":"L2"}' } },
+      { type: 'tool', call: { id: 'c2', name: 'look_at_page', arguments: '{}' } },
+      {
+        type: 'thought',
+        item: { type: 'reasoning.text', index: 0, text: 'Look first', signature: 's' },
+      },
+    ])
+  })
+
+  it('sends tools, tool calls and results in Chat Completions format', () => {
+    const body = JSON.parse(
+      chatBody('openrouter', {
+        model: 'm',
+        maxTokens: 10,
+        stream: true,
+        tools: [{ name: 'say', description: 'd', parameters: { type: 'object' } }],
+        messages: [
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [{ id: 'c1', name: 'say', arguments: '{"text":"hi"}' }],
+            reasoning: [{ type: 'reasoning.text', text: 'x' }],
+          },
+          { role: 'tool', toolCallId: 'c1', content: 'Said.' },
+        ],
+      }),
+    )
+    expect(body.tools).toEqual([
+      {
+        type: 'function',
+        function: { name: 'say', description: 'd', parameters: { type: 'object' } },
+      },
+    ])
+    expect(body.messages).toEqual([
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'c1', type: 'function', function: { name: 'say', arguments: '{"text":"hi"}' } },
+        ],
+        reasoning_details: [{ type: 'reasoning.text', text: 'x' }],
+      },
+      { role: 'tool', tool_call_id: 'c1', content: 'Said.' },
+    ])
+  })
+
   it('only sends reasoning effort to OpenRouter', () => {
     const req = { model: 'm', messages: [], maxTokens: 10, stream: true, reasoning: 'low' as const }
     expect(JSON.parse(chatBody('openrouter', req)).reasoning).toEqual({ effort: 'low' })
@@ -218,62 +279,56 @@ describe('prompts', () => {
     expect(JSON.stringify(parts)).toContain('mode \\"write\\"')
   })
 
-  it('keeps only the last 10 turns of history for PRODUCE', () => {
+  it('keeps only the last 10 turns of history', () => {
     const turns = Array.from({ length: 14 }, (_, i) => ({
       role: i % 2 ? ('assistant' as const) : ('user' as const),
       text: `t${i}`,
     }))
-    const plan = decide({ mode: null, scope: 'hint' }, null)
-    const msgs = produceMessages('hint?', ctx, plan, turns)
+    const msgs = agentMessages('hint?', ctx, { mode: null, scope: 'hint' }, turns)
     expect(msgs).toHaveLength(1 + 10 + 1)
     expect(msgs[1]?.content).toBe('t4')
-    expect(String(msgs[0]?.content)).toMatch(/hint only/i)
+    expect(JSON.stringify(msgs.at(-1)?.content)).toContain('hint only')
   })
 
-  it('asks for InkScript whenever Writey has the pen, Markdown for chat', () => {
-    expect(produceSystem('write', 'next_step')).toContain('InkScript')
-    expect(produceSystem('check', 'next_step')).toContain('"type":"mark"')
-    expect(produceSystem('write', 'next_step')).toContain('"latex":"\\\\frac{d}{dx}')
-    expect(produceSystem('chat', 'next_step')).toContain('Answer in Markdown')
-    expect(produceSystem('explain', 'next_step')).toContain('InkScript')
-    expect(produceSystem('explain', 'next_step')).toContain('page lines first')
-    expect(inkMode('both')).toBe(true)
-    expect(inkMode('explain')).toBe(true)
-    expect(inkMode('chat')).toBe(false)
+  it('gives the model a pen as tools and lets it decide', () => {
+    const names = WRITEY_TOOLS.map((t) => t.name)
+    expect(names).toEqual([
+      'look_at_page',
+      'point_at',
+      'mark',
+      'write_math',
+      'write_text',
+      'draw_diagram',
+      'draw_table',
+      'new_page',
+      'say',
+    ])
+    const [system] = agentMessages('find my mistake', ctx, { mode: 'check', scope: null }, [])
+    expect(String(system?.content)).toContain('You decide what to do')
+    expect(String(system?.content)).toContain('"kind":"logic"')
+    expect(String(system?.content)).not.toContain('Call say early')
+    const [spoken] = agentMessages('hi', ctx, { mode: null, scope: null }, [], true)
+    expect(String(spoken?.content)).toContain('Call say early')
   })
 
-  it('works in rounds: the next round sees only the new page image', () => {
-    expect(produceSystem('check', 'next_step')).toMatch(/Round 2, fix/)
-    expect(produceSystem('write', 'full')).toContain('"type":"next"')
-    const first = produceMessages(
-      'find my mistake',
-      ctx,
-      decide({ mode: 'check', scope: null }, null),
-      [],
-    )
-    const msgs = roundMessages(first, '{"type":"next","plan":"fix L2"}', ctx, {
-      round: 2,
-      plan: 'fix L2',
-      yours: ['L3'],
-    })
-    expect(msgs).toHaveLength(first.length + 2)
-    expect(msgs.at(-2)).toEqual({ role: 'assistant', content: '{"type":"next","plan":"fix L2"}' })
-    const images = (m: (typeof msgs)[number] | undefined) =>
+  it('hands back only the newest picture of the page', () => {
+    const first = agentMessages('check this', ctx, { mode: 'check', scope: null }, [])
+    const images = (m: ChatMessage | undefined) =>
       typeof m?.content === 'string'
         ? 0
         : (m?.content.filter((p) => p.type === 'image_url').length ?? 0)
-    expect(images(msgs.at(-3))).toBe(0)
-    expect(images(msgs.at(-1))).toBe(2)
-    expect(JSON.stringify(msgs.at(-1)?.content)).toContain('your lines are L3')
-    const last = roundMessages(first, '', ctx, { round: 4, yours: [] })
-    expect(JSON.stringify(last.at(-1)?.content)).toContain('last round')
+    expect(images(first.at(-1))).toBe(2)
+    expect(images(withoutImages(first).at(-1))).toBe(0)
+    const look = pageLook(ctx, ['L3'])
+    expect(images(look)).toBe(2)
+    expect(JSON.stringify(look.content)).toContain('your lines are L3')
   })
 
   it('passes Writey’s own ink and the spoken transcript', () => {
-    const msgs = produceMessages(
+    const msgs = agentMessages(
       'next',
       { ...ctx, aiInk: ['$$x=2$$'], transcript: 'so this is the chain rule' },
-      decide({ mode: 'write', scope: null }, null),
+      { mode: 'write', scope: null },
       [],
     )
     const text = JSON.stringify(msgs.at(-1)?.content)

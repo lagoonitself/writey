@@ -66,6 +66,66 @@ describe('responsesBody', () => {
   })
 })
 
+describe('Responses tool calls', () => {
+  it('sends tools, hands reasoning back and maps calls and results', () => {
+    const body = JSON.parse(
+      responsesBody(
+        'gpt-5',
+        [
+          { role: 'system', content: 'sys' },
+          { role: 'user', content: 'check it' },
+          {
+            role: 'assistant',
+            content: '',
+            reasoning: [{ type: 'reasoning', encrypted_content: 'e' }],
+            toolCalls: [{ id: 'call_1', name: 'look_at_page', arguments: '{}' }],
+          },
+          { role: 'tool', toolCallId: 'call_1', content: 'Here is the page.' },
+        ],
+        'high',
+        [{ name: 'look_at_page', description: 'd', parameters: { type: 'object' } }],
+      ),
+    )
+    expect(body.tools).toEqual([
+      { type: 'function', name: 'look_at_page', description: 'd', parameters: { type: 'object' } },
+    ])
+    expect(body.include).toEqual(['reasoning.encrypted_content'])
+    expect(body.input.slice(1)).toEqual([
+      { type: 'reasoning', encrypted_content: 'e' },
+      { type: 'function_call', call_id: 'call_1', name: 'look_at_page', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_1', output: 'Here is the page.' },
+    ])
+  })
+
+  it('yields finished tool calls and reasoning items', async () => {
+    const events = await collect(
+      responsesEvents(
+        stream(
+          {
+            type: 'response.output_item.done',
+            item: { type: 'reasoning', id: 'rs_1', encrypted_content: 'e', summary: [] },
+          },
+          {
+            type: 'response.output_item.done',
+            item: {
+              type: 'function_call',
+              id: 'fc_1',
+              call_id: 'call_1',
+              name: 'mark',
+              arguments: '{"kind":"tick"}',
+            },
+          },
+          { type: 'response.completed', response: {} },
+        ),
+      ),
+    )
+    expect(events).toEqual([
+      { type: 'thought', item: { type: 'reasoning', encrypted_content: 'e', summary: [] } },
+      { type: 'tool', call: { id: 'call_1', name: 'mark', arguments: '{"kind":"tick"}' } },
+    ])
+  })
+})
+
 describe('responsesEvents', () => {
   it('yields text and usage, ending at response.completed', async () => {
     const events = await collect(

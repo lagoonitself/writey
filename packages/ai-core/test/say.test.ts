@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { produceSystem, SaySplitter, SentenceBuffer } from '../src'
+import { SaySplitter, SentenceBuffer } from '../src'
 
 function split(chunks: string[]) {
   const s = new SaySplitter()
@@ -37,15 +37,5 @@ describe('SentenceBuffer', () => {
     expect(b.push('Good question. The bound')).toEqual(['Good question.'])
     expect(b.push('ary term is zero! Does that')).toEqual(['The boundary term is zero!'])
     expect(b.flush()).toEqual(['Does that'])
-  })
-})
-
-describe('spoken prompts', () => {
-  it('asks for a say part only when Writey is talking', () => {
-    expect(produceSystem('write', 'next_step', true)).toContain('"type":"say"')
-    expect(produceSystem('write', 'next_step')).not.toContain('"type":"say"')
-    expect(produceSystem('chat', 'next_step', true)).toContain('<say>')
-    expect(produceSystem('explain', 'next_step', true)).toContain('"type":"say"')
-    expect(produceSystem('write', 'next_step')).toContain('must NOT copy the page')
   })
 })

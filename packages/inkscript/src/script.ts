@@ -48,8 +48,6 @@ export type InkBlock =
   /** Plain words Writey says out loud (spoken replies), math read as words. */
   | { type: 'say'; text: string }
   | { type: 'done'; summary?: string }
-  /** End of a round: Writey runs it, shows the model the page again, and it carries on. */
-  | { type: 'next'; plan?: string }
 
 const MARKS: readonly string[] = [
   'circle',
@@ -226,12 +224,36 @@ export function toBlock(raw: unknown): InkBlock | null {
       return str(o.text) ? { type: 'say', text: str(o.text) } : null
     case 'done':
       return { type: 'done', summary: str(o.summary) || undefined }
-    case 'next':
-    case 'continue':
-      return { type: 'next', plan: str(o.plan) || str(o.text) || undefined }
     default:
       return null
   }
+}
+
+/** Writey's pen tools (ai-core WRITEY_TOOLS) and the blocks they make. */
+const TOOL_BLOCKS: Record<string, string> = {
+  point_at: 'look',
+  mark: 'mark',
+  write_math: 'math',
+  write_text: 'text',
+  draw_diagram: 'diagram',
+  draw_table: 'table',
+  new_page: 'page',
+  say: 'say',
+}
+
+/** The block a tool call stands for, or null for other tools or unusable arguments. */
+export function toolBlock(name: string, args: string): InkBlock | null {
+  const type = TOOL_BLOCKS[name]
+  if (!type) return null
+  let o: unknown
+  try {
+    o = JSON.parse(repairJson(args || '{}'))
+  } catch {
+    return null
+  }
+  const a = o && typeof o === 'object' ? (o as Record<string, unknown>) : {}
+  // write_math's "boxed" is the boxed answer; "box" there would be a pinned region.
+  return toBlock(type === 'math' ? { ...a, type, box: a.boxed === true } : { ...a, type })
 }
 
 /** LaTeX commands that start with n, which a raw backslash in JSON would read as a line break. */

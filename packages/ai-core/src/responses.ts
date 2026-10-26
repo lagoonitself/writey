@@ -1,4 +1,4 @@
-import { type ChatMessage, type Effort, type StreamEvent, sseData } from './chat'
+import { type ChatMessage, type Effort, type StreamEvent, sseData, type ToolSpec } from './chat'
 
 // The OpenAI Responses API, used for ChatGPT plan usage through the Helper (docs §6.1).
 // Plan usage requires store=false and stream=true and rejects temperature,
@@ -21,6 +21,7 @@ export function responsesBody(
   model: string,
   messages: readonly ChatMessage[],
   effort?: Effort,
+  tools?: readonly ToolSpec[],
 ): string {
   const instructions = messages
     .filter((m) => m.role === 'system')
@@ -28,28 +29,49 @@ export function responsesBody(
     .join('\n\n')
   const input = messages
     .filter((m) => m.role !== 'system')
-    .map((m) => {
+    .flatMap((m): unknown[] => {
+      if (m.role === 'tool') {
+        return [{ type: 'function_call_output', call_id: m.toolCallId, output: textOf(m) }]
+      }
       const textType = m.role === 'assistant' ? 'output_text' : 'input_text'
       const parts: InputPart[] =
         typeof m.content === 'string'
-          ? [{ type: textType, text: m.content }]
+          ? m.content
+            ? [{ type: textType, text: m.content }]
+            : []
           : m.content.map((p) =>
               p.type === 'text'
                 ? { type: textType, text: p.text }
                 : { type: 'input_image', image_url: p.image_url.url, detail: 'high' },
             )
-      return { role: m.role, content: parts }
+      return [
+        // Reasoning first, as the model produced it, then what it said and the tools it called.
+        ...(m.reasoning ?? []),
+        ...(parts.length ? [{ role: m.role, content: parts }] : []),
+        ...(m.toolCalls ?? []).map((c) => ({
+          type: 'function_call',
+          call_id: c.id,
+          name: c.name,
+          arguments: c.arguments,
+        })),
+      ]
     })
   const body: Record<string, unknown> = { model, instructions, input, store: false, stream: true }
   // A summary of the thinking streams back, so the student sees Writey is thinking.
   if (effort && effort !== 'none' && !NO_REASONING.test(model)) {
     body.reasoning = { effort, summary: 'auto' }
+    // Without storage, the reasoning comes back encrypted so it can be handed back next turn.
+    if (tools?.length) body.include = ['reasoning.encrypted_content']
+  }
+  if (tools?.length) {
+    body.tools = tools.map((t) => ({ type: 'function', ...t }))
   }
   return JSON.stringify(body)
 }
 
 type ResponsesEvent = {
   type?: string
+  item?: { type?: string; id?: string; call_id?: string; name?: string; arguments?: string }
   delta?: unknown
   message?: unknown
   code?: unknown
@@ -82,6 +104,24 @@ export async function* responsesEvents(
       case 'response.reasoning_text.delta':
         if (typeof ev.delta === 'string' && ev.delta) yield { type: 'reasoning', text: ev.delta }
         break
+      case 'response.output_item.done': {
+        const item = ev.item
+        if (item?.type === 'function_call' && item.name) {
+          yield {
+            type: 'tool',
+            call: {
+              id: item.call_id ?? item.id ?? '',
+              name: item.name,
+              arguments: item.arguments || '{}',
+            },
+          }
+        } else if (item?.type === 'reasoning') {
+          // Unstored items can't be referred to by id.
+          const { id: _, ...rest } = item
+          yield { type: 'thought', item: rest }
+        }
+        break
+      }
       case 'response.completed': {
         const u = ev.response?.usage
         if (u) {

@@ -27,6 +27,7 @@ import {
   splitInline,
   splitRows,
   svgPath,
+  toolBlock,
   wirePath,
 } from '../src'
 
@@ -272,14 +273,28 @@ describe('InkWriter', () => {
     expect(plain.write({ type: 'mark', kind: 'circle', pin: { img: 2, at: [1, 1] } })).toBeNull()
   })
 
-  it('looks at a line before it writes, and rounds end with next', () => {
-    const blocks = parseInkScript(
-      '{"type":"look","target":"l1","note":"checking the sign"}\n{"type":"next","plan":"fix L1"}\n{"type":"look"}',
-    )
-    expect(blocks).toEqual([
-      { type: 'look', target: 'L1', pin: undefined, note: 'checking the sign' },
-      { type: 'next', plan: 'fix L1' },
-    ])
+  it('turns tool calls into blocks, and looks at a line before it writes', () => {
+    const blocks = [
+      toolBlock('point_at', '{"target":"l1","note":"checking the sign"}'),
+      toolBlock('write_math', '{"latex":"\\\\frac{1}{2}","boxed":true,"box":[1,2,3,4]}'),
+      toolBlock('write_math', '{"latex":"\\frac{1}{2}"}'),
+      toolBlock('look_at_page', '{}'),
+      toolBlock('mark', 'not json'),
+    ]
+    expect(blocks[0]).toEqual({
+      type: 'look',
+      target: 'L1',
+      pin: undefined,
+      note: 'checking the sign',
+    })
+    expect(blocks[1]).toMatchObject({
+      type: 'math',
+      latex: '\\frac{1}{2}',
+      box: true,
+      pin: undefined,
+    })
+    expect(blocks[2]).toMatchObject({ latex: '\\frac{1}{2}', box: false })
+    expect(blocks.slice(3)).toEqual([null, null])
     const w = new InkWriter(env, { size: 20, color: '#53c', markColor: '#d22', seed: 1 })
     const look = w.look(blocks[0] as Extract<InkBlock, { type: 'look' }>)
     expect(look).toMatchObject({ x: 160, rect: { x: 60, y: 100 }, at: 0 })

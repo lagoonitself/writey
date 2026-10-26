@@ -1,6 +1,5 @@
-import type { ChatMessage, ContentPart } from './chat'
-import type { Mode, Route, Scope } from './intent'
-import type { Plan } from './plan'
+import type { ChatMessage, ContentPart, ToolSpec } from './chat'
+import type { Route } from './intent'
 
 /** What the help engine captured from the page for one request. */
 export type PageContext = {
@@ -30,9 +29,6 @@ export type Turn = { role: 'user' | 'assistant'; text: string }
 /** Turns sent with each request (docs §5.8). */
 export const HISTORY_TURNS = 10
 
-/** Rounds of act → look again in one ink answer (HANDOFF D46). */
-export const MAX_ROUNDS = 4
-
 const SEEING = `You are looking at a student's handwritten notebook page.
 - Image 1 is the area they are working on. Each line of their writing has a magenta tag (L1, L2, …) on its left. The tags are not part of their work; use them to refer to lines.
 - Image 2 is the whole page, small, with that area outlined in magenta.
@@ -52,65 +48,11 @@ Work out what the student is doing and how to help. Reply with ONE JSON object a
 - target_line: the line the request is about (e.g. "L3"), else their last line, or null if the page is empty.
 - status_line: at most 12 words, spoken to the student, saying what you see. Example: "Integration by parts — you're on step 2".`
 
-/** Words-only answers (mode "chat"). */
-const CHAT_GUIDE =
-  'Answer what they asked, tied to their own lines where it helps. If they are just chatting or asked something small, a sentence or two is enough. If you explain, teach it, do not just summarize it: say why each move is allowed and why it is the natural move here, and name the misconception a student usually has at this point.'
-
-const SCOPE_GUIDE: Record<Scope, string> = {
-  hint: 'Give a hint only, in two or three sentences: a nudge or a guiding question. Skip the step-by-step walkthrough. Do not give the answer or do the step for them.',
-  next_step: 'Cover exactly one step, the next one after their last line.',
-  full: 'Give the complete solution through to the final answer.',
-}
-
-/** Modes answered with a pen on the page (HANDOFF D3, D44). Only "chat" is words alone. */
-export const inkMode = (mode: Mode): mode is Exclude<Mode, 'chat'> => mode !== 'chat'
-
-const INK_GUIDE: Record<Exclude<Mode, 'chat'>, string> = {
-  explain: `Teach it like a tutor sitting beside the student with a pen and their notebook. On the page goes the rough version a tutor scribbles while talking: a short heading line, the key idea or formula in a few short lines (about six at most), and a drawing whenever the topic has anything to see (circuits and logic gates, forces, graphs, geometry, structures, processes, comparisons as a table). Draw it with the diagram and table blocks; never describe a picture in words when you can draw it. If it is about something already on the page (their work, a printed figure or circuit), mark and label it right there instead of redrawing it. Use the page to show, the chat to tell.`,
-  write:
-    'Write what comes next on the page, as the student would write it: one step per line, with "why" on each. The chat block teaches the step like a tutor sitting next to them: what the move is, why it is the right move here (what in the problem tells you to do it), the rule or fact it rests on, and one thing to watch out for.',
-  check: `Mark their work like a teacher with a red pen, in rounds, so the student watches you work through it:
-  Round 1, read: go through their lines in order with one look block per line (its note says what you are checking, e.g. "checking the expansion"). Tick the important lines that are right. At the first mistake, circle or cross that exact spot (the line, or a box round the wrong term) with a short note naming the error. End the round with next.
-  Round 2, fix: below their last line, write the corrected line, then solve it correctly from there to the final answer, one step per line with "why" on each, and box the answer. Never repeat their mistake. End with next.
-  Round 3, verify: look at your boxed answer, check it (substitute back, units, a special case) and tick it if right; if it is wrong, cross it and write the fix. Then the chat block and done.
-  If everything is right in round 1: tick the final answer, say what they did well, and finish with the chat block and done. The chat block says what went wrong, why it is wrong (the rule that was broken), and how to spot it next time.`,
-  both: 'Write the next step(s) on the page. The chat block teaches the idea behind them: why this approach, the key rule, and what to watch out for.',
-}
-
-/** The chat beside the page explains; the page holds the working. Never both. */
-const CHAT_BLOCK = `The chat block is the explanation; the page is the working. The student sees both side by side, so the chat must NOT copy the page: no re-written equations, no list of the same steps, no display math. Explain the reasoning in plain words, in one or two short paragraphs (about 60 to 140 words): the idea, why it works, and the pitfall. Point at the page in words ("the second line", "the boxed answer"). Inline $...$ is fine for the rule itself. Bold the one term that matters most.`
-
 /** How Writey talks when the student is talking to it and spoken replies are on. */
 const SPEAKING = `The student is talking to you out loud, and what you say is played back to them as speech. Talk like a tutor sitting beside them: warm, natural, short sentences, no lists, no symbols. Say math in words ("x squared over two", "the integral from zero to pi over two"). Answer what they actually asked; if they are just chatting or asking something small, simply answer it in a sentence or two. End with a short question back to them when it helps the conversation.`
 
-const SAY_INK = `${SPEAKING}
-Put what you say first, as {"type":"say","text":"…"}: one to three spoken sentences about what you're writing and why (not a reading of the equations). Then the rest, in the order above.`
-
-const SAY_EXPLAIN = `${SPEAKING}
-Put what you say first, as {"type":"say","text":"…"}: two to five spoken sentences that explain it the way you would out loud while sketching (the idea, not a reading of the page). Then the rest, in the order above.`
-
-/** The explanation beside the page when Writey teaches with a pen. */
-const EXPLAIN_CHAT = `The chat block is the full explanation, in Markdown, and it comes after the page lines. Teach it properly: the intuition first in plain words; then numbered steps tied to what you drew and wrote ("the XOR gate on the left", "the second line"); a tiny example or sanity check where it helps; the usual trap; a one-line takeaway; and a short question that checks they followed. Match the length to the question. It must not copy the page line by line. Write $…$ for math, and \\n for line breaks inside the JSON string.`
-
-const HINT_ONLY = {
-  explain:
-    'Hint only: sketch or write just enough on the page to point the way (a "Hint:" line, or a small diagram), and keep the chat block to a nudge or a guiding question. Do not give the answer.',
-  check:
-    'Hint only: after marking the mistake, write one "Hint:" line below their work instead of the corrected solution, and skip the fix and verify rounds.',
-}
-
-const SAY_CHAT = `${SPEAKING}
-Begin your reply with what you say out loud, wrapped in <say>…</say>: one to four spoken sentences that answer them. Then, after </say>, the full written explanation in Markdown, as you would write it without speech (the spoken part is a summary, the written part teaches it properly). If they were just chatting or asked something small, the <say> part alone is enough.`
-
-const INK_SCOPE: Record<Scope, string> = {
-  hint: 'Hint only: write one text line starting with "Hint:" that nudges them. Do not write the step or the answer.',
-  next_step:
-    'Write exactly one step: the one after their last line (it may take one or two lines).',
-  full: 'Write the complete solution through to the final answer, and box the final answer. Then, in a last round, look at your answer, check it (substitute back, units, a special case) and tick it, or cross it and fix it.',
-}
-
 /** Diagrams and graphs (docs §5.6): a spec Writey draws by hand, never pixels or SVG. */
-const DIAGRAMS = String.raw`- diagram: a hand-drawn figure or graph. Draw one whenever a picture helps (free-body diagrams, graphs of functions, geometry, circuits as boxes and lines, motion sketches) or when asked to draw, sketch, plot or graph. Give coordinates in your own math units with y pointing UP; Writey scales, places and draws it by hand. Example:
+const DIAGRAMS = String.raw`- draw_diagram: a hand-drawn figure or graph (its arguments are the objects in these examples, without "type"). Draw one whenever a picture helps (free-body diagrams, graphs of functions, geometry, circuits as boxes and lines, motion sketches) or when asked to draw, sketch, plot or graph. Give coordinates in your own math units with y pointing UP; Writey scales, places and draws it by hand. Example:
 {"type":"diagram","title":"block on a slope","after":"prev","x":[-1,7],"y":[-1,5],"items":[{"kind":"polygon","points":[[0,0],[6,0],[0,3.5]]},{"kind":"hatch","from":[-0.5,0],"to":[6.5,0]},{"kind":"rect","at":[1.5,2.6],"w":1.2,"h":0.9,"angle":-30,"label":"m"},{"kind":"arrow","from":[2.3,2.4],"to":[2.3,0.8],"label":"$mg$"},{"kind":"angle","vertex":[6,0],"from":[0,0],"to":[0,3.5],"label":"$\\theta$"}],"why":"forces on the block"}
   Graph example: {"type":"diagram","x":[-1,7],"y":[-1.5,1.5],"items":[{"kind":"axes","labels":["x","y"]},{"kind":"plot","expr":"sin(x)","domain":[0,6.28],"label":"$y=\\sin x$"},{"kind":"point","at":[3.14,0],"label":"$\\pi$"}]}
   Item kinds (every item may have "label", text with $math$, and "dashed":true):
@@ -132,74 +74,6 @@ const PHYSICS = `- Physics diagrams are diagram items too; give only the physics
 - Textbook figures: Writey has its own drawings of these, so use them instead of drawing your own: heart, eye, ear, brain, flower, neuron, nephron, animal_cell, plant_cell, digestive_system, respiratory_system. figure {name, labels?: [part names to label] (default: every part; false for none)}. Example: {"type":"diagram","title":"Human heart","items":[{"kind":"figure","name":"heart"}]}
 - Freehand pictures for anything else (biology: cells, organs, flowers, the heart, the eye, neurons, digestive or respiratory systems; chemistry apparatus; geography; labelled sketches): set "ydown": true on the diagram and draw like an SVG on a canvas about 200 wide, y going down. svg {d: "SVG path data"} or {paths: ["…", "…"]} (M L H V C S Q T A Z, absolute or relative; Writey draws every path by hand; fills are ignored) · blob {center, rx, ry, wobble?: 0–0.3} (an organic closed outline: cells, organs, nuclei) · circle, ellipse, curve, line and arrow work too. Then ONE callouts item names the parts: callouts {labels: [{at: [x, y] (a point on the part), text}]}; Writey lines the names up in columns left and right of the drawing with leader lines, so never place part names yourself. Draw the parts in a sensible order (outline first, then inner parts), keep shapes recognisable rather than detailed, and label every part the student needs.
   Example: {"type":"diagram","title":"Animal cell","ydown":true,"items":[{"kind":"blob","center":[100,100],"rx":90,"ry":70,"wobble":0.08},{"kind":"circle","center":[95,95],"r":22},{"kind":"blob","center":[95,95],"rx":7,"ry":6},{"kind":"svg","d":"M140 70 C150 60 165 65 160 78 C155 90 140 88 140 70 Z"},{"kind":"callouts","labels":[{"at":[100,30],"text":"cell membrane"},{"at":[110,78],"text":"nucleus"},{"at":[95,95],"text":"nucleolus"},{"at":[152,75],"text":"mitochondrion"},{"at":[40,100],"text":"cytoplasm"}]}]}`
-
-const inkFormat = (
-  chatFirst: boolean,
-) => String.raw`Reply ONLY with InkScript: one JSON object per line. No prose, no Markdown, no code fences.
-{"type":"chat","text":"The explanation for the side chat, in plain Markdown"}
-{"type":"math","latex":"\\frac{d}{dx}x^2 = 2x","after":"L3","why":"power rule"}
-{"type":"text","text":"Let $u = x$, so $du = dx$","after":"prev","why":"choose u"}
-{"type":"mark","kind":"circle","target":"L2","note":"sign error"}
-{"type":"done","summary":"one sentence on what you wrote"}
-
-${chatFirst ? '- Start with the one chat block, then write the page lines.' : '- Write the page lines first, then the one chat block, then done.'}
-- Inside JSON strings, write line breaks as \n; never put a real line break inside a block.
-- math: one line of an equation in LaTeX. text: a short line of words, with inline math in $...$.
-- mark: red pen on one of the student's lines (target is its tag). kind: circle, underline, cross, tick, arrow, or highlight (a yellow highlighter pass). note: at most six words, or leave it out.
-- after: the first block names the line tag to write below (usually their last line); later blocks use "prev" to continue underneath. Writey places and sizes the handwriting itself.
-- Keep every line short, like a notebook line. A long equation continues on the next math line, starting with "=". One line per block: never use align environments or \\ line breaks.
-- In JSON, double every backslash ("\\frac", "\\sqrt"). Use common commands only: \\frac \\sqrt ^ _ \\int \\sum \\lim \\vec \\cdot \\times \\left( \\right) \\text{} and Greek letters. Units go in \\text{}, e.g. 5\\,\\text{m/s}.
-- Add "box": true to the math line with the final answer.
-- Never copy out lines the student already wrote; write only what is new.
-- look: {"type":"look","target":"L2","note":"checking the expansion"} moves your pen to a line (or a spot, with "box"/"at" as for marks) and rests it there while you read it, so the student sees what you are looking at. Nothing is written. Use it before you judge or mark something.
-- Work in rounds, like a computer-use agent: act on the page, then look at the result. End a round with {"type":"next","plan":"what you will do next"}: Writey writes what you sent, shows you the page again with your ink on it (violet, with new line tags) and you carry on. End the last round with the chat block and {"type":"done"}. At most ${MAX_ROUNDS} rounds. One round is enough for a hint, a single step or a short sketch; use more when seeing your own work helps (marking, long solutions, checking your answer).
-- table: {"type":"table","header":["A","B","A AND B"],"rows":[["0","0","0"],["0","1","0"],["1","0","0"],["1","1","1"]],"align"?:["l","c"]} draws a ruled table. Use it for truth tables, observation tables, comparisons and anything with rows and columns; never write a table as lines of text. Cells may hold $math$. Keep cells short.
-- Point precisely, like a pen on a screenshot. Any mark can sit on a spot instead of a line: "box":[x0,y0,x1,y1] (a region) or "at":[x,y] (a point), in pixels of image 1, or of image 2 (the whole page) with "img":2. Image sizes are given below. Examples:
-  {"type":"mark","kind":"circle","box":[412,180,520,236],"img":2,"note":"this resistor"}
-  {"type":"mark","kind":"arrow","at":[640,410],"img":2,"note":"current enters here"}
-  Extra kinds for spots: box (a rectangle around it) and point (a dot, with a leader to its note). Notes are placed beside the spot with a leader line, clear of the print.
-- text and math can be written exactly at a spot with "at":[x,y] (and "img":2 for the whole page): the writing starts at x, centred on y. Use it to label parts of a printed diagram, fill in a blank, or write a value next to a quantity; give "size" (the height of the printed capital letters there, in pixels) to match the print. Without "at" they flow below the work as usual.
-- When the question is about something printed or drawn on the page (a figure in the PDF, a part of a circuit, a word in the question), show it: circle, box or arrow the exact spot and label it in place, then explain. Use the printed-text boxes below to hit printed words exactly.
-- {"type":"page"} starts a fresh page and carries on at its top. Use it when the student asks for a new page, or before a big diagram that needs a clean page. Writey also turns the page by itself when one fills up.
-${DIAGRAMS}
-${PHYSICS}
-- What you wrote and drew earlier stays on the page (the student keeps it), and you can see it. Build on it: never redraw or rewrite what is already there; add only what is new, below it, and point back to it ("in the circuit above"). For a new question, start below everything already written: the first block's "after" is the last line tag.
-- The conversation can span several pages of one notebook. If this page is empty, carry on from the earlier turns: the work continues at the top of this page.`
-
-export function produceSystem(mode: Mode, scope: Scope, spoken = false): string {
-  if (inkMode(mode)) {
-    const explain = mode === 'explain'
-    const scopeLine =
-      mode === 'explain' || mode === 'check'
-        ? scope === 'hint'
-          ? HINT_ONLY[mode]
-          : ''
-        : INK_SCOPE[scope]
-    const say = explain ? SAY_EXPLAIN : SAY_INK
-    return `You are Writey, a friendly tutor who writes and draws by hand in the student's notebook, and explains beside it.
-${SEEING}
-
-${inkFormat(!explain)}
-
-${[INK_GUIDE[mode], explain ? EXPLAIN_CHAT : CHAT_BLOCK, scopeLine].filter(Boolean).join('\n')}${spoken ? `\n\n${say}` : ''}`
-  }
-  return `You are Writey, a friendly math and physics tutor inside a handwritten notebook.
-${SEEING}
-
-Answer in Markdown, like a patient tutor sitting next to the student. Make it complete enough that they truly understand, not just a summary:
-- Open with the key idea in one or two plain sentences: the intuition, in everyday words.
-- Then walk through it step by step, tied to their own lines. Use a numbered list; give each step its math on its own line ($$…$$) and a sentence on why it holds and why it is the natural move.
-- Where it helps, add a tiny example with simple numbers, a picture in words, or a quick sanity check (units, a special case, a sign).
-- Name the usual trap at this point, if there is one.
-- Bold the few terms that matter. Short paragraphs; no headings for short answers.
-- End with a one-line takeaway and a short question that checks they followed.
-Match the length to the question: a quick "what is this symbol" gets two sentences; "I don't get this step" gets the full walkthrough.
-Write every formula in LaTeX: $…$ inline, $$…$$ on its own line. Refer to the student's lines by tag ("in L3, …"). Never invent work that is not on the page.
-The conversation can span several pages of the same notebook; earlier turns may be about another page.
-
-${CHAT_GUIDE}
-${SCOPE_GUIDE[scope]}${spoken ? `\n\n${SAY_CHAT}` : ''}`
-}
 
 function pageText(ctx: PageContext): string {
   const parts: string[] = []
@@ -276,7 +150,7 @@ export function planMessages(
 }
 
 /** Drops the screenshots from earlier messages; only the newest page image matters. */
-const withoutImages = (messages: readonly ChatMessage[]): ChatMessage[] =>
+export const withoutImages = (messages: readonly ChatMessage[]): ChatMessage[] =>
   messages.map((m) =>
     typeof m.content === 'string' || m.content.every((p) => p.type === 'text')
       ? m
@@ -289,34 +163,205 @@ const withoutImages = (messages: readonly ChatMessage[]): ChatMessage[] =>
         },
   )
 
-/**
- * The next round of an ink answer: what the model sent so far, then the page as it is now,
- * with its own ink on it, like the screenshot a computer-use agent gets after acting.
- */
-export function roundMessages(
-  messages: readonly ChatMessage[],
-  reply: string,
+/** The tools Writey's pen gives the model (HANDOFF D46). Spots are pixels in image 1 or 2. */
+const spot = {
+  target: { type: 'string', description: 'A line tag such as "L3".' },
+  box: {
+    type: 'array',
+    items: { type: 'number' },
+    minItems: 4,
+    maxItems: 4,
+    description: 'A region [x0, y0, x1, y1] in image pixels.',
+  },
+  at: {
+    type: 'array',
+    items: { type: 'number' },
+    minItems: 2,
+    maxItems: 2,
+    description: 'A point [x, y] in image pixels.',
+  },
+  img: {
+    type: 'integer',
+    enum: [1, 2],
+    description: 'Which image box/at are in: 1 = the focus area (default), 2 = the whole page.',
+  },
+}
+const after = {
+  type: 'string',
+  description:
+    'Write below this line tag ("L3"), or "prev" to continue under what you wrote last. Leave out to continue under your last line.',
+}
+const why = { type: 'string', description: 'A few words on why this step (shown on "Why?").' }
+const obj = (properties: Record<string, unknown>, required: string[] = []) => ({
+  type: 'object',
+  properties,
+  required,
+})
+
+export const WRITEY_TOOLS: ToolSpec[] = [
+  {
+    name: 'look_at_page',
+    description:
+      'See the page as it is right now, including everything you have written or drawn so far (in violet, with fresh line tags). Returns new images and page text.',
+    parameters: obj({}),
+  },
+  {
+    name: 'point_at',
+    description:
+      'Move your pen to a line or spot and rest it there while you read it or talk about it. The student sees the pen and your note. Writes nothing.',
+    parameters: obj(
+      { ...spot, note: { type: 'string', description: 'What you are looking at, a few words.' } },
+      ['note'],
+    ),
+  },
+  {
+    name: 'mark',
+    description:
+      'Red pen on a line (target) or on a spot (box or at): circle, cross, tick, underline, box, arrow, point (a dot with a leader to the note) or highlight (yellow highlighter). A note is written beside it.',
+    parameters: obj(
+      {
+        kind: {
+          type: 'string',
+          enum: ['circle', 'cross', 'tick', 'underline', 'box', 'arrow', 'point', 'highlight'],
+        },
+        ...spot,
+        note: { type: 'string', description: 'At most six words.' },
+      },
+      ['kind'],
+    ),
+  },
+  {
+    name: 'write_math',
+    description:
+      'Write one line of math in handwriting, below the work (after), or exactly at a spot (at, img) to label or fill in something.',
+    parameters: obj(
+      {
+        latex: { type: 'string', description: 'One line of LaTeX, no $ and no line breaks.' },
+        after,
+        boxed: { type: 'boolean', description: 'Box it (the final answer).' },
+        at: spot.at,
+        img: spot.img,
+        size: { type: 'number', description: 'With at: capital-letter height there, in pixels.' },
+        why,
+      },
+      ['latex'],
+    ),
+  },
+  {
+    name: 'write_text',
+    description:
+      'Write a short line of words in handwriting (inline math in $...$), below the work or exactly at a spot.',
+    parameters: obj(
+      {
+        text: { type: 'string' },
+        after,
+        at: spot.at,
+        img: spot.img,
+        size: { type: 'number', description: 'With at: capital-letter height there, in pixels.' },
+        why,
+      },
+      ['text'],
+    ),
+  },
+  {
+    name: 'draw_diagram',
+    description:
+      'Draw a figure, graph, circuit, ray diagram, field, or labelled picture by hand, below the work. See the diagram guide in your instructions for the item kinds.',
+    parameters: obj(
+      {
+        title: { type: 'string' },
+        after,
+        items: { type: 'array', items: { type: 'object' } },
+        x: { type: 'array', items: { type: 'number' }, description: 'Visible x range.' },
+        y: { type: 'array', items: { type: 'number' }, description: 'Visible y range.' },
+        w: { type: 'number' },
+        h: { type: 'number' },
+        ydown: { type: 'boolean', description: 'Freehand canvas, y down, about 200 wide.' },
+        why,
+      },
+      ['items'],
+    ),
+  },
+  {
+    name: 'draw_table',
+    description:
+      'Draw a ruled table (truth tables, observations, comparisons). Cells may hold $math$.',
+    parameters: obj(
+      {
+        header: { type: 'array', items: { type: 'string' } },
+        rows: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
+        align: { type: 'array', items: { type: 'string', enum: ['l', 'c', 'r'] } },
+        title: { type: 'string' },
+        after,
+      },
+      ['rows'],
+    ),
+  },
+  {
+    name: 'new_page',
+    description:
+      'Turn to a fresh page and carry on at its top. Writey also does this itself when a page fills up.',
+    parameters: obj({}),
+  },
+  {
+    name: 'say',
+    description: 'Say something out loud to the student (only when they are talking to you).',
+    parameters: obj({ text: { type: 'string' } }, ['text']),
+  },
+]
+
+const AGENT = `You are Writey, a friendly tutor who sits beside the student with a pen and their notebook, and explains in the margin beside the page.
+${SEEING}
+
+You act through tools, like a computer-use agent acting on a screen. You decide what to do, in what order, how many times, and when you are finished. The student watches each call happen live: your pen glides to what you point at, and your handwriting appears stroke by stroke. Every tool tells you what happened; if something failed (an unknown line tag, no room), adapt.
+- point_at shows what you are reading or talking about. mark is your red pen. write_math and write_text write lines; draw_diagram and draw_table draw by hand.
+- Your images are a snapshot from when you were asked. Call look_at_page whenever you need to see the page as it is now, e.g. to check what you wrote or to point at your own ink.
+- When you are finished, stop calling tools and reply with the explanation for the margin, in Markdown. That reply ends your turn.
+
+How a good tutor uses the pen (judge for yourself what this request needs):
+- The page holds what a tutor writes or draws: the working, one step per line; a sketch or diagram whenever there is anything to see; a table for anything with rows and columns; red-pen marks on their work. The margin explains in words. Never copy the page into the margin.
+- Small talk or a quick answer needs no pen: just reply. If they ask you not to write, don't.
+- When you check work or look for a mistake, really go through it: follow their lines with your pen, mark exactly what is right and wrong, put it right properly, and make sure your own answer holds up before you finish.
+- When you explain, scribble the key idea, the formula, and a diagram where it helps, right on the page; if it is about something already on the page (their work, a printed figure), point at it and mark or label it there instead of redrawing it.
+- A hint is a nudge: don't give the answer.
+
+Writing:
+- Keep each line short, like a notebook line. A long equation continues on the next line starting with "=". Never use align environments or \\\\ line breaks.
+- LaTeX: common commands only (\\frac \\sqrt ^ _ \\int \\sum \\lim \\vec \\cdot \\times \\left( \\right) \\text{} and Greek letters). Units in \\text{}, e.g. 5\\,\\text{m/s}. Box the final answer.
+- The first line you write goes below the student's last line (after: its tag) unless it belongs elsewhere; later lines follow under it. Writey places and sizes the handwriting.
+- Never rewrite what is already on the page, theirs or yours: add only what is new, below it, and refer back to it. Earlier answers you wrote stay on the page.
+- Pointing is in pixels of the images, origin top-left: image 1 (the focus area, the default) or image 2 (the whole page, img 2). Use the rulers and the printed-text boxes to hit things exactly. Labels written with at sit with their left end at x, centred on y.
+
+Diagrams:
+${DIAGRAMS}
+${PHYSICS}
+
+The margin explanation: teach it, don't summarise it. The intuition first in plain words; then the reasoning tied to what is on the page ("the circled term", "the second line"); the rule it rests on; the usual trap; for longer explanations a one-line takeaway and a short question that checks they followed. Match the length to the question: a quick question gets two sentences. Write $…$ for inline math. The conversation can span several pages of the notebook.`
+
+const SPOKEN = `${SPEAKING}
+Call say early, with one to three sentences on what you're about to do or what you found, and again briefly when there is something worth saying while you work. Don't read equations aloud.`
+
+export function agentMessages(
+  utterance: string,
   ctx: PageContext,
-  o: { round: number; plan?: string; yours: readonly string[] },
+  route: Route,
+  turns: readonly Turn[],
+  spoken = false,
 ): ChatMessage[] {
-  const last = o.round >= MAX_ROUNDS
+  const hints = [
+    route.scope === 'hint' && 'They asked for a hint only.',
+    route.mode === 'chat' && 'They asked for words only: do not write on the page.',
+  ].filter(Boolean)
   return [
-    ...withoutImages(messages),
-    { role: 'assistant', content: reply },
+    { role: 'system', content: spoken ? `${AGENT}\n\n${SPOKEN}` : AGENT },
+    ...history(turns),
     {
       role: 'user',
       content: [
         ...images(ctx),
         {
           type: 'text',
-          text: [
-            `Round ${o.round} of at most ${MAX_ROUNDS}. This is the page now. What you wrote so far is on it in violet (the student is watching it being written), and the line tags were renumbered${o.yours.length ? `: your lines are ${o.yours.join(', ')}` : ''}.`,
-            pageText(ctx),
-            o.plan && `Your plan for this round: ${o.plan}`,
-            last
-              ? 'This is the last round: finish, then the chat block and done.'
-              : 'Carry on in the same format. Do not rewrite what is already there. End with next if there is more to do, else the chat block and done.',
-          ]
+          text: [pageText(ctx), `The student said: "${utterance}"`, ...hints]
             .filter(Boolean)
             .join('\n\n'),
         },
@@ -325,34 +370,19 @@ export function roundMessages(
   ]
 }
 
-export function produceMessages(
-  utterance: string,
-  ctx: PageContext,
-  plan: Plan,
-  turns: readonly Turn[],
-  spoken = false,
-): ChatMessage[] {
-  const planText = [
-    plan.problem && `Problem: ${plan.problem}`,
-    plan.user_progress && `Where they are: ${plan.user_progress}`,
-    plan.target_line && `Line in question: ${plan.target_line}`,
-  ]
-    .filter(Boolean)
-    .join('\n')
-  return [
-    { role: 'system', content: produceSystem(plan.mode, plan.scope, spoken) },
-    ...history(turns),
-    {
-      role: 'user',
-      content: [
-        ...images(ctx),
-        {
-          type: 'text',
-          text: [pageText(ctx), planText, `The student said: "${utterance}"`]
-            .filter(Boolean)
-            .join('\n\n'),
-        },
-      ],
-    },
-  ]
+/** What look_at_page hands back, as a message after the tool results (tool results can't hold images everywhere). */
+export function pageLook(ctx: PageContext, yours: readonly string[]): ChatMessage {
+  return {
+    role: 'user',
+    content: [
+      ...images(ctx),
+      {
+        type: 'text',
+        text: [
+          `The page now, from look_at_page. Your ink is violet${yours.length ? `; your lines are ${yours.join(', ')}` : ''}. Line tags were renumbered: use these from now on.`,
+          pageText(ctx),
+        ].join('\n\n'),
+      },
+    ],
+  }
 }

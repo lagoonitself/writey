@@ -1,5 +1,6 @@
 import {
   addUsage,
+  agentMessages,
   type ChatMessage,
   chatBody,
   chatEvents,
@@ -8,29 +9,26 @@ import {
   describeError,
   type Effort,
   type HelpError,
-  inkMode,
-  MAX_ROUNDS,
-  messageText,
+  type Mode,
   type Plan,
-  parsePlan,
-  planMessages,
-  produceMessages,
+  pageLook,
   responsesBody,
   responsesEvents,
-  roundMessages,
   routeIntent,
-  SaySplitter,
   SentenceBuffer,
   type StreamEvent,
+  type ToolCall,
   type Turn,
   type Usage,
+  WRITEY_TOOLS,
+  withoutImages,
 } from '@writey/ai-core'
 import {
   type InkBlock,
-  InkScriptParser,
   InkWriter,
   type Look,
   sizeFromLines,
+  toolBlock,
   type Written,
 } from '@writey/inkscript'
 import type { AiSettings, KeyProvider, PageRow } from '@writey/shared'
@@ -39,13 +37,11 @@ import { chatgptResponses, HelperError } from '../lib/helper'
 import type { PageSnapshot } from '../notebook/tools'
 import { type Capture, capturePage } from './capture'
 
-// The help engine (docs §5): capture → PLAN (fast, JSON) → PRODUCE (streamed).
-// "chat" answers stream into the chat as Markdown; every other mode streams InkScript, which
-// is written onto the page as a ghost preview, block by block ("explain" sketches on the page
-// and puts the full explanation beside it, like a tutor with a pen). Ink answers run in rounds:
-// the model acts, sees the page again with its ink on it, and carries on (HANDOFF D46).
-// When Writey is talking (spoken replies), each answer also opens with what it says out loud,
-// handed out sentence by sentence so speech starts while the rest is still coming.
+// The help engine (docs §5, HANDOFF D46): Writey is an agent with a pen. The model sees the
+// page and calls tools (point at, mark, write, draw, look at the page again, say), as many
+// as it decides, in the order it decides; each call happens on the page as it arrives and
+// its result goes back to the model. When it stops calling tools, its reply is the
+// explanation in the margin.
 
 /** Writey's own ink, and the teacher's red pen for marks (HANDOFF D5). */
 export const AI_INK = '#5b3fb5'
@@ -81,46 +77,42 @@ export class HelpFailure extends Error {
   }
 }
 
-const MODE_STATUS: Record<Plan['mode'], string> = {
-  chat: 'Thinking…',
-  explain: 'Sketching it out…',
-  write: 'Working out the next step…',
-  check: 'Checking your work…',
-  both: 'Working it out…',
-}
+/**
+ * A safety stop on model requests in one answer, not a plan: the model ends its turn
+ * itself by replying without tool calls.
+ */
+const MAX_STEPS = 40
 
-/** How one provider is called: a short complete reply, or a stream of events. */
+/** How one provider is called: a stream of events, with Writey's tools offered. */
 type Transport = {
-  complete(messages: ChatMessage[]): Promise<{ text: string; usage?: Usage }>
   stream(messages: ChatMessage[], effort: Effort): AsyncIterable<StreamEvent>
   failure(ev: Extract<StreamEvent, { type: 'error' }>): HelpError
 }
 
 /** OpenRouter and OpenCode Zen: Chat Completions through the Worker. */
 function chatCompletions(provider: KeyProvider, model: string, signal: AbortSignal): Transport {
-  const send = async (body: string) => {
-    let res: Response
-    try {
-      res = await chatRequest(provider, body, signal)
-    } catch (e) {
-      if (signal.aborted) throw e
-      throw new HelpFailure({ message: "Couldn't reach Writey's server. Check your connection." })
-    }
-    if (!res.ok) throw new HelpFailure(describeError(provider, model, res.status, await res.text()))
-    return res
-  }
   return {
-    async complete(messages) {
-      const res = await send(
-        chatBody(provider, { model, messages, maxTokens: 600, stream: false, reasoning: 'none' }),
-      )
-      const json = (await res.json()) as { usage?: Usage }
-      return { text: messageText(json), usage: json.usage }
-    },
     async *stream(messages, effort) {
-      const res = await send(
-        chatBody(provider, { model, messages, maxTokens: 16000, stream: true, reasoning: effort }),
-      )
+      let res: Response
+      try {
+        res = await chatRequest(
+          provider,
+          chatBody(provider, {
+            model,
+            messages,
+            maxTokens: 16000,
+            stream: true,
+            reasoning: effort,
+            tools: WRITEY_TOOLS,
+          }),
+          signal,
+        )
+      } catch (e) {
+        if (signal.aborted) throw e
+        throw new HelpFailure({ message: "Couldn't reach Writey's server. Check your connection." })
+      }
+      if (!res.ok)
+        throw new HelpFailure(describeError(provider, model, res.status, await res.text()))
       if (!res.body) throw new HelpFailure({ message: 'The model sent an empty reply.' })
       yield* chatEvents(res.body)
     },
@@ -136,41 +128,25 @@ function chatCompletions(provider: KeyProvider, model: string, signal: AbortSign
 
 /** ChatGPT plan: the Responses API through Writey Helper on this computer. */
 function chatgptPlan(model: string, signal: AbortSignal): Transport {
-  const open = async (messages: ChatMessage[], effort: Effort) => {
-    let res: Response
-    try {
-      res = await chatgptResponses(responsesBody(model, messages, effort), signal)
-    } catch (e) {
-      if (e instanceof HelperError) throw new HelpFailure(describeChatgptError(0, '', e.code))
-      throw e
-    }
-    if (!res.ok) throw new HelpFailure(describeChatgptError(res.status, await res.text()))
-    if (!res.body) throw new HelpFailure({ message: 'ChatGPT sent an empty reply.' })
-    return responsesEvents(res.body)
-  }
-  const failure = (ev: Extract<StreamEvent, { type: 'error' }>) =>
-    describeChatgptError(
-      ev.status ?? 500,
-      JSON.stringify({ error: { message: ev.message } }),
-      ev.code,
-    )
   return {
-    // Plan usage only streams, so a "complete" call collects the stream.
-    async complete(messages) {
-      let text = ''
-      let usage: Usage | undefined
-      // The PLAN call only sorts the request, so it thinks briefly.
-      for await (const ev of await open(messages, 'low')) {
-        if (ev.type === 'text') text += ev.text
-        else if (ev.type === 'usage') usage = ev.usage
-        else if (ev.type === 'error') throw new HelpFailure(failure(ev))
-      }
-      return { text, usage }
-    },
     async *stream(messages, effort) {
-      yield* await open(messages, effort)
+      let res: Response
+      try {
+        res = await chatgptResponses(responsesBody(model, messages, effort, WRITEY_TOOLS), signal)
+      } catch (e) {
+        if (e instanceof HelperError) throw new HelpFailure(describeChatgptError(0, '', e.code))
+        throw e
+      }
+      if (!res.ok) throw new HelpFailure(describeChatgptError(res.status, await res.text()))
+      if (!res.body) throw new HelpFailure({ message: 'ChatGPT sent an empty reply.' })
+      yield* responsesEvents(res.body)
     },
-    failure,
+    failure: (ev) =>
+      describeChatgptError(
+        ev.status ?? 500,
+        JSON.stringify({ error: { message: ev.message } }),
+        ev.code,
+      ),
   }
 }
 
@@ -181,16 +157,16 @@ export async function askWritey(opts: {
   settings: AiSettings
   turns: readonly Turn[]
   signal: AbortSignal
-  /** The student is talking to Writey: answers open with words to say out loud. */
+  /** The student is talking to Writey: it may speak while it works. */
   spoken?: boolean
   onUpdate(u: HelpUpdate): void
   /** A blank page after this one, for ink that doesn't fit. Null if none can be made. */
   nextPage(after: PageRow): Promise<PageRow | null>
   pageNumber(page: PageRow): number
-  /** The page as it is now, with Writey's preview on it, for the next round. */
+  /** The page as it is now, with Writey's preview on it, for look_at_page. */
   lookAgain(page: PageRow): PageSnapshot | null
 }): Promise<HelpResult> {
-  const { utterance, settings, turns, signal, onUpdate } = opts
+  const { utterance, settings, signal, onUpdate } = opts
   const transport =
     settings.provider === 'chatgpt'
       ? chatgptPlan(settings.model, signal)
@@ -198,80 +174,39 @@ export async function askWritey(opts: {
 
   onUpdate({ type: 'status', text: 'Looking at your work…' })
   const capture = await capturePage(opts.page, opts.snapshot)
-  const { ctx } = capture
-  onUpdate({ type: 'seen', image: ctx.focusImage })
+  onUpdate({ type: 'seen', image: capture.ctx.focusImage })
 
+  // The wording only hints (hint only, words only); the model decides what to do.
   const route = routeIntent(utterance)
-  const planned = await transport.complete(planMessages(utterance, ctx, route, turns))
-  const plan = decide(route, parsePlan(planned.text))
-  let usage = addUsage(undefined, planned.usage)
-  onUpdate({ type: 'plan', plan })
-  onUpdate({ type: 'status', text: plan.status_line || MODE_STATUS[plan.mode] })
-
-  // Writey thinks before it answers; harder for full solutions, checking and explaining.
+  const hinted = decide(route, null)
+  onUpdate({ type: 'plan', plan: hinted })
+  onUpdate({ type: 'status', text: 'Thinking…' })
   const effort: Effort =
-    plan.mode === 'chat' || plan.scope === 'hint'
+    route.scope === 'hint'
       ? 'low'
-      : plan.scope === 'full' || plan.mode === 'check'
+      : route.mode === 'check' || route.scope === 'full'
         ? 'high'
         : 'medium'
-  const spoken = Boolean(opts.spoken)
-  const produce = produceMessages(utterance, ctx, plan, turns, spoken)
-  if (inkMode(plan.mode)) {
-    const ink = await writeInk(produce, {
-      stream: (messages) => transport.stream(messages, effort),
-      lookAgain: opts.lookAgain,
-      signal,
-      page: opts.page,
-      capture,
-      target: plan.target_line,
-      onUpdate,
-      nextPage: opts.nextPage,
-      pageNumber: opts.pageNumber,
-      failure: transport.failure,
-    })
-    return {
-      text: ink.text,
-      plan,
-      usage: addUsage(usage, ink.usage),
-      ink: ink.written,
-      said: ink.said,
-    }
-  }
 
-  let text = ''
-  let said = ''
-  let thinking = false
-  const split = new SaySplitter()
-  const sentences = new SentenceBuffer()
-  const take = (part: { say: string; text: string }, last = false) => {
-    said += part.say
-    for (const s of [...sentences.push(part.say), ...(last ? sentences.flush() : [])]) {
-      onUpdate({ type: 'say', text: s })
-    }
-    if (part.text) {
-      text += part.text
-      onUpdate({ type: 'text', text: part.text })
-    }
+  const agent = new Agent(transport, capture, opts)
+  const out = await agent.run(
+    agentMessages(utterance, capture.ctx, route, opts.turns, Boolean(opts.spoken)),
+    effort,
+  )
+  const mode: Mode = !out.written.length
+    ? 'chat'
+    : out.marked
+      ? 'check'
+      : route.mode === 'write' || route.mode === 'both'
+        ? route.mode
+        : 'explain'
+  return {
+    text: out.text,
+    plan: { ...hinted, mode },
+    usage: out.usage ?? {},
+    ink: out.written.length ? out.written : undefined,
+    said: out.said,
   }
-  for await (const ev of transport.stream(produce, effort)) {
-    if (ev.type === 'text') {
-      take(spoken ? split.push(ev.text) : { say: '', text: ev.text })
-    } else if (ev.type === 'reasoning' && !thinking && !text) {
-      thinking = true
-      onUpdate({ type: 'thinking' })
-    } else if (ev.type === 'usage') {
-      usage = addUsage(usage, ev.usage)
-    } else if (ev.type === 'error') {
-      throw new HelpFailure(transport.failure(ev))
-    }
-  }
-  take(split.end(), true)
-  said = said.trim()
-  if (!text.trim() && !said) {
-    throw new HelpFailure({ message: 'The model sent an empty reply. Try again.' })
-  }
-  return { text: withSaid(said, text.trim()), plan, usage, said: said || undefined }
 }
 
 /** The chat shows what Writey said above the written answer. */
@@ -320,212 +255,284 @@ const list = (lines: readonly string[]) => lines.map((l, i) => `${i + 1}. ${l}`)
 const pagesLabel = (numbers: readonly number[]) =>
   numbers.length > 1 ? `pages ${numbers[0]}–${numbers.at(-1)}` : `page ${numbers[0] ?? ''}`.trim()
 
-/**
- * Writes an ink answer in rounds, like a computer-use agent: the model acts on the page
- * (looks, marks, writes), ends the round with `next`, gets the page back with its ink on it,
- * and carries on until `done` (HANDOFF D46).
- */
-async function writeInk(
-  first: ChatMessage[],
-  o: {
-    stream(messages: ChatMessage[]): AsyncIterable<StreamEvent>
-    lookAgain(page: PageRow): PageSnapshot | null
-    signal: AbortSignal
-    page: PageRow
-    capture: Capture
-    target: string | null
-    onUpdate(u: HelpUpdate): void
-    nextPage(after: PageRow): Promise<PageRow | null>
-    pageNumber(page: PageRow): number
-    failure(ev: Extract<StreamEvent, { type: 'error' }>): HelpError
-  },
-): Promise<{ text: string; written: Written[]; usage: Usage | undefined; said?: string }> {
-  const { onUpdate } = o
-  let capture = o.capture
-  const size = sizeFromLines(capture.lines.map((l) => l.rect.h))
-  const seed = Math.floor(Math.random() * 2 ** 31)
-  const style = { size, color: AI_INK, markColor: MARK_INK, seed }
-  let page = o.page
-  let writer = new InkWriter(
-    {
-      page: { width: page.width, height: page.height },
-      lines: capture.lines,
-      obstacles: capture.obstacles,
-      target: o.target,
-      images: capture.images,
-    },
-    style,
-  )
-  let onThisPage = 0
+type ToolOutcome = { result: string; look?: ChatMessage }
+
+/** One answer: runs the model's tool calls on the page until it replies without any. */
+class Agent {
+  private page: PageRow
+  private capture: Capture
+  /** The page the capture is of; pixel coordinates only mean something there. */
+  private captured: string
+  private writer: InkWriter
+  private readonly style: { size: number; color: string; markColor: string; seed: number }
+  private looks = 0
+  private onThisPage = 0
   /** Pages with a preview open (it opens on the first look or line). */
-  const started = new Set<string>()
-  const pages = [page]
+  private readonly started = new Set<string>()
+  private readonly pages: PageRow[]
   /** Pages that got ink, in order. */
-  const inked: PageRow[] = []
-  let parser = new InkScriptParser()
-  let next: { plan?: string } | null = null
-  const prose: string[] = []
-  const written: Written[] = []
-  const onPage: string[] = []
-  const unwritten: string[] = []
-  const chat: string[] = []
-  const said: string[] = []
-  let summary = ''
-  let usage: Usage | undefined
-  let thinking = false
+  private readonly inked: PageRow[] = []
+  readonly written: Written[] = []
+  marked = false
+  private readonly onPage: string[] = []
+  private readonly unwritten: string[] = []
+  private readonly margin: string[] = []
+  private readonly said: string[] = []
+  private usage: Usage | undefined
+  private thinking = false
+
+  constructor(
+    private readonly transport: Transport,
+    capture: Capture,
+    private readonly o: {
+      page: PageRow
+      signal: AbortSignal
+      onUpdate(u: HelpUpdate): void
+      nextPage(after: PageRow): Promise<PageRow | null>
+      pageNumber(page: PageRow): number
+      lookAgain(page: PageRow): PageSnapshot | null
+    },
+  ) {
+    this.page = o.page
+    this.pages = [o.page]
+    this.capture = capture
+    this.captured = o.page.id
+    const size = sizeFromLines(capture.lines.map((l) => l.rect.h))
+    this.style = {
+      size,
+      color: AI_INK,
+      markColor: MARK_INK,
+      seed: Math.floor(Math.random() * 2 ** 31),
+    }
+    this.writer = this.newWriter(capture)
+  }
+
+  private newWriter(c: Capture | null): InkWriter {
+    const w = new InkWriter(
+      c
+        ? {
+            page: { width: this.page.width, height: this.page.height },
+            lines: c.lines,
+            obstacles: c.obstacles,
+            target: null,
+            images: c.images,
+          }
+        : {
+            page: { width: this.page.width, height: this.page.height },
+            lines: [],
+            obstacles: [],
+            target: null,
+          },
+      { ...this.style, seed: this.style.seed + this.looks },
+    )
+    // Strokes keep their order on the page's timeline.
+    w.time = this.writer?.time ?? 0
+    return w
+  }
+
+  async run(
+    first: ChatMessage[],
+    effort: Effort,
+  ): Promise<{ text: string; written: Written[]; marked: boolean; usage?: Usage; said?: string }> {
+    let messages = first
+    for (let step = 0; step < MAX_STEPS && !this.o.signal.aborted; step++) {
+      let text = ''
+      const calls: ToolCall[] = []
+      const results: ChatMessage[] = []
+      const thoughts: unknown[] = []
+      let look: ChatMessage | undefined
+      for await (const ev of this.transport.stream(messages, effort)) {
+        if (ev.type === 'text') {
+          if (!text && this.margin.length) this.o.onUpdate({ type: 'text', text: '\n\n' })
+          text += ev.text
+          this.o.onUpdate({ type: 'text', text: ev.text })
+        } else if (ev.type === 'tool') {
+          calls.push(ev.call)
+          const out = await this.call(ev.call)
+          results.push({ role: 'tool', toolCallId: ev.call.id, content: out.result })
+          if (out.look) look = out.look
+        } else if (ev.type === 'thought') thoughts.push(ev.item)
+        else if (ev.type === 'reasoning' && !this.thinking) {
+          this.thinking = true
+          this.o.onUpdate({ type: 'thinking' })
+        } else if (ev.type === 'usage') this.usage = addUsage(this.usage, ev.usage)
+        else if (ev.type === 'error') throw new HelpFailure(this.transport.failure(ev))
+      }
+      if (text.trim()) this.margin.push(text.trim())
+      if (!calls.length) break
+      // Only the newest picture of the page is sent again.
+      messages = [
+        ...(look ? withoutImages(messages) : messages),
+        { role: 'assistant', content: text, toolCalls: calls, reasoning: thoughts },
+        ...results,
+        ...(look ? [look] : []),
+      ]
+      this.o.onUpdate({ type: 'status', text: 'Thinking…' })
+    }
+    return this.finish()
+  }
+
+  /** Runs one tool call on the page and says what happened, for the model. */
+  private async call(c: ToolCall): Promise<ToolOutcome> {
+    const { onUpdate } = this.o
+    if (c.name === 'look_at_page') return this.lookAtPage()
+    const b = toolBlock(c.name, c.arguments)
+    if (!b) return { result: `Error: unknown tool or unreadable arguments for ${c.name}.` }
+    switch (b.type) {
+      case 'say': {
+        this.said.push(b.text)
+        const buf = new SentenceBuffer()
+        for (const s of [...buf.push(b.text), ...buf.flush()]) onUpdate({ type: 'say', text: s })
+        return { result: 'Said.' }
+      }
+      case 'page':
+        return (await this.turnPage(true))
+          ? {
+              result: `Turned to a new blank page (page ${this.o.pageNumber(this.page)}). Write at its top.`,
+            }
+          : { result: 'Could not add a page.' }
+      case 'look': {
+        const look = this.writer.look(b)
+        if (!look) return { result: this.missing(b) }
+        this.open()
+        onUpdate({ type: 'look', page: this.page, look })
+        if (b.note) onUpdate({ type: 'status', text: `${capitalize(b.note)}…` })
+        return { result: 'Your pen is resting on it.' }
+      }
+      case 'text':
+      case 'math':
+      case 'mark':
+      case 'diagram':
+      case 'table':
+        return { result: await this.ink(b) }
+      default:
+        return { result: 'Nothing to do.' }
+    }
+  }
+
+  private missing(b: { target?: string }): string {
+    const tags = this.page.id === this.captured ? this.capture.lines.map((l) => l.label) : []
+    if (b.target) {
+      return `Error: there is no line ${b.target} here. Lines: ${tags.join(', ') || 'none'}.`
+    }
+    return this.page.id === this.captured
+      ? 'Error: that spot is outside the images.'
+      : 'Error: this is a new page you have not looked at; call look_at_page first.'
+  }
+
+  private async lookAtPage(): Promise<ToolOutcome> {
+    this.o.onUpdate({ type: 'status', text: 'Looking at the page again…' })
+    const snap = this.o.lookAgain(this.page)
+    if (!snap) return { result: "Error: the page isn't open right now." }
+    this.capture = await capturePage(this.page, snap)
+    this.captured = this.page.id
+    this.looks++
+    this.writer = this.newWriter(this.capture)
+    const mine = new Set(this.written.flatMap((w) => w.strokes.map((s) => s.stroke.id)))
+    const yours = this.capture.lines.filter((l) => l.ids.some((id) => mine.has(id)))
+    return {
+      result: 'Here is the page now: see the images in the next message.',
+      look: pageLook(
+        this.capture.ctx,
+        yours.map((l) => l.label),
+      ),
+    }
+  }
+
+  private open(): void {
+    if (this.started.has(this.page.id)) return
+    this.started.add(this.page.id)
+    this.o.onUpdate({ type: 'inkStart', page: this.page })
+  }
 
   // The page filled up: carry on at the top of a fresh page after it.
-  const turnPage = async (asked = false): Promise<boolean> => {
-    if ((!onThisPage && !asked) || pages.length > MAX_NEW_PAGES) return false
-    onUpdate({
+  private async turnPage(asked = false): Promise<boolean> {
+    if ((!this.onThisPage && !asked) || this.pages.length > MAX_NEW_PAGES) return false
+    this.o.onUpdate({
       type: 'status',
       text: asked ? 'Starting a new page…' : 'Page full, turning to a new page…',
     })
-    const next = await o.nextPage(page).catch(() => null)
+    const next = await this.o.nextPage(this.page).catch(() => null)
     if (!next) return false
-    page = next
-    pages.push(next)
-    onThisPage = 0
-    writer = new InkWriter(
-      {
-        page: { width: page.width, height: page.height },
-        lines: [],
-        obstacles: [],
-        target: null,
-      },
-      style,
-    )
+    this.page = next
+    this.pages.push(next)
+    this.onThisPage = 0
+    this.writer = this.newWriter(null)
     return true
   }
 
-  const open = () => {
-    if (started.has(page.id)) return
-    started.add(page.id)
-    onUpdate({ type: 'inkStart', page })
+  private async ink(b: InkBlock): Promise<string> {
+    const { onUpdate } = this.o
+    const md = blockMarkdown(b)
+    let r = this.writer.write(b)
+    if (r && 'noRoom' in r && b.type !== 'mark' && (await this.turnPage())) r = this.writer.write(b)
+    if (!r) {
+      const at = b as { target?: string; pin?: unknown }
+      return at.target || at.pin ? this.missing(at) : 'Error: nothing was written (empty).'
+    }
+    if ('noRoom' in r) {
+      this.unwritten.push(md)
+      return 'Error: no room left on the page; it was not written. Put it in your explanation instead.'
+    }
+    if (!this.onThisPage) {
+      this.inked.push(this.page)
+      this.open()
+    }
+    this.onThisPage++
+    this.written.push(r)
+    if (b.type === 'mark') this.marked = true
+    this.onPage.push(md)
+    onUpdate({ type: 'ink', page: this.page, written: r })
+    onUpdate({ type: 'status', text: 'Writing on your page…' })
+    const where = this.pixels(r.rect)
+    const pageNo = this.pages.length > 1 ? ` on page ${this.o.pageNumber(this.page)}` : ''
+    return `Done${pageNo}${where ? `, at ${where} in image 2 pixels` : ''}.`
   }
 
-  const take = async (b: InkBlock) => {
-    if (b.type === 'status') onUpdate({ type: 'status', text: b.text })
-    else if (b.type === 'next') next = { plan: b.plan }
-    else if (b.type === 'look') {
-      const look = writer.look(b)
-      if (!look) return
-      open()
-      onUpdate({ type: 'look', page, look })
-      if (b.note) onUpdate({ type: 'status', text: `${capitalize(b.note)}…` })
-    } else if (b.type === 'say') {
-      said.push(b.text)
-      const buf = new SentenceBuffer()
-      for (const s of [...buf.push(b.text), ...buf.flush()]) onUpdate({ type: 'say', text: s })
-    } else if (b.type === 'chat') {
-      // The explanation streams into the chat; the working goes on the page only.
-      onUpdate({ type: 'text', text: `${chat.length ? '\n\n' : ''}${b.text}` })
-      chat.push(b.text)
-    } else if (b.type === 'done') summary = b.summary ?? ''
-    else if (b.type === 'page') {
-      if (!unwritten.length) await turnPage(true)
-    } else {
-      const md = blockMarkdown(b)
-      if (unwritten.length) {
-        unwritten.push(md)
-        return
-      }
-      let r = writer.write(b)
-      if (r && 'noRoom' in r && b.type !== 'mark' && (await turnPage())) r = writer.write(b)
-      if (!r) return
-      if ('noRoom' in r) {
-        unwritten.push(md)
-        return
-      }
-      if (!onThisPage) {
-        inked.push(page)
-        open()
-        onUpdate({ type: 'status', text: 'Writing on your page…' })
-      }
-      onThisPage++
-      written.push(r)
-      onPage.push(md)
-      onUpdate({ type: 'ink', page, written: r })
-      onUpdate({ type: 'status', text: `Writing on your page… line ${written.length}` })
+  /** A page rect in image 2 pixels, for the model to point at its own ink. */
+  private pixels(r: { x: number; y: number; w: number; h: number }): string | null {
+    if (this.page.id !== this.captured) return null
+    const f = this.capture.images.page
+    const px = (v: number, o: number) => Math.round((v - o) * f.scale)
+    return `[${px(r.x, f.x)},${px(r.y, f.y)},${px(r.x + r.w, f.x)},${px(r.y + r.h, f.y)}]`
+  }
+
+  private finish() {
+    // The margin is the explanation. A copy of the page is kept for the model's history,
+    // but the chat only shows that it was written (styles hide the list).
+    const { written } = this
+    const spoken = this.said.join(' ').trim()
+    const parts: string[] = [...this.margin]
+    if (written.length) {
+      const drawings = written.filter((w) => w.source.startsWith('[diagram')).length
+      const tables = written.filter((w) => w.source.startsWith('[table')).length
+      const marks = written.filter((w) => w.source.startsWith('[')).length - drawings - tables
+      const lines = written.length - marks - drawings - tables
+      const did = [
+        lines && `${lines} line${lines === 1 ? '' : 's'}`,
+        drawings && `${drawings} diagram${drawings === 1 ? '' : 's'}`,
+        tables && `${tables} table${tables === 1 ? '' : 's'}`,
+        marks && `${marks} mark${marks === 1 ? '' : 's'}`,
+      ].filter(Boolean)
+      const where = pagesLabel(this.inked.map(this.o.pageNumber))
+      parts.push(
+        `<details class="ink-copy"><summary>Written on ${where} · ${did.join(', ')}</summary>`,
+        list(this.onPage),
+        '</details>',
+      )
+    }
+    if (this.unwritten.length) {
+      parts.push(`**This didn't fit on the page**, so here's the rest:`, list(this.unwritten))
+    }
+    if (!parts.length && !spoken && !this.o.signal.aborted) {
+      throw new HelpFailure({ message: 'The model sent an empty reply. Try again.' })
+    }
+    return {
+      text: withSaid(spoken, parts.join('\n\n')),
+      written,
+      marked: this.marked,
+      usage: this.usage,
+      said: spoken || undefined,
     }
   }
-
-  let messages = first
-  for (let round = 1; ; round++) {
-    let reply = ''
-    for await (const ev of o.stream(messages)) {
-      if (ev.type === 'text') {
-        reply += ev.text
-        for (const b of parser.push(ev.text)) await take(b)
-      } else if (ev.type === 'reasoning' && !thinking && !written.length) {
-        thinking = true
-        onUpdate({ type: 'thinking' })
-      } else if (ev.type === 'usage') usage = addUsage(usage, ev.usage)
-      else if (ev.type === 'error') throw new HelpFailure(o.failure(ev))
-    }
-    if (parser.leftover()) prose.push(parser.leftover())
-    // `take` sets it while the stream runs.
-    const plan = next as { plan?: string } | null
-    next = null
-    if (!plan || round >= MAX_ROUNDS || unwritten.length || o.signal.aborted) break
-    // Look at the page again, with this round's ink on it, and carry on.
-    onUpdate({ type: 'status', text: plan.plan ? `${capitalize(plan.plan)}…` : 'Looking again…' })
-    const snap = o.lookAgain(page)
-    if (!snap) break
-    capture = await capturePage(page, snap)
-    const mine = new Set(written.flatMap((w) => w.strokes.map((s) => s.stroke.id)))
-    const yours = capture.lines.filter((l) => l.ids.some((id) => mine.has(id)))
-    const time = writer.time
-    writer = new InkWriter(
-      {
-        page: { width: page.width, height: page.height },
-        lines: capture.lines,
-        obstacles: capture.obstacles,
-        target: yours.at(-1)?.label ?? capture.lines.at(-1)?.label ?? null,
-        images: capture.images,
-      },
-      { ...style, seed: seed + round },
-    )
-    writer.time = time
-    parser = new InkScriptParser()
-    messages = roundMessages(messages, reply, capture.ctx, {
-      round: round + 1,
-      plan: plan.plan,
-      yours: yours.map((l) => l.label),
-    })
-  }
-
-  // The chat is the explanation. A copy of the page is kept for the model's history, but
-  // the chat only shows that it was written (styles hide the list).
-  const spoken = said.join(' ').trim()
-  const parts: string[] = []
-  if (chat.length) parts.push(...chat)
-  else if (summary) parts.push(summary)
-  if (written.length) {
-    const drawings = written.filter((w) => w.source.startsWith('[diagram')).length
-    const tables = written.filter((w) => w.source.startsWith('[table')).length
-    const marks = written.filter((w) => w.source.startsWith('[')).length - drawings - tables
-    const lines = written.length - marks - drawings - tables
-    const did = [
-      lines && `${lines} line${lines === 1 ? '' : 's'}`,
-      drawings && `${drawings} diagram${drawings === 1 ? '' : 's'}`,
-      tables && `${tables} table${tables === 1 ? '' : 's'}`,
-      marks && `${marks} mark${marks === 1 ? '' : 's'}`,
-    ].filter(Boolean)
-    const where = pagesLabel(inked.map(o.pageNumber))
-    parts.push(
-      `<details class="ink-copy"><summary>Written on ${where} · ${did.join(', ')}</summary>`,
-      list(onPage),
-      '</details>',
-    )
-  }
-  if (unwritten.length) {
-    parts.push(`**This didn't fit on the page**, so here's the rest:`, list(unwritten))
-  }
-  // A model that ignored the format: show what it said rather than nothing.
-  if (!parts.length && prose.length) parts.push(prose.join('\n\n'))
-  if (!parts.length && !spoken) {
-    throw new HelpFailure({ message: 'The model sent an empty reply. Try again.' })
-  }
-  return { text: withSaid(spoken, parts.join('\n\n')), written, usage, said: spoken || undefined }
 }
