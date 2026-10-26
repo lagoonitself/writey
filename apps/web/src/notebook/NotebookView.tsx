@@ -30,14 +30,7 @@ import { useVoice } from '../voice/useVoice'
 import { BackIcon, DownIcon, GearIcon, PlusIcon, TrashIcon, UpIcon } from './icons'
 import { PageView } from './PageView'
 import { Toolbar } from './Toolbar'
-import {
-  clipboard,
-  DEFAULT_TOOLS,
-  type PageHandle,
-  type SaveState,
-  TOOL_KEYS,
-  type ToolState,
-} from './tools'
+import { DEFAULT_TOOLS, type PageHandle, type SaveState, TOOL_KEYS, type ToolState } from './tools'
 
 // Markdown and KaTeX are sizable, so the chat panel loads on first open.
 const ChatPanel = lazy(() => import('../chat/ChatPanel'))
@@ -397,46 +390,6 @@ export function NotebookView({ id }: { id: string }) {
       // Images come in at 96 dpi: 1 px = 0.75 pt.
       handle.insertImage(asset, width * 0.75, height * 0.75)
     })
-
-  // A picture copied from any website (or a screenshot) pastes onto the page with Ctrl+V,
-  // and image files can be dropped on it.
-  const insertRef = useRef(insertImage)
-  insertRef.current = insertImage
-  useEffect(() => {
-    const image = (files: FileList | null | undefined) =>
-      [...(files ?? [])].find((f) => f.type.startsWith('image/'))
-    const onPaste = (e: ClipboardEvent) => {
-      if (isTyping(e.target)) return
-      const file = image(e.clipboardData?.files)
-      if (!file) return
-      e.preventDefault()
-      void insertRef.current(file)
-    }
-    const onDragOver = (e: DragEvent) => {
-      if ([...(e.dataTransfer?.items ?? [])].some((i) => i.kind === 'file')) e.preventDefault()
-    }
-    const onDrop = (e: DragEvent) => {
-      const file = image(e.dataTransfer?.files)
-      if (!file) return
-      e.preventDefault()
-      void insertRef.current(file)
-    }
-    // Leaving the tab is how something gets copied elsewhere: Ctrl+V should paste that, not
-    // an older lasso copy (which takes the key first).
-    const forget = () => {
-      clipboard.items = []
-    }
-    window.addEventListener('paste', onPaste)
-    window.addEventListener('dragover', onDragOver)
-    window.addEventListener('drop', onDrop)
-    window.addEventListener('blur', forget)
-    return () => {
-      window.removeEventListener('blur', forget)
-      window.removeEventListener('paste', onPaste)
-      window.removeEventListener('dragover', onDragOver)
-      window.removeEventListener('drop', onDrop)
-    }
-  }, [])
 
   const saveTitle = () => {
     const next = title.trim() || 'Untitled notebook'

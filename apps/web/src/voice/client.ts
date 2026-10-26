@@ -1,8 +1,6 @@
 import type { MicVAD } from '@ricky0123/vad-web'
 import {
   HelperError,
-  helperKnown,
-  markHelperKnown,
   synthesize,
   transcribe,
   type VoiceStatus,
@@ -14,7 +12,7 @@ import { sentences } from './speech'
 import { type Address, addressed, type VoiceCommand, voiceCommand } from './trigger'
 
 // The browser half of voice (docs §7.1–7.2): the mic, Silero VAD, push-to-talk, the 30 s
-// transcript, the "Hey …" check and playback. The Helper only runs the models.
+// transcript, the "Writey …" check and playback. The Helper only runs the models.
 
 export type VoiceState =
   | { kind: 'off' }
@@ -35,9 +33,9 @@ export type VoiceEvents = {
   heard(text: string, address: Address): void
   /** Writey was addressed (or push-to-talk): ask this. */
   request(text: string): void
+  /** It sounded like "Writey" but not clearly: ask before acting. */
+  confirm(text: string): void
   command(c: VoiceCommand): void
-  /** Why Writey can't talk right now (null once it can). */
-  speechIssue(message: string | null): void
   /** Writey just answered: the next sentence is a reply, no "Writey" needed. */
   followUp(open: boolean): void
 }
@@ -45,27 +43,11 @@ export type VoiceEvents = {
 const TRANSCRIPT_MS = 30_000
 /** Mic closes itself after this long with no speech (docs §7.3). */
 const SILENCE_PAUSE_MS = 10 * 60_000
-/** After a bare "Hey", the next sentence within this window is the request. */
+/** After a bare "Writey", the next sentence within this window is the request. */
 const ARMED_MS = 8_000
-/** After Writey answers, how long it waits for a reply that doesn't start with "Hey". */
+/** After Writey answers, how long it waits for a reply that doesn't start with "Writey". */
 const FOLLOW_UP_MS = 10_000
 const SAMPLE_RATE = 16_000
-/** How long a reply waits for the voice model (the first download is ~120 MB). */
-const VOICE_WAIT_MS = 5 * 60_000
-
-/** What the voice model is doing while speech waits for it. */
-async function voiceLoading(): Promise<{ message: string; failed?: boolean }> {
-  const tts = await voiceStatus()
-    .then((s) => s.tts)
-    .catch(() => null)
-  if (tts?.state === 'error') {
-    return { message: `Writey's voice didn't load: ${tts.error ?? 'unknown error'}`, failed: true }
-  }
-  if (tts?.state === 'downloading') {
-    return { message: `Downloading Writey's voice · ${Math.round((tts.progress ?? 0) * 100)}%` }
-  }
-  return { message: "Getting Writey's voice ready…" }
-}
 
 type Line = { who: 'you' | 'writey'; text: string; at: number }
 
@@ -97,7 +79,6 @@ export class VoiceClient {
         this.followAfterSpeech = false
         this.followUp()
       },
-      (issue) => this.ev.speechIssue(issue),
     )
   }
 
@@ -111,12 +92,9 @@ export class VoiceClient {
     return !this.stopped
   }
 
-  /**
-   * Writey talks back, typed questions included, once this browser has used the Helper
-   * (until then Writey never contacts 127.0.0.1 by itself).
-   */
+  /** Writey is listening and will talk back. */
   get speaks(): boolean {
-    return this.prefs().replies && (this.on || helperKnown())
+    return this.on && this.prefs().replies
   }
 
   /** Opens the reply window: the next sentence goes to Writey without its name. */
@@ -150,7 +128,6 @@ export class VoiceClient {
         )
         return
       }
-      markHelperKnown()
       if (!(await this.modelsReady())) return
       await this.openMic()
       if (this.stopped) {
@@ -326,12 +303,15 @@ export class VoiceClient {
     if (ptt || reply) {
       request = address?.request || text
       this.closeFollowUp()
-    } else if (address) {
+    } else if (address?.kind === 'strong') {
       if (!address.request) {
         this.armedUntil = Date.now() + ARMED_MS
         return
       }
       request = address.request
+    } else if (address?.kind === 'weak') {
+      this.ev.confirm(address.request || text)
+      return
     } else if (Date.now() < this.armedUntil) request = text
     if (!request) return
     this.armedUntil = 0
@@ -344,7 +324,7 @@ export class VoiceClient {
 
   /** Says something (when spoken replies are on). Its text joins the transcript, not the mic. */
   say(text: string): void {
-    if (!this.speaks || !text.trim()) return
+    if (!this.prefs().replies || !text.trim()) return
     this.remember('writey', text)
     this.speaker.say(text)
   }
@@ -395,7 +375,6 @@ class Speaker {
     private readonly onSpeaking: (on: boolean) => void,
     /** Finished saying everything (not stopped). */
     private readonly onDone: () => void,
-    private readonly onIssue: (message: string | null) => void,
   ) {}
 
   get busy(): boolean {
@@ -405,40 +384,10 @@ class Speaker {
   say(text: string): void {
     if (!this.abort) this.abort = new AbortController()
     const signal = this.abort.signal
-    for (const s of sentences(text)) this.queue.push(this.synth(s, signal))
-    if (!this.playing) void this.play()
-  }
-
-  /** One sentence as audio, waiting while the voice model downloads or loads. */
-  private async synth(text: string, signal: AbortSignal): Promise<ArrayBuffer | null> {
-    const until = Date.now() + VOICE_WAIT_MS
-    while (!signal.aborted) {
-      try {
-        const wav = await synthesize(text, this.voice(), signal)
-        this.onIssue(null)
-        return wav
-      } catch (e) {
-        if (signal.aborted) return null
-        const code = e instanceof HelperError ? e.code : ''
-        if (code === 'not_ready' && Date.now() < until) {
-          const wait = await voiceLoading()
-          this.onIssue(wait.message)
-          if (wait.failed) return null
-          await new Promise((r) => setTimeout(r, 1500))
-          continue
-        }
-        console.error('speech failed', e)
-        this.onIssue(
-          code === 'helper_offline'
-            ? "Writey can't talk: Writey Helper isn't running on this computer."
-            : code === 'not_ready'
-              ? "Writey's voice didn't get ready. Check Settings → Voice."
-              : `Writey couldn't speak: ${(e as Error).message}`,
-        )
-        return null
-      }
+    for (const s of sentences(text)) {
+      this.queue.push(synthesize(s, this.voice(), signal).catch(() => null))
     }
-    return null
+    if (!this.playing) void this.play()
   }
 
   private async play(): Promise<void> {
@@ -458,14 +407,7 @@ class Speaker {
           audio.onended = () => resolve()
           audio.onerror = () => resolve()
           audio.onpause = () => resolve()
-          audio.play().catch((e: Error) => {
-            if (e.name === 'NotAllowedError') {
-              this.onIssue(
-                "Chrome didn't let Writey speak yet. Click the page once, then ask again.",
-              )
-            }
-            resolve()
-          })
+          audio.play().catch(() => resolve())
         })
       } finally {
         URL.revokeObjectURL(url)

@@ -207,31 +207,3 @@ describe('assets', () => {
     expect(r2.store.size).toBe(0)
   })
 })
-
-describe('picture proxy', () => {
-  it('only fetches from Wikimedia Commons', async () => {
-    restHandler = () => new Response('x')
-    for (const url of ['http://upload.wikimedia.org/a.png', 'https://evil.example/a.png', 'nope']) {
-      const res = await call(`/api/picture?url=${encodeURIComponent(url)}`)
-      expect(res.status).toBe(400)
-    }
-    expect(restCalls).toHaveLength(0)
-  })
-
-  it('streams an image through', async () => {
-    restHandler = () => new Response('png', { headers: { 'Content-Type': 'image/png' } })
-    const url =
-      'https://upload.wikimedia.org/wikipedia/commons/thumb/a/ab/Heart.svg/960px-Heart.svg.png'
-    const res = await call(`/api/picture?url=${encodeURIComponent(url)}`)
-    expect(res.status).toBe(200)
-    expect(res.headers.get('Content-Type')).toBe('image/png')
-    expect(await res.text()).toBe('png')
-    expect(restCalls[0]?.url.hostname).toBe('upload.wikimedia.org')
-  })
-
-  it('refuses what is not an image', async () => {
-    restHandler = () => new Response('<html>', { headers: { 'Content-Type': 'text/html' } })
-    const url = 'https://upload.wikimedia.org/x'
-    expect((await call(`/api/picture?url=${encodeURIComponent(url)}`)).status).toBe(502)
-  })
-})

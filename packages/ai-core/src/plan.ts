@@ -10,7 +10,7 @@ export type Plan = {
   status_line: string
 }
 
-const MODES: readonly string[] = ['write', 'explain', 'check', 'both', 'chat']
+const MODES: readonly string[] = ['write', 'explain', 'check', 'both']
 const SCOPES: readonly string[] = ['hint', 'next_step', 'full']
 
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')

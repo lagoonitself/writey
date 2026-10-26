@@ -1,26 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import {
-  agentMessages,
   type Block,
-  type ChatMessage,
   chatBody,
   chatEvents,
   decide,
   describeError,
-  diagramGuide,
   focusRegion,
   groupLines,
+  inkMode,
   messageText,
   type PageContext,
-  pageLook,
   parseModels,
   parsePlan,
   planMessages,
+  produceMessages,
+  produceSystem,
   routeIntent,
   type StreamEvent,
   sseData,
-  WRITEY_TOOLS,
-  withoutImages,
 } from '../src'
 
 const stream = (...chunks: string[]) =>
@@ -40,8 +37,6 @@ async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {
 describe('routeIntent', () => {
   it.each([
     ["Writey, what's next?", 'write', 'next_step'],
-    ["Hey, what's next?", 'write', 'next_step'],
-    ['explain the full adder circuit', 'explain', null],
     ['continue', 'write', 'next_step'],
     ['solve this', 'write', 'full'],
     ['show me the full solution', 'write', 'full'],
@@ -52,15 +47,11 @@ describe('routeIntent', () => {
     ['did I make a mistake', 'check', null],
     ['how do I start this one', 'explain', 'hint'],
     ['give me a hint', null, 'hint'],
-    ['just explain, please continue', 'chat', 'next_step'],
-    ["explain it, don't write anything", 'chat', null],
+    ['just explain, please continue', 'explain', 'next_step'],
     ['write it', 'write', null],
     ['draw a free body diagram', 'write', null],
     ['make a truth table for XOR', 'write', null],
     ['sketch the graph of sin x', 'write', null],
-    ['label the parts of this diagram', 'write', null],
-    ['circle my mistake', 'check', null],
-    ['where is the resistor in this circuit', 'explain', null],
     ['hmm', null, null],
   ])('%s → %s / %s', (text, mode, scope) => {
     expect(routeIntent(text)).toEqual({ mode, scope })
@@ -144,7 +135,7 @@ describe('streaming', () => {
           'data: {"choices":[{"delta":{"reasoning":"hmm"}}]}\n\n',
           'data: {"choices":[{"delta":{"content":"Hi "}}]}\n\n',
           'data: {"choices":[{"delta":{"content":"there"}}]}\n\n',
-          'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":0.001,"prompt_tokens_details":{"cached_tokens":8}}}\n\n',
+          'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"cost":0.001}}\n\n',
           'data: [DONE]\n\ndata: {"choices":[{"delta":{"content":"late"}}]}\n\n',
         ),
       ),
@@ -153,10 +144,7 @@ describe('streaming', () => {
       { type: 'reasoning', text: 'hmm' },
       { type: 'text', text: 'Hi ' },
       { type: 'text', text: 'there' },
-      {
-        type: 'usage',
-        usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.001, cached_tokens: 8 },
-      },
+      { type: 'usage', usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0.001 } },
     ])
   })
 
@@ -167,117 +155,8 @@ describe('streaming', () => {
     expect(events).toEqual([{ type: 'error', message: 'overloaded', status: 502 }])
   })
 
-  it('reports a reply cut off at the length limit, after the calls it finished', async () => {
-    const events = await collect(
-      chatEvents(
-        stream(
-          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"say","arguments":"{\\"text\\":\\"hi\\"}"}}]}}]}\n\n',
-          'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n',
-          'data: [DONE]\n\n',
-        ),
-      ),
-    )
-    expect(events.map((e) => e.type)).toEqual(['tool', 'error'])
-    expect(events[1]).toMatchObject({ code: 'length' })
-  })
-
-  it('reports a stream that drops before it finishes', async () => {
-    const events = await collect(
-      chatEvents(stream('data: {"choices":[{"delta":{"content":"Half"}}]}\n\n')),
-    )
-    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'interrupted' })
-    const ok = await collect(
-      chatEvents(
-        stream('data: {"choices":[{"delta":{"content":"A"},"finish_reason":"stop"}]}\n\n'),
-      ),
-    )
-    expect(ok).toEqual([{ type: 'text', text: 'A' }])
-  })
-
-  it('splits calls that all arrive at index 0, and never repeats made-up ids', async () => {
-    const twoCalls = () =>
-      stream(
-        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"say","arguments":"{}"}}]}}]}\n\n',
-        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"b","function":{"name":"new_page","arguments":"{}"}}]}}]}\n\n',
-        'data: [DONE]\n\n',
-      )
-    const events = await collect(chatEvents(twoCalls()))
-    expect(events.map((e) => (e.type === 'tool' ? e.call.name : e.type))).toEqual([
-      'say',
-      'new_page',
-    ])
-    const noIds = () =>
-      stream(
-        'data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"say","arguments":"{}"}}]}}]}\n\n',
-        'data: [DONE]\n\n',
-      )
-    const [a] = await collect(chatEvents(noIds()))
-    const [b] = await collect(chatEvents(noIds()))
-    expect(a?.type === 'tool' && b?.type === 'tool' && a.call.id !== b.call.id).toBe(true)
-  })
-
   it('reads non-streamed replies', () => {
     expect(messageText({ choices: [{ message: { content: '{"a":1}' } }] })).toBe('{"a":1}')
-  })
-
-  it('streams tool calls in pieces and hands reasoning back', async () => {
-    const events = await collect(
-      chatEvents(
-        stream(
-          'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":0,"text":"Look "}]}}]}\n\n',
-          'data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":0,"text":"first","signature":"s"}]}}]}\n\n',
-          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"point_at","arguments":"{\\"target\\":"}}]}}]}\n\n',
-          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"L2\\"}"}}]}}]}\n\n',
-          'data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"c2","function":{"name":"look_at_page"}}]}}]}\n\n',
-          'data: [DONE]\n\n',
-        ),
-      ),
-    )
-    expect(events).toEqual<StreamEvent[]>([
-      { type: 'tool', call: { id: 'c1', name: 'point_at', arguments: '{"target":"L2"}' } },
-      { type: 'tool', call: { id: 'c2', name: 'look_at_page', arguments: '{}' } },
-      {
-        type: 'thought',
-        item: { type: 'reasoning.text', index: 0, text: 'Look first', signature: 's' },
-      },
-    ])
-  })
-
-  it('sends tools, tool calls and results in Chat Completions format', () => {
-    const body = JSON.parse(
-      chatBody('openrouter', {
-        model: 'm',
-        maxTokens: 10,
-        stream: true,
-        tools: [{ name: 'say', description: 'd', parameters: { type: 'object' } }],
-        messages: [
-          {
-            role: 'assistant',
-            content: '',
-            toolCalls: [{ id: 'c1', name: 'say', arguments: '{"text":"hi"}' }],
-            reasoning: [{ type: 'reasoning.text', text: 'x' }],
-          },
-          { role: 'tool', toolCallId: 'c1', content: 'Said.' },
-        ],
-      }),
-    )
-    expect(body.tools).toEqual([
-      {
-        type: 'function',
-        function: { name: 'say', description: 'd', parameters: { type: 'object' } },
-      },
-    ])
-    expect(body.messages).toEqual([
-      {
-        role: 'assistant',
-        content: '',
-        tool_calls: [
-          { id: 'c1', type: 'function', function: { name: 'say', arguments: '{"text":"hi"}' } },
-        ],
-        reasoning_details: [{ type: 'reasoning.text', text: 'x' }],
-      },
-      { role: 'tool', tool_call_id: 'c1', content: 'Said.' },
-    ])
   })
 
   it('only sends reasoning effort to OpenRouter', () => {
@@ -332,71 +211,32 @@ describe('prompts', () => {
     expect(JSON.stringify(parts)).toContain('mode \\"write\\"')
   })
 
-  it('keeps only the last 10 turns of history', () => {
+  it('keeps only the last 10 turns of history for PRODUCE', () => {
     const turns = Array.from({ length: 14 }, (_, i) => ({
       role: i % 2 ? ('assistant' as const) : ('user' as const),
       text: `t${i}`,
     }))
-    const msgs = agentMessages('hint?', ctx, { mode: null, scope: 'hint' }, turns)
+    const plan = decide({ mode: null, scope: 'hint' }, null)
+    const msgs = produceMessages('hint?', ctx, plan, turns)
     expect(msgs).toHaveLength(1 + 10 + 1)
     expect(msgs[1]?.content).toBe('t4')
-    expect(JSON.stringify(msgs.at(-1)?.content)).toContain('hint only')
+    expect(String(msgs[0]?.content)).toContain('hint only')
   })
 
-  it('gives the model a pen as tools and lets it decide', () => {
-    const names = WRITEY_TOOLS.map((t) => t.name)
-    expect(names).toEqual([
-      'look_at_page',
-      'zoom',
-      'point_at',
-      'mark',
-      'write_math',
-      'write_text',
-      'draw_diagram',
-      'draw_table',
-      'find_picture',
-      'place_picture',
-      'label_parts',
-      'diagram_guide',
-      'erase',
-      'new_page',
-      'say',
-    ])
-    const [system] = agentMessages('find my mistake', ctx, { mode: 'check', scope: null }, [])
-    expect(String(system?.content)).toContain('You decide what to do')
-    // The system prompt is the same for every request (prompt cache); guides load on demand.
-    const [drawing] = agentMessages('draw a full adder', ctx, { mode: 'write', scope: null }, [])
-    const [spoken] = agentMessages('hi', ctx, { mode: null, scope: null }, [], true)
-    expect(drawing?.content).toBe(system?.content)
-    expect(spoken?.content).toBe(system?.content)
-    expect(String(system?.content)).not.toContain('"kind":"logic"')
-    expect(diagramGuide(['physics'])).toContain('"kind":"logic"')
-    expect(diagramGuide(['physics'])).toContain('"kind":"axes"')
-    expect(diagramGuide(['graphs'])).not.toContain('smiles')
-    expect(diagramGuide(['chemistry'])).toContain('smiles')
-    expect(diagramGuide(['pictures'])).toContain('find_picture')
-    const spokenAsk = agentMessages('hi', ctx, { mode: null, scope: null }, [], true).at(-1)
-    expect(JSON.stringify(spokenAsk?.content)).toContain('Call say early')
-  })
-
-  it('hands back only the newest picture of the page', () => {
-    const first = agentMessages('check this', ctx, { mode: 'check', scope: null }, [])
-    const images = (m: ChatMessage | undefined) =>
-      typeof m?.content === 'string'
-        ? 0
-        : (m?.content.filter((p) => p.type === 'image_url').length ?? 0)
-    expect(images(first.at(-1))).toBe(2)
-    expect(images(withoutImages(first).at(-1))).toBe(0)
-    const look = pageLook(ctx, ['L3'])
-    expect(images(look)).toBe(2)
-    expect(JSON.stringify(look.content)).toContain('your lines are L3')
+  it('asks for InkScript in the writing modes, Markdown when explaining', () => {
+    expect(produceSystem('write', 'next_step')).toContain('InkScript')
+    expect(produceSystem('check', 'next_step')).toContain('"type":"mark"')
+    expect(produceSystem('write', 'next_step')).toContain('"latex":"\\\\frac{d}{dx}')
+    expect(produceSystem('explain', 'next_step')).toContain('Markdown')
+    expect(inkMode('both')).toBe(true)
+    expect(inkMode('explain')).toBe(false)
   })
 
   it('passes Writey’s own ink and the spoken transcript', () => {
-    const msgs = agentMessages(
+    const msgs = produceMessages(
       'next',
       { ...ctx, aiInk: ['$$x=2$$'], transcript: 'so this is the chain rule' },
-      { mode: 'write', scope: null },
+      decide({ mode: 'write', scope: null }, null),
       [],
     )
     const text = JSON.stringify(msgs.at(-1)?.content)

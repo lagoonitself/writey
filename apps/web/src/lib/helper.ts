@@ -44,23 +44,6 @@ export function chatgptUsed(): boolean {
   }
 }
 
-const VOICE_USED_KEY = 'writey.voice.used'
-
-/** True once this browser has reached the Helper for voice or ChatGPT. */
-export function helperKnown(): boolean {
-  try {
-    return chatgptUsed() || localStorage.getItem(VOICE_USED_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-export function markHelperKnown(): void {
-  try {
-    localStorage.setItem(VOICE_USED_KEY, '1')
-  } catch {}
-}
-
 async function call(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers)
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
@@ -167,16 +150,6 @@ export const voiceStatus = () => json<VoiceStatus>('/voice/status')
 export const voicePrepare = (which: { stt?: boolean; tts?: boolean } = {}) =>
   json<VoiceStatus>('/voice/prepare', { method: 'POST', body: JSON.stringify(which) })
 
-/** A failed voice call, with the Helper's error code (e.g. `not_ready`). */
-async function failure(res: Response): Promise<HelperError> {
-  let code = `http_${res.status}`
-  const body = await res.text()
-  try {
-    code = (JSON.parse(body) as { error?: string }).error ?? code
-  } catch {}
-  return new HelperError(res.status, code, body)
-}
-
 /** One speech segment (16 kHz mono floats) to text. */
 export async function transcribe(audio: Float32Array, signal?: AbortSignal): Promise<string> {
   const pcm = new Int16Array(audio.length)
@@ -189,7 +162,14 @@ export async function transcribe(audio: Float32Array, signal?: AbortSignal): Pro
     body: pcm.buffer,
     signal,
   })
-  if (!res.ok) throw await failure(res)
+  if (!res.ok) {
+    let code = `http_${res.status}`
+    const body = await res.text()
+    try {
+      code = (JSON.parse(body) as { error?: string }).error ?? code
+    } catch {}
+    throw new HelperError(res.status, code, body)
+  }
   return ((await res.json()) as { text: string }).text
 }
 
@@ -200,6 +180,6 @@ export async function synthesize(
   signal?: AbortSignal,
 ): Promise<ArrayBuffer> {
   const res = await call('/tts', { method: 'POST', body: JSON.stringify({ text, voice }), signal })
-  if (!res.ok) throw await failure(res)
+  if (!res.ok) throw new HelperError(res.status, `http_${res.status}`, await res.text())
   return res.arrayBuffer()
 }

@@ -23,16 +23,6 @@ async function collect(it: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
 }
 
 describe('responsesBody', () => {
-  it('asks reasoning models to think, with a summary', () => {
-    const m: ChatMessage[] = [{ role: 'user', content: 'hi' }]
-    expect(JSON.parse(responsesBody('gpt-6', m, 'medium')).reasoning).toEqual({
-      effort: 'medium',
-      summary: 'auto',
-    })
-    expect(JSON.parse(responsesBody('gpt-4.1', m, 'medium')).reasoning).toBeUndefined()
-    expect(JSON.parse(responsesBody('gpt-6', m, 'none')).reasoning).toBeUndefined()
-  })
-
   it('moves system text to instructions and maps parts to Responses input', () => {
     const messages: ChatMessage[] = [
       { role: 'system', content: 'Be Writey.' },
@@ -66,73 +56,6 @@ describe('responsesBody', () => {
   })
 })
 
-describe('Responses tool calls', () => {
-  it('sends tools, hands reasoning back and maps calls and results', () => {
-    const body = JSON.parse(
-      responsesBody(
-        'gpt-5',
-        [
-          { role: 'system', content: 'sys' },
-          { role: 'user', content: 'check it' },
-          {
-            role: 'assistant',
-            content: '',
-            reasoning: [{ type: 'reasoning', encrypted_content: 'e' }],
-            toolCalls: [{ id: 'call_1', name: 'look_at_page', arguments: '{}' }],
-          },
-          { role: 'tool', toolCallId: 'call_1', content: 'Here is the page.' },
-        ],
-        'high',
-        [{ name: 'look_at_page', description: 'd', parameters: { type: 'object' } }],
-      ),
-    )
-    expect(body.tools).toEqual([
-      // Not strict: strict mode drops every field a schema doesn't list (diagram items).
-      {
-        type: 'function',
-        name: 'look_at_page',
-        description: 'd',
-        parameters: { type: 'object' },
-        strict: false,
-      },
-    ])
-    expect(body.include).toEqual(['reasoning.encrypted_content'])
-    expect(body.input.slice(1)).toEqual([
-      { type: 'reasoning', encrypted_content: 'e' },
-      { type: 'function_call', call_id: 'call_1', name: 'look_at_page', arguments: '{}' },
-      { type: 'function_call_output', call_id: 'call_1', output: 'Here is the page.' },
-    ])
-  })
-
-  it('yields finished tool calls and reasoning items', async () => {
-    const events = await collect(
-      responsesEvents(
-        stream(
-          {
-            type: 'response.output_item.done',
-            item: { type: 'reasoning', id: 'rs_1', encrypted_content: 'e', summary: [] },
-          },
-          {
-            type: 'response.output_item.done',
-            item: {
-              type: 'function_call',
-              id: 'fc_1',
-              call_id: 'call_1',
-              name: 'mark',
-              arguments: '{"kind":"tick"}',
-            },
-          },
-          { type: 'response.completed', response: {} },
-        ),
-      ),
-    )
-    expect(events).toEqual([
-      { type: 'thought', item: { type: 'reasoning', encrypted_content: 'e', summary: [] } },
-      { type: 'tool', call: { id: 'call_1', name: 'mark', arguments: '{"kind":"tick"}' } },
-    ])
-  })
-})
-
 describe('responsesEvents', () => {
   it('yields text and usage, ending at response.completed', async () => {
     const events = await collect(
@@ -144,13 +67,7 @@ describe('responsesEvents', () => {
           { type: 'response.output_text.delta', delta: 'there' },
           {
             type: 'response.completed',
-            response: {
-              usage: {
-                input_tokens: 50,
-                output_tokens: 5,
-                input_tokens_details: { cached_tokens: 40 },
-              },
-            },
+            response: { usage: { input_tokens: 50, output_tokens: 5 } },
           },
         ),
       ),
@@ -159,7 +76,7 @@ describe('responsesEvents', () => {
       { type: 'reasoning', text: 'hmm' },
       { type: 'text', text: 'Hi ' },
       { type: 'text', text: 'there' },
-      { type: 'usage', usage: { prompt_tokens: 50, completion_tokens: 5, cached_tokens: 40 } },
+      { type: 'usage', usage: { prompt_tokens: 50, completion_tokens: 5 } },
     ])
   })
 

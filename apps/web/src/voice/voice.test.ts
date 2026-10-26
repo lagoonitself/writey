@@ -3,25 +3,29 @@ import { sayMath, sentences, speakable } from './speech'
 import { addressed, voiceCommand } from './trigger'
 
 describe('addressed', () => {
-  it('wakes on "Hey" at the start', () => {
-    expect(addressed("Hey, what's next?")).toEqual({ request: "what's next?" })
-    expect(addressed('hey Writey solve this')).toEqual({ request: 'solve this' })
-    expect(addressed('Hey Righty, is this right')).toEqual({ request: 'is this right' })
-    expect(addressed('ok hey. explain the full adder')).toEqual({
-      request: 'explain the full adder',
+  it('hears the name at the start, after fillers, or at the end', () => {
+    expect(addressed("Writey, what's next?")).toEqual({ kind: 'strong', request: "what's next?" })
+    expect(addressed('Hey Righty solve this')).toEqual({ kind: 'strong', request: 'solve this' })
+    expect(addressed('ok so wrighty. is this right')).toEqual({
+      kind: 'strong',
+      request: 'is this right',
     })
-    expect(addressed('Hey.')).toEqual({ request: '' })
+    expect(addressed("What's next, Writey?")).toEqual({ kind: 'strong', request: "What's next" })
+    expect(addressed("Riety, what's the next step?")?.kind).toBe('strong')
   })
 
-  it('still answers to the name', () => {
-    expect(addressed("Writey, what's next?")).toEqual({ request: "what's next?" })
+  it('asks before acting on a sound-alike', () => {
+    expect(addressed('Ready, what is the next step')).toEqual({
+      kind: 'weak',
+      request: 'what is the next step',
+    })
+    expect(addressed('Right he, check this')).toEqual({ kind: 'weak', request: 'check this' })
   })
 
   it('ignores everything else', () => {
     expect(addressed('so the derivative of x squared is 2x')).toBeNull()
     expect(addressed('')).toBeNull()
     expect(addressed('write it down')).toBeNull()
-    expect(addressed('they said hey to me')).toBeNull()
   })
 })
 

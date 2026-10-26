@@ -49,8 +49,8 @@ function voiceLine(v: Voice): { label: string; hint: string } {
       return { label: 'Got it…', hint: '' }
     case 'listening':
       return v.replying
-        ? { label: 'Your turn', hint: 'Just reply, no need to say “Hey”' }
-        : { label: 'Listening', hint: `Say “Hey, …” or hold ${PTT_LABEL}` }
+        ? { label: 'Your turn', hint: 'Just reply, no need to say “Writey”' }
+        : { label: 'Listening', hint: `Say “Writey, …” or hold ${PTT_LABEL}` }
     case 'paused':
       return { label: 'Mic paused', hint: 'Click the mic to listen again' }
     default:
@@ -135,20 +135,27 @@ export function AskBar(p: Props) {
           </div>
         </div>
       )}
-      {voice.speechIssue && voice.state.kind !== 'error' && (
-        <div className="ask-pop" role="status">
-          <p>{voice.speechIssue}</p>
+      {voice.confirm !== null && (
+        <div className="ask-pop" role="dialog" aria-label="Did you mean Writey?">
+          <p>
+            Did you mean Writey?
+            {voice.confirm && <span className="ask-quote">“{voice.confirm}”</span>}
+          </p>
           <div className="ask-pop-actions">
-            <button type="button" className="primary" onClick={p.onSettings}>
-              Voice settings
+            <button
+              type="button"
+              className="primary"
+              onClick={() => voice.ask(voice.confirm || "What's next?")}
+            >
+              Ask Writey
             </button>
-            <button type="button" className="ghost" onClick={voice.dismissSpeechIssue}>
-              Close
+            <button type="button" className="ghost" onClick={voice.dismissConfirm}>
+              No
             </button>
           </div>
         </div>
       )}
-      {voice.heard && voice.state.kind !== 'error' && (
+      {voice.heard && voice.confirm === null && voice.state.kind !== 'error' && (
         <p className="ask-heard" aria-live="polite">
           “{voice.heard}”
         </p>
@@ -201,7 +208,7 @@ export function AskBar(p: Props) {
             !p.canAsk
               ? 'Open a page to ask Writey'
               : listening
-                ? 'Say “Hey, …” or type'
+                ? 'Say “Writey, …” or type'
                 : 'Ask Writey anything about this page…'
           }
           disabled={!p.canAsk}

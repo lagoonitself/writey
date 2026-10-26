@@ -243,24 +243,6 @@ out['↔'] = compose(arrowR.w, arrowR.s, arrowL.s)
   out['⇒'] = { w: arrowR.w, s: [...shafts(x0, x1 - 30), head.map(em)] }
   out['⇐'] = { w: arrowR.w, s: [...shafts(x0 + 30, x1), headL.map(em)] }
   out['⇔'] = { w: arrowR.w, s: [...shafts(x0 + 30, x1 - 30), head.map(em), headL.map(em)] }
-  // Equilibrium: a harpoon each way, the top one pointing right.
-  const g = 70
-  out['⇌'] = {
-    w: arrowR.w,
-    s: [
-      [em(x0), em(midY - g), em(x1), em(midY - g), em(x1 - 120), em(midY - g - 110)],
-      [em(x1), em(midY + g), em(x0), em(midY + g), em(x0 + 120), em(midY + g + 110)],
-    ],
-  }
-  out['⇄'] = {
-    w: arrowR.w,
-    s: [
-      [em(x0), em(midY - g), em(x1), em(midY - g)],
-      [em(x1 - 100), em(midY - g - 90), em(x1), em(midY - g), em(x1 - 100), em(midY - g + 90)],
-      [em(x1), em(midY + g), em(x0), em(midY + g)],
-      [em(x0 + 100), em(midY + g - 90), em(x0), em(midY + g), em(x0 + 100), em(midY + g + 90)],
-    ],
-  }
 }
 {
   const A = fromHershey('futural', 'A')

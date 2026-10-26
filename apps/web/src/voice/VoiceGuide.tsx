@@ -4,17 +4,17 @@ const GROUPS: { title: string; where: string; say: string[] }[] = [
   {
     title: 'Work it out on the page',
     where: 'Writey writes the next step in handwriting',
-    say: ["Hey, what's next?", 'Hey, solve this', 'Hey, continue'],
+    say: ["Writey, what's next?", 'Writey, solve this', 'Writey, continue'],
   },
   {
     title: 'Understand it',
-    where: 'Writey sketches it on the page, explains beside it, and out loud',
-    say: ['Hey, why does this work?', 'Hey, explain the full adder', 'Hey, give me a hint'],
+    where: 'Writey explains beside the page, and out loud',
+    say: ['Writey, why does this work?', "Writey, I don't get this step", 'Writey, give me a hint'],
   },
   {
     title: 'Check your work',
     where: 'Red marks on the page, and what went wrong',
-    say: ['Hey, is this right?', 'Hey, find my mistake'],
+    say: ['Writey, is this right?', 'Writey, find my mistake'],
   },
 ]
 
@@ -38,7 +38,7 @@ export function VoiceGuide({
           <div className="voice-guide-says">
             {g.say.map((s) =>
               onTry ? (
-                <button type="button" key={s} onClick={() => onTry(s.replace(/^Hey, /, ''))}>
+                <button type="button" key={s} onClick={() => onTry(s.replace(/^Writey, /, ''))}>
                   “{s}”
                 </button>
               ) : (
@@ -59,13 +59,12 @@ export function VoiceGuide({
       </section>
       {!compact && (
         <ul className="voice-guide-tips">
-          <li>After Writey answers, just reply. You don’t need to say “Hey” again.</li>
+          <li>After Writey answers, just reply. You don’t need to say “Writey” again.</li>
           <li>
             Hold <kbd>{PTT_LABEL}</kbd> to talk without the wake word (map a pen button to it).
           </li>
           <li>Lasso part of the page to point Writey at it.</li>
           <li>Talk over Writey to interrupt it.</li>
-          <li>Ask something new and Writey keeps what it wrote, then carries on below it.</li>
         </ul>
       )}
     </div>

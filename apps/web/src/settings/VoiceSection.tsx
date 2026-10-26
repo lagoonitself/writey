@@ -189,7 +189,7 @@ export function VoiceSection() {
                 </>
               )}
             </Step>
-            <Step n={3} title="Click the mic under the page and say “Hey, …”" done={false} />
+            <Step n={3} title="Click the mic under the page and say “Writey, …”" done={false} />
           </ol>
         )}
       </section>
