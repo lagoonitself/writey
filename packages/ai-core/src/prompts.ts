@@ -30,6 +30,9 @@ export type Turn = { role: 'user' | 'assistant'; text: string }
 /** Turns sent with each request (docs §5.8). */
 export const HISTORY_TURNS = 10
 
+/** Rounds of act → look again in one ink answer (HANDOFF D46). */
+export const MAX_ROUNDS = 4
+
 const SEEING = `You are looking at a student's handwritten notebook page.
 - Image 1 is the area they are working on. Each line of their writing has a magenta tag (L1, L2, …) on its left. The tags are not part of their work; use them to refer to lines.
 - Image 2 is the whole page, small, with that area outlined in magenta.
@@ -66,8 +69,11 @@ const INK_GUIDE: Record<Exclude<Mode, 'chat'>, string> = {
   explain: `Teach it like a tutor sitting beside the student with a pen and their notebook. On the page goes the rough version a tutor scribbles while talking: a short heading line, the key idea or formula in a few short lines (about six at most), and a drawing whenever the topic has anything to see (circuits and logic gates, forces, graphs, geometry, structures, processes, comparisons as a table). Draw it with the diagram and table blocks; never describe a picture in words when you can draw it. If it is about something already on the page (their work, a printed figure or circuit), mark and label it right there instead of redrawing it. Use the page to show, the chat to tell.`,
   write:
     'Write what comes next on the page, as the student would write it: one step per line, with "why" on each. The chat block teaches the step like a tutor sitting next to them: what the move is, why it is the right move here (what in the problem tells you to do it), the rule or fact it rests on, and one thing to watch out for.',
-  check:
-    'Check their lines in order. Tick the lines that are right (only the important ones). At the first mistake, circle or cross that line with a short note naming the error, then write the corrected line as math with "after" set to that line. Do not solve further. The chat block says what went wrong, why it is wrong (the rule that was broken), and how to spot it next time. If everything is right, say so and say what they did well.',
+  check: `Mark their work like a teacher with a red pen, in rounds, so the student watches you work through it:
+  Round 1, read: go through their lines in order with one look block per line (its note says what you are checking, e.g. "checking the expansion"). Tick the important lines that are right. At the first mistake, circle or cross that exact spot (the line, or a box round the wrong term) with a short note naming the error. End the round with next.
+  Round 2, fix: below their last line, write the corrected line, then solve it correctly from there to the final answer, one step per line with "why" on each, and box the answer. Never repeat their mistake. End with next.
+  Round 3, verify: look at your boxed answer, check it (substitute back, units, a special case) and tick it if right; if it is wrong, cross it and write the fix. Then the chat block and done.
+  If everything is right in round 1: tick the final answer, say what they did well, and finish with the chat block and done. The chat block says what went wrong, why it is wrong (the rule that was broken), and how to spot it next time.`,
   both: 'Write the next step(s) on the page. The chat block teaches the idea behind them: why this approach, the key rule, and what to watch out for.',
 }
 
@@ -86,8 +92,12 @@ Put what you say first, as {"type":"say","text":"…"}: two to five spoken sente
 /** The explanation beside the page when Writey teaches with a pen. */
 const EXPLAIN_CHAT = `The chat block is the full explanation, in Markdown, and it comes after the page lines. Teach it properly: the intuition first in plain words; then numbered steps tied to what you drew and wrote ("the XOR gate on the left", "the second line"); a tiny example or sanity check where it helps; the usual trap; a one-line takeaway; and a short question that checks they followed. Match the length to the question. It must not copy the page line by line. Write $…$ for math, and \\n for line breaks inside the JSON string.`
 
-const EXPLAIN_HINT =
-  'Hint only: sketch or write just enough on the page to point the way (a "Hint:" line, or a small diagram), and keep the chat block to a nudge or a guiding question. Do not give the answer.'
+const HINT_ONLY = {
+  explain:
+    'Hint only: sketch or write just enough on the page to point the way (a "Hint:" line, or a small diagram), and keep the chat block to a nudge or a guiding question. Do not give the answer.',
+  check:
+    'Hint only: after marking the mistake, write one "Hint:" line below their work instead of the corrected solution, and skip the fix and verify rounds.',
+}
 
 const SAY_CHAT = `${SPEAKING}
 Begin your reply with what you say out loud, wrapped in <say>…</say>: one to four spoken sentences that answer them. Then, after </say>, the full written explanation in Markdown, as you would write it without speech (the spoken part is a summary, the written part teaches it properly). If they were just chatting or asked something small, the <say> part alone is enough.`
@@ -96,7 +106,7 @@ const INK_SCOPE: Record<Scope, string> = {
   hint: 'Hint only: write one text line starting with "Hint:" that nudges them. Do not write the step or the answer.',
   next_step:
     'Write exactly one step: the one after their last line (it may take one or two lines).',
-  full: 'Write the complete solution through to the final answer, and box the final answer.',
+  full: 'Write the complete solution through to the final answer, and box the final answer. Then, in a last round, look at your answer, check it (substitute back, units, a special case) and tick it, or cross it and fix it.',
 }
 
 /** Diagrams and graphs (docs §5.6): a spec Writey draws by hand, never pixels or SVG. */
@@ -141,7 +151,8 @@ ${chatFirst ? '- Start with the one chat block, then write the page lines.' : '-
 - In JSON, double every backslash ("\\frac", "\\sqrt"). Use common commands only: \\frac \\sqrt ^ _ \\int \\sum \\lim \\vec \\cdot \\times \\left( \\right) \\text{} and Greek letters. Units go in \\text{}, e.g. 5\\,\\text{m/s}.
 - Add "box": true to the math line with the final answer.
 - Never copy out lines the student already wrote; write only what is new.
-- End with a done block.
+- look: {"type":"look","target":"L2","note":"checking the expansion"} moves your pen to a line (or a spot, with "box"/"at" as for marks) and rests it there while you read it, so the student sees what you are looking at. Nothing is written. Use it before you judge or mark something.
+- Work in rounds, like a computer-use agent: act on the page, then look at the result. End a round with {"type":"next","plan":"what you will do next"}: Writey writes what you sent, shows you the page again with your ink on it (violet, with new line tags) and you carry on. End the last round with the chat block and {"type":"done"}. At most ${MAX_ROUNDS} rounds. One round is enough for a hint, a single step or a short sketch; use more when seeing your own work helps (marking, long solutions, checking your answer).
 - table: {"type":"table","header":["A","B","A AND B"],"rows":[["0","0","0"],["0","1","0"],["1","0","0"],["1","1","1"]],"align"?:["l","c"]} draws a ruled table. Use it for truth tables, observation tables, comparisons and anything with rows and columns; never write a table as lines of text. Cells may hold $math$. Keep cells short.
 - Point precisely, like a pen on a screenshot. Any mark can sit on a spot instead of a line: "box":[x0,y0,x1,y1] (a region) or "at":[x,y] (a point), in pixels of image 1, or of image 2 (the whole page) with "img":2. Image sizes are given below. Examples:
   {"type":"mark","kind":"circle","box":[412,180,520,236],"img":2,"note":"this resistor"}
@@ -158,7 +169,12 @@ ${PHYSICS}
 export function produceSystem(mode: Mode, scope: Scope, spoken = false): string {
   if (inkMode(mode)) {
     const explain = mode === 'explain'
-    const scopeLine = explain ? (scope === 'hint' ? EXPLAIN_HINT : '') : INK_SCOPE[scope]
+    const scopeLine =
+      mode === 'explain' || mode === 'check'
+        ? scope === 'hint'
+          ? HINT_ONLY[mode]
+          : ''
+        : INK_SCOPE[scope]
     const say = explain ? SAY_EXPLAIN : SAY_INK
     return `You are Writey, a friendly tutor who writes and draws by hand in the student's notebook, and explains beside it.
 ${SEEING}
@@ -250,6 +266,56 @@ export function planMessages(
             recent && `Recent conversation:\n${recent}`,
             `The student said: "${utterance}"`,
             ...hints,
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+        },
+      ],
+    },
+  ]
+}
+
+/** Drops the screenshots from earlier messages; only the newest page image matters. */
+const withoutImages = (messages: readonly ChatMessage[]): ChatMessage[] =>
+  messages.map((m) =>
+    typeof m.content === 'string' || m.content.every((p) => p.type === 'text')
+      ? m
+      : {
+          ...m,
+          content: [
+            { type: 'text', text: '(Earlier screenshots of the page, now out of date.)' },
+            ...m.content.filter((p) => p.type === 'text'),
+          ],
+        },
+  )
+
+/**
+ * The next round of an ink answer: what the model sent so far, then the page as it is now,
+ * with its own ink on it, like the screenshot a computer-use agent gets after acting.
+ */
+export function roundMessages(
+  messages: readonly ChatMessage[],
+  reply: string,
+  ctx: PageContext,
+  o: { round: number; plan?: string; yours: readonly string[] },
+): ChatMessage[] {
+  const last = o.round >= MAX_ROUNDS
+  return [
+    ...withoutImages(messages),
+    { role: 'assistant', content: reply },
+    {
+      role: 'user',
+      content: [
+        ...images(ctx),
+        {
+          type: 'text',
+          text: [
+            `Round ${o.round} of at most ${MAX_ROUNDS}. This is the page now. What you wrote so far is on it in violet (the student is watching it being written), and the line tags were renumbered${o.yours.length ? `: your lines are ${o.yours.join(', ')}` : ''}.`,
+            pageText(ctx),
+            o.plan && `Your plan for this round: ${o.plan}`,
+            last
+              ? 'This is the last round: finish, then the chat block and done.'
+              : 'Carry on in the same format. Do not rewrite what is already there. End with next if there is more to do, else the chat block and done.',
           ]
             .filter(Boolean)
             .join('\n\n'),

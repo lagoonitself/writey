@@ -223,6 +223,7 @@ export default function ChatPanel(p: Props) {
           spoken: p.voice.speaks(),
           nextPage: (after) => p.addPageAfter(after.id),
           pageNumber: (pg) => p.pageNumber(pg.id),
+          lookAgain: (pg) => p.handle(pg.id)?.snapshot(true) ?? null,
           onUpdate(u) {
             if (u.type === 'status') state = { ...state, status: u.text }
             else if (u.type === 'seen') state = { ...state, seen: u.image }
@@ -250,6 +251,9 @@ export default function ChatPanel(p: Props) {
               return
             } else if (u.type === 'ink') {
               ghosts.get(u.page.id)?.ghostAdd(u.written)
+              return
+            } else if (u.type === 'look') {
+              ghosts.get(u.page.id)?.ghostLook(u.look)
               return
             } else return
             setLive(state)

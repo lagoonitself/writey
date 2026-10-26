@@ -272,6 +272,25 @@ describe('InkWriter', () => {
     expect(plain.write({ type: 'mark', kind: 'circle', pin: { img: 2, at: [1, 1] } })).toBeNull()
   })
 
+  it('looks at a line before it writes, and rounds end with next', () => {
+    const blocks = parseInkScript(
+      '{"type":"look","target":"l1","note":"checking the sign"}\n{"type":"next","plan":"fix L1"}\n{"type":"look"}',
+    )
+    expect(blocks).toEqual([
+      { type: 'look', target: 'L1', pin: undefined, note: 'checking the sign' },
+      { type: 'next', plan: 'fix L1' },
+    ])
+    const w = new InkWriter(env, { size: 20, color: '#53c', markColor: '#d22', seed: 1 })
+    const look = w.look(blocks[0] as Extract<InkBlock, { type: 'look' }>)
+    expect(look).toMatchObject({ x: 160, rect: { x: 60, y: 100 }, at: 0 })
+    expect(look?.y).toBeGreaterThan(124)
+    // The pen reaches the line before it writes there.
+    const out = w.write({ type: 'mark', kind: 'cross', target: 'L1' })
+    if (!out || 'noRoom' in out) throw new Error('expected a mark')
+    expect(out.strokes[0]?.at).toBeGreaterThan((look?.at ?? 0) + (look?.dur ?? 0))
+    expect(w.look({ type: 'look', target: 'L7' })).toBeNull()
+  })
+
   it('matches the student’s writing size', () => {
     expect(sizeFromLines([])).toBe(22)
     expect(sizeFromLines([20, 22, 24])).toBeCloseTo(22 * 1.15)

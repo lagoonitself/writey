@@ -9,6 +9,7 @@ import {
   type Effort,
   type HelpError,
   inkMode,
+  MAX_ROUNDS,
   messageText,
   type Plan,
   parsePlan,
@@ -16,6 +17,7 @@ import {
   produceMessages,
   responsesBody,
   responsesEvents,
+  roundMessages,
   routeIntent,
   SaySplitter,
   SentenceBuffer,
@@ -27,6 +29,7 @@ import {
   type InkBlock,
   InkScriptParser,
   InkWriter,
+  type Look,
   sizeFromLines,
   type Written,
 } from '@writey/inkscript'
@@ -39,7 +42,8 @@ import { type Capture, capturePage } from './capture'
 // The help engine (docs §5): capture → PLAN (fast, JSON) → PRODUCE (streamed).
 // "chat" answers stream into the chat as Markdown; every other mode streams InkScript, which
 // is written onto the page as a ghost preview, block by block ("explain" sketches on the page
-// and puts the full explanation beside it, like a tutor with a pen).
+// and puts the full explanation beside it, like a tutor with a pen). Ink answers run in rounds:
+// the model acts, sees the page again with its ink on it, and carries on (HANDOFF D46).
 // When Writey is talking (spoken replies), each answer also opens with what it says out loud,
 // handed out sentence by sentence so speech starts while the rest is still coming.
 
@@ -58,6 +62,8 @@ export type HelpUpdate =
   /** Ink is about to be written on this page: it opens a preview. */
   | { type: 'inkStart'; page: PageRow }
   | { type: 'ink'; page: PageRow; written: Written }
+  /** Writey's pen goes to a spot to read it. */
+  | { type: 'look'; page: PageRow; look: Look }
 
 export type HelpResult = {
   text: string
@@ -181,6 +187,8 @@ export async function askWritey(opts: {
   /** A blank page after this one, for ink that doesn't fit. Null if none can be made. */
   nextPage(after: PageRow): Promise<PageRow | null>
   pageNumber(page: PageRow): number
+  /** The page as it is now, with Writey's preview on it, for the next round. */
+  lookAgain(page: PageRow): PageSnapshot | null
 }): Promise<HelpResult> {
   const { utterance, settings, turns, signal, onUpdate } = opts
   const transport =
@@ -210,7 +218,10 @@ export async function askWritey(opts: {
   const spoken = Boolean(opts.spoken)
   const produce = produceMessages(utterance, ctx, plan, turns, spoken)
   if (inkMode(plan.mode)) {
-    const ink = await writeInk(transport.stream(produce, effort), {
+    const ink = await writeInk(produce, {
+      stream: (messages) => transport.stream(messages, effort),
+      lookAgain: opts.lookAgain,
+      signal,
       page: opts.page,
       capture,
       target: plan.target_line,
@@ -282,7 +293,7 @@ function blockMarkdown(b: InkBlock): string {
     case 'text':
       return `${b.text}${why}`
     case 'mark':
-      return `**${b.target}** (${b.kind})${b.note ? `: ${b.note}` : ''}`
+      return `**${b.target ?? 'spot'}** (${b.kind})${b.note ? `: ${b.note}` : ''}`
     case 'diagram':
       return `*Diagram${b.title ? `: ${b.title}` : ''}*${why}`
     case 'table': {
@@ -302,14 +313,24 @@ function blockMarkdown(b: InkBlock): string {
   }
 }
 
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+
 const list = (lines: readonly string[]) => lines.map((l, i) => `${i + 1}. ${l}`).join('\n')
 
 const pagesLabel = (numbers: readonly number[]) =>
   numbers.length > 1 ? `pages ${numbers[0]}–${numbers.at(-1)}` : `page ${numbers[0] ?? ''}`.trim()
 
+/**
+ * Writes an ink answer in rounds, like a computer-use agent: the model acts on the page
+ * (looks, marks, writes), ends the round with `next`, gets the page back with its ink on it,
+ * and carries on until `done` (HANDOFF D46).
+ */
 async function writeInk(
-  events: AsyncIterable<StreamEvent>,
+  first: ChatMessage[],
   o: {
+    stream(messages: ChatMessage[]): AsyncIterable<StreamEvent>
+    lookAgain(page: PageRow): PageSnapshot | null
+    signal: AbortSignal
     page: PageRow
     capture: Capture
     target: string | null
@@ -319,7 +340,8 @@ async function writeInk(
     failure(ev: Extract<StreamEvent, { type: 'error' }>): HelpError
   },
 ): Promise<{ text: string; written: Written[]; usage: Usage | undefined; said?: string }> {
-  const { capture, onUpdate } = o
+  const { onUpdate } = o
+  let capture = o.capture
   const size = sizeFromLines(capture.lines.map((l) => l.rect.h))
   const seed = Math.floor(Math.random() * 2 ** 31)
   const style = { size, color: AI_INK, markColor: MARK_INK, seed }
@@ -335,10 +357,14 @@ async function writeInk(
     style,
   )
   let onThisPage = 0
+  /** Pages with a preview open (it opens on the first look or line). */
+  const started = new Set<string>()
   const pages = [page]
   /** Pages that got ink, in order. */
   const inked: PageRow[] = []
-  const parser = new InkScriptParser()
+  let parser = new InkScriptParser()
+  let next: { plan?: string } | null = null
+  const prose: string[] = []
   const written: Written[] = []
   const onPage: string[] = []
   const unwritten: string[] = []
@@ -372,9 +398,22 @@ async function writeInk(
     return true
   }
 
+  const open = () => {
+    if (started.has(page.id)) return
+    started.add(page.id)
+    onUpdate({ type: 'inkStart', page })
+  }
+
   const take = async (b: InkBlock) => {
     if (b.type === 'status') onUpdate({ type: 'status', text: b.text })
-    else if (b.type === 'say') {
+    else if (b.type === 'next') next = { plan: b.plan }
+    else if (b.type === 'look') {
+      const look = writer.look(b)
+      if (!look) return
+      open()
+      onUpdate({ type: 'look', page, look })
+      if (b.note) onUpdate({ type: 'status', text: `${capitalize(b.note)}…` })
+    } else if (b.type === 'say') {
       said.push(b.text)
       const buf = new SentenceBuffer()
       for (const s of [...buf.push(b.text), ...buf.flush()]) onUpdate({ type: 'say', text: s })
@@ -400,7 +439,7 @@ async function writeInk(
       }
       if (!onThisPage) {
         inked.push(page)
-        onUpdate({ type: 'inkStart', page })
+        open()
         onUpdate({ type: 'status', text: 'Writing on your page…' })
       }
       onThisPage++
@@ -411,13 +450,49 @@ async function writeInk(
     }
   }
 
-  for await (const ev of events) {
-    if (ev.type === 'text') for (const b of parser.push(ev.text)) await take(b)
-    else if (ev.type === 'reasoning' && !thinking && !written.length) {
-      thinking = true
-      onUpdate({ type: 'thinking' })
-    } else if (ev.type === 'usage') usage = addUsage(usage, ev.usage)
-    else if (ev.type === 'error') throw new HelpFailure(o.failure(ev))
+  let messages = first
+  for (let round = 1; ; round++) {
+    let reply = ''
+    for await (const ev of o.stream(messages)) {
+      if (ev.type === 'text') {
+        reply += ev.text
+        for (const b of parser.push(ev.text)) await take(b)
+      } else if (ev.type === 'reasoning' && !thinking && !written.length) {
+        thinking = true
+        onUpdate({ type: 'thinking' })
+      } else if (ev.type === 'usage') usage = addUsage(usage, ev.usage)
+      else if (ev.type === 'error') throw new HelpFailure(o.failure(ev))
+    }
+    if (parser.leftover()) prose.push(parser.leftover())
+    // `take` sets it while the stream runs.
+    const plan = next as { plan?: string } | null
+    next = null
+    if (!plan || round >= MAX_ROUNDS || unwritten.length || o.signal.aborted) break
+    // Look at the page again, with this round's ink on it, and carry on.
+    onUpdate({ type: 'status', text: plan.plan ? `${capitalize(plan.plan)}…` : 'Looking again…' })
+    const snap = o.lookAgain(page)
+    if (!snap) break
+    capture = await capturePage(page, snap)
+    const mine = new Set(written.flatMap((w) => w.strokes.map((s) => s.stroke.id)))
+    const yours = capture.lines.filter((l) => l.ids.some((id) => mine.has(id)))
+    const time = writer.time
+    writer = new InkWriter(
+      {
+        page: { width: page.width, height: page.height },
+        lines: capture.lines,
+        obstacles: capture.obstacles,
+        target: yours.at(-1)?.label ?? capture.lines.at(-1)?.label ?? null,
+        images: capture.images,
+      },
+      { ...style, seed: seed + round },
+    )
+    writer.time = time
+    parser = new InkScriptParser()
+    messages = roundMessages(messages, reply, capture.ctx, {
+      round: round + 1,
+      plan: plan.plan,
+      yours: yours.map((l) => l.label),
+    })
   }
 
   // The chat is the explanation. A copy of the page is kept for the model's history, but
@@ -448,7 +523,7 @@ async function writeInk(
     parts.push(`**This didn't fit on the page**, so here's the rest:`, list(unwritten))
   }
   // A model that ignored the format: show what it said rather than nothing.
-  if (!parts.length && parser.leftover()) parts.push(parser.leftover())
+  if (!parts.length && prose.length) parts.push(prose.join('\n\n'))
   if (!parts.length && !spoken) {
     throw new HelpFailure({ message: 'The model sent an empty reply. Try again.' })
   }

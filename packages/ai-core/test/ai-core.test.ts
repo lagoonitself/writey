@@ -15,6 +15,7 @@ import {
   planMessages,
   produceMessages,
   produceSystem,
+  roundMessages,
   routeIntent,
   type StreamEvent,
   sseData,
@@ -239,6 +240,33 @@ describe('prompts', () => {
     expect(inkMode('both')).toBe(true)
     expect(inkMode('explain')).toBe(true)
     expect(inkMode('chat')).toBe(false)
+  })
+
+  it('works in rounds: the next round sees only the new page image', () => {
+    expect(produceSystem('check', 'next_step')).toMatch(/Round 2, fix/)
+    expect(produceSystem('write', 'full')).toContain('"type":"next"')
+    const first = produceMessages(
+      'find my mistake',
+      ctx,
+      decide({ mode: 'check', scope: null }, null),
+      [],
+    )
+    const msgs = roundMessages(first, '{"type":"next","plan":"fix L2"}', ctx, {
+      round: 2,
+      plan: 'fix L2',
+      yours: ['L3'],
+    })
+    expect(msgs).toHaveLength(first.length + 2)
+    expect(msgs.at(-2)).toEqual({ role: 'assistant', content: '{"type":"next","plan":"fix L2"}' })
+    const images = (m: (typeof msgs)[number] | undefined) =>
+      typeof m?.content === 'string'
+        ? 0
+        : (m?.content.filter((p) => p.type === 'image_url').length ?? 0)
+    expect(images(msgs.at(-3))).toBe(0)
+    expect(images(msgs.at(-1))).toBe(2)
+    expect(JSON.stringify(msgs.at(-1)?.content)).toContain('your lines are L3')
+    const last = roundMessages(first, '', ctx, { round: 4, yours: [] })
+    expect(JSON.stringify(last.at(-1)?.content)).toContain('last round')
   })
 
   it('passes Writey’s own ink and the spoken transcript', () => {
