@@ -27,8 +27,9 @@ const MODE_RULES: [RegExp, Mode][] = [
     /\b(check|is (this|that|it|my \w+) (right|correct|ok)|mistakes?|wrong|error|did i (get|do) (it|this|that) right)\b/,
     'check',
   ],
+  [/\b(label|annotate|mark|circle|highlight|underline)\b/, 'write'],
   [
-    /\b(why|how (does|do|is|are|did)|explain|don'?t (get|understand)|not sure (what|why|how)|what (is|are|does|do)|meaning of|confused)\b/,
+    /\b(why|how (does|do|is|are|did)|explain|where (is|are|does|do)|show me where|point (out|to)|which (part|one)|don'?t (get|understand)|not sure (what|why|how)|what (is|are|does|do)|meaning of|confused)\b/,
     'explain',
   ],
   [/\b(continue|next|solve|show me|finish|write|keep going|carry on|go on|complete)\b/, 'write'],

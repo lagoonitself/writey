@@ -19,6 +19,10 @@ export type PageContext = {
   aiInk?: string[]
   /** What the student said out loud in the last 30 s (docs §7.2). */
   transcript?: string
+  /** Pixel sizes [w, h] of image 1 and image 2, for pointing by coordinates. */
+  imageSizes?: { focus: [number, number]; page: [number, number] }
+  /** Printed (PDF) lines on the whole page as "[x0,y0,x1,y1] text", in image 2 pixels. */
+  printed?: string[]
 }
 
 export type Turn = { role: 'user' | 'assistant'; text: string }
@@ -29,7 +33,8 @@ export const HISTORY_TURNS = 10
 const SEEING = `You are looking at a student's handwritten notebook page.
 - Image 1 is the area they are working on. Each line of their writing has a magenta tag (L1, L2, …) on its left. The tags are not part of their work; use them to refer to lines.
 - Image 2 is the whole page, small, with that area outlined in magenta.
-Read the handwriting carefully. If a line is unreadable, say so instead of guessing.`
+Read the handwriting carefully. If a line is unreadable, say so instead of guessing.
+Both images have faint pixel rulers (every 100 px) along the top and left edges. You can point at anything you see by its pixel coordinates in either image, origin top-left, the way a computer-use model clicks on a screenshot.`
 
 export const PLAN_SYSTEM = `You are Writey, a math and physics tutor inside a handwritten notebook.
 ${SEEING}
@@ -58,7 +63,7 @@ const SCOPE_GUIDE: Record<Scope, string> = {
 export const inkMode = (mode: Mode): mode is Exclude<Mode, 'chat'> => mode !== 'chat'
 
 const INK_GUIDE: Record<Exclude<Mode, 'chat'>, string> = {
-  explain: `Teach it like a tutor sitting beside the student with a pen and their notebook. On the page goes the rough version a tutor scribbles while talking: a short heading line, the key idea or formula in a few short lines (about six at most), and a drawing whenever the topic has anything to see (circuits and logic gates, forces, graphs, geometry, structures, processes, comparisons as a table). Draw it with the diagram and table blocks; never describe a picture in words when you can draw it. Use the page to show, the chat to tell.`,
+  explain: `Teach it like a tutor sitting beside the student with a pen and their notebook. On the page goes the rough version a tutor scribbles while talking: a short heading line, the key idea or formula in a few short lines (about six at most), and a drawing whenever the topic has anything to see (circuits and logic gates, forces, graphs, geometry, structures, processes, comparisons as a table). Draw it with the diagram and table blocks; never describe a picture in words when you can draw it. If it is about something already on the page (their work, a printed figure or circuit), mark and label it right there instead of redrawing it. Use the page to show, the chat to tell.`,
   write:
     'Write what comes next on the page, as the student would write it: one step per line, with "why" on each. The chat block teaches the step like a tutor sitting next to them: what the move is, why it is the right move here (what in the problem tells you to do it), the rule or fact it rests on, and one thing to watch out for.',
   check:
@@ -138,6 +143,12 @@ ${chatFirst ? '- Start with the one chat block, then write the page lines.' : '-
 - Never copy out lines the student already wrote; write only what is new.
 - End with a done block.
 - table: {"type":"table","header":["A","B","A AND B"],"rows":[["0","0","0"],["0","1","0"],["1","0","0"],["1","1","1"]],"align"?:["l","c"]} draws a ruled table. Use it for truth tables, observation tables, comparisons and anything with rows and columns; never write a table as lines of text. Cells may hold $math$. Keep cells short.
+- Point precisely, like a pen on a screenshot. Any mark can sit on a spot instead of a line: "box":[x0,y0,x1,y1] (a region) or "at":[x,y] (a point), in pixels of image 1, or of image 2 (the whole page) with "img":2. Image sizes are given below. Examples:
+  {"type":"mark","kind":"circle","box":[412,180,520,236],"img":2,"note":"this resistor"}
+  {"type":"mark","kind":"arrow","at":[640,410],"img":2,"note":"current enters here"}
+  Extra kinds for spots: box (a rectangle around it) and point (a dot, with a leader to its note). Notes are placed beside the spot with a leader line, clear of the print.
+- text and math can be written exactly at a spot with "at":[x,y] (and "img":2 for the whole page): the writing starts at x, centred on y. Use it to label parts of a printed diagram, fill in a blank, or write a value next to a quantity; give "size" (the height of the printed capital letters there, in pixels) to match the print. Without "at" they flow below the work as usual.
+- When the question is about something printed or drawn on the page (a figure in the PDF, a part of a circuit, a word in the question), show it: circle, box or arrow the exact spot and label it in place, then explain. Use the printed-text boxes below to hit printed words exactly.
 - {"type":"page"} starts a fresh page and carries on at its top. Use it when the student asks for a new page, or before a big diagram that needs a clean page. Writey also turns the page by itself when one fills up.
 ${DIAGRAMS}
 ${PHYSICS}
@@ -190,6 +201,16 @@ function pageText(ctx: PageContext): string {
     )
   }
   if (ctx.transcript) parts.push(`What the student said out loud recently:\n${ctx.transcript}`)
+  if (ctx.imageSizes) {
+    const [fw, fh] = ctx.imageSizes.focus
+    const [pw, ph] = ctx.imageSizes.page
+    parts.push(`Image 1 is ${fw}×${fh} px. Image 2 (the whole page) is ${pw}×${ph} px.`)
+  }
+  if (ctx.printed?.length) {
+    parts.push(
+      `Printed text on the whole page, with boxes in image 2 pixels [x0,y0,x1,y1]:\n${ctx.printed.join('\n')}`,
+    )
+  }
   return parts.join('\n\n')
 }
 

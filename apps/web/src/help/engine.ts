@@ -330,6 +330,7 @@ async function writeInk(
       lines: capture.lines,
       obstacles: capture.obstacles,
       target: o.target,
+      images: capture.images,
     },
     style,
   )

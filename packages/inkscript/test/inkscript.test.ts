@@ -233,6 +233,45 @@ describe('InkWriter', () => {
     expect(w.write({ type: 'mark', kind: 'tick', target: 'L9' })).toBeNull()
   })
 
+  it('marks and writes exactly where the model points, by pixel', () => {
+    // Image 2 is the page at 2 px per point; image 1 starts at (50, 80) at 4 px per point.
+    const images = { focus: { x: 50, y: 80, scale: 4 }, page: { x: 0, y: 0, scale: 2 } }
+    const w = new InkWriter(
+      { ...env, images },
+      { size: 20, color: '#53c', markColor: '#d22', seed: 1 },
+    )
+    const [block] = parseInkScript(
+      '{"type":"mark","kind":"box","box":[700,1000,800,1100],"img":2,"note":"this resistor"}',
+    )
+    expect(block).toMatchObject({ kind: 'box', pin: { img: 2, box: [700, 1000, 800, 1100] } })
+    const out = w.write(block as InkBlock)
+    if (!out || 'noRoom' in out) throw new Error('expected a mark')
+    // The box sits around page points (350, 500)–(400, 550); the note and leader go beside it.
+    const xs = out.strokes.flatMap((s) => s.stroke.points.filter((_, i) => i % 3 === 0))
+    expect(Math.min(...xs)).toBeGreaterThan(330)
+    expect(out.rect.y).toBeLessThan(500)
+    expect(out.rect.y + out.rect.h).toBeGreaterThan(550)
+
+    const arrow = w.write({ type: 'mark', kind: 'arrow', pin: { img: 1, at: [40, 40] } })
+    if (!arrow || 'noRoom' in arrow) throw new Error('expected an arrow')
+    // Its head ends at page (60, 90), a few points short so it doesn't cover the spot.
+    const head = arrow.strokes.at(-1)?.stroke.points ?? []
+    const gaps = []
+    for (let i = 0; i < head.length; i += 3) {
+      gaps.push(Math.hypot((head[i] as number) - 60, (head[i + 1] as number) - 90))
+    }
+    expect(Math.min(...gaps)).toBeLessThan(5)
+
+    const label = w.write({ type: 'text', text: 'R1', pin: { img: 2, at: [200, 300] }, size: 20 })
+    if (!label || 'noRoom' in label) throw new Error('expected a label')
+    expect(label.rect.x).toBeCloseTo(100)
+    expect(label.rect.y + label.rect.h / 2).toBeCloseTo(150)
+
+    // A page without images (a new page) can't take pinned ink.
+    const plain = new InkWriter(env, { size: 20, color: '#53c', markColor: '#d22', seed: 1 })
+    expect(plain.write({ type: 'mark', kind: 'circle', pin: { img: 2, at: [1, 1] } })).toBeNull()
+  })
+
   it('matches the student’s writing size', () => {
     expect(sizeFromLines([])).toBe(22)
     expect(sizeFromLines([20, 22, 24])).toBeCloseTo(22 * 1.15)

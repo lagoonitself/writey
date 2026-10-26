@@ -5,6 +5,9 @@ import type { Rect } from '@writey/ink-engine'
 
 export type LineRef = { label: string; rect: Rect }
 
+/** How an image the model saw maps to the page: page = origin + pixel / scale. */
+export type ImageFrame = { x: number; y: number; scale: number }
+
 export type PlaceEnv = {
   page: { width: number; height: number }
   /** The labeled lines the model saw (L1, L2, …). */
@@ -13,6 +16,8 @@ export type PlaceEnv = {
   obstacles: readonly Rect[]
   /** The line the request is about, from the PLAN call. */
   target: string | null
+  /** Image 1 (the focus region) and image 2 (the whole page), for blocks that point by pixel. */
+  images?: { focus: ImageFrame; page: ImageFrame }
 }
 
 const MARGIN = { left: 36, right: 24, top: 40, bottom: 28 }
@@ -128,5 +133,48 @@ export class Placer {
 
   reserve(r: Rect): void {
     this.taken.push(r)
+  }
+
+  /** A pixel spot in image 1 or 2 as page points, or null if this page has no such image. */
+  toPage(img: 1 | 2, px: number, py: number): [number, number] | null {
+    const f = img === 2 ? this.env.images?.page : this.env.images?.focus
+    return f ? [f.x + px / f.scale, f.y + py / f.scale] : null
+  }
+
+  /** Points per pixel of image 1 or 2. */
+  pixel(img: 1 | 2): number {
+    const f = img === 2 ? this.env.images?.page : this.env.images?.focus
+    return f ? 1 / f.scale : 1
+  }
+
+  /** Writing put exactly where the model pointed; later "prev" blocks continue below it. */
+  pin(r: Rect): void {
+    this.taken.push(r)
+    this.prev = r
+  }
+
+  /** A free w × h spot next to `r` (right, left, below, above), for a note on a marked spot. */
+  near(r: Rect, w: number, h: number): { x: number; y: number } | null {
+    const { page } = this.env
+    const gap = 14
+    const cy = r.y + (r.h - h) / 2
+    const cx = r.x + (r.w - w) / 2
+    const tries: [number, number][] = [
+      [right(r) + gap, cy],
+      [r.x - gap - w, cy],
+      [cx, bottom(r) + gap],
+      [cx, r.y - gap - h],
+      [right(r) + gap, bottom(r) + gap],
+      [r.x - gap - w, bottom(r) + gap],
+    ]
+    for (const [tx, ty] of tries) {
+      const x = Math.min(page.width - w - 4, Math.max(4, tx))
+      const y = Math.min(page.height - h - 4, Math.max(4, ty))
+      const box = { x, y, w, h }
+      if (this.taken.some((t) => hits(box, t))) continue
+      this.taken.push(box)
+      return { x, y }
+    }
+    return null
   }
 }

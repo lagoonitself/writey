@@ -4,14 +4,37 @@ import type { TableSpec } from './table'
 // InkScript: the AI's drawing language (docs §5.4). The model streams one JSON object
 // per block; each block is drawn as soon as it arrives.
 
-export type MarkKind = 'circle' | 'underline' | 'cross' | 'tick' | 'arrow' | 'highlight'
+export type MarkKind =
+  | 'circle'
+  | 'underline'
+  | 'cross'
+  | 'tick'
+  | 'arrow'
+  | 'highlight'
+  | 'box'
+  | 'point'
+
+/**
+ * A spot the model points at, in pixels of an image it was shown (like a computer-use
+ * click): image 1 is the focus region, image 2 the whole page. Writey maps it to the page.
+ */
+export type Pin = { img: 1 | 2; at?: [number, number]; box?: [number, number, number, number] }
 
 export type InkBlock =
   | { type: 'status'; text: string }
   /** Words, with inline $math$. `after`: a line tag ("L3") or "prev". */
-  | { type: 'text'; text: string; after?: string; why?: string }
-  | { type: 'math'; latex: string; after?: string; box?: boolean; why?: string }
-  | { type: 'mark'; kind: MarkKind; target: string; note?: string }
+  | { type: 'text'; text: string; after?: string; why?: string; pin?: Pin; size?: number }
+  | {
+      type: 'math'
+      latex: string
+      after?: string
+      box?: boolean
+      why?: string
+      pin?: Pin
+      size?: number
+    }
+  /** Red pen on a line (`target`) or on any spot (`pin`). */
+  | { type: 'mark'; kind: MarkKind; target?: string; pin?: Pin; note?: string }
   /** A hand-drawn diagram or graph (docs §5.6). */
   | ({ type: 'diagram'; after?: string; title?: string; why?: string } & DiagramSpec)
   /** A ruled table (truth tables, observations, comparisons); cells may hold $math$. */
@@ -24,7 +47,45 @@ export type InkBlock =
   | { type: 'say'; text: string }
   | { type: 'done'; summary?: string }
 
-const MARKS: readonly string[] = ['circle', 'underline', 'cross', 'tick', 'arrow', 'highlight']
+const MARKS: readonly string[] = [
+  'circle',
+  'underline',
+  'cross',
+  'tick',
+  'arrow',
+  'highlight',
+  'box',
+  'point',
+]
+
+const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+
+/** Reads `at: [x, y]` and/or `box: [x0, y0, x1, y1]` (pixels) and `img`. */
+function pin(o: Record<string, unknown>): Pin | undefined {
+  const nums = (v: unknown, n: number) =>
+    Array.isArray(v) && v.length === n && v.every((x) => num(x) !== null) ? (v as number[]) : null
+  const at = nums(o.at ?? o.point, 2)
+  const b = nums(o.box ?? o.bbox ?? o.region, 4)
+  if (!at && !b) return undefined
+  const box = b
+    ? ([
+        Math.min(b[0] as number, b[2] as number),
+        Math.min(b[1] as number, b[3] as number),
+        Math.max(b[0] as number, b[2] as number),
+        Math.max(b[1] as number, b[3] as number),
+      ] as [number, number, number, number])
+    : undefined
+  return {
+    img: o.img === 2 || o.image === 2 || o.img === 'page' ? 2 : 1,
+    at: at ? [at[0] as number, at[1] as number] : undefined,
+    box,
+  }
+}
+
+const size = (v: unknown) => {
+  const n = num(v)
+  return n !== null && n > 0 ? n : undefined
+}
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
 
@@ -45,21 +106,42 @@ export function toBlock(raw: unknown): InkBlock | null {
       return str(o.text) ? { type: 'status', text: str(o.text) } : null
     case 'text':
     case 'write':
-      return str(o.text) ? { type: 'text', text: str(o.text), after: after(o.after), why } : null
+      return str(o.text)
+        ? {
+            type: 'text',
+            text: str(o.text),
+            after: after(o.after),
+            why,
+            pin: pin(o),
+            size: size(o.size),
+          }
+        : null
     case 'math':
     case 'equation': {
       const latex = str(o.latex) || str(o.text)
-      return latex ? { type: 'math', latex, after: after(o.after), box: o.box === true, why } : null
+      return latex
+        ? {
+            type: 'math',
+            latex,
+            after: after(o.after),
+            box: o.box === true,
+            why,
+            pin: pin({ ...o, box: undefined }),
+            size: size(o.size),
+          }
+        : null
     }
     case 'mark': {
       const kind = str(o.kind).toLowerCase()
       const target = str(o.target).toUpperCase()
-      if (!/^L\d+$/.test(target)) return null
+      const at = pin(o)
+      if (!/^L\d+$/.test(target) && !at) return null
       return {
         type: 'mark',
         kind: (MARKS.includes(kind) ? kind : 'circle') as MarkKind,
-        target,
-        note: str(o.note) || undefined,
+        target: /^L\d+$/.test(target) ? target : undefined,
+        pin: at,
+        note: str(o.note) || str(o.text) || undefined,
       }
     }
     case 'diagram':

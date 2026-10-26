@@ -55,6 +55,9 @@ describe('routeIntent', () => {
     ['draw a free body diagram', 'write', null],
     ['make a truth table for XOR', 'write', null],
     ['sketch the graph of sin x', 'write', null],
+    ['label the parts of this diagram', 'write', null],
+    ['circle my mistake', 'check', null],
+    ['where is the resistor in this circuit', 'explain', null],
     ['hmm', null, null],
   ])('%s → %s / %s', (text, mode, scope) => {
     expect(routeIntent(text)).toEqual({ mode, scope })
