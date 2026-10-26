@@ -126,6 +126,10 @@ describe('InkScript parser', () => {
       String.raw`\frac{1}{2}`,
     )
     expect(JSON.parse(repairJson(String.raw`{"text":"one\nTwo"}`)).text).toBe('one\nTwo')
+    expect(JSON.parse(repairJson(String.raw`{"text":"one\nthen $a \neq b$"}`)).text).toBe(
+      String.raw`one
+then $a \neq b$`,
+    )
   })
 
   it('reads objects split across chunks, fenced, several per line or pretty-printed', () => {

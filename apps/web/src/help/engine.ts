@@ -6,6 +6,7 @@ import {
   decide,
   describeChatgptError,
   describeError,
+  type Effort,
   type HelpError,
   inkMode,
   messageText,
@@ -36,8 +37,9 @@ import type { PageSnapshot } from '../notebook/tools'
 import { type Capture, capturePage } from './capture'
 
 // The help engine (docs §5): capture → PLAN (fast, JSON) → PRODUCE (streamed).
-// "explain" answers stream into the chat as Markdown; "write", "check" and "both" stream
-// InkScript, which is written onto the page as a ghost preview, block by block.
+// "chat" answers stream into the chat as Markdown; every other mode streams InkScript, which
+// is written onto the page as a ghost preview, block by block ("explain" sketches on the page
+// and puts the full explanation beside it, like a tutor with a pen).
 // When Writey is talking (spoken replies), each answer also opens with what it says out loud,
 // handed out sentence by sentence so speech starts while the rest is still coming.
 
@@ -74,13 +76,12 @@ export class HelpFailure extends Error {
 }
 
 const MODE_STATUS: Record<Plan['mode'], string> = {
-  explain: 'Explaining…',
+  chat: 'Thinking…',
+  explain: 'Sketching it out…',
   write: 'Working out the next step…',
   check: 'Checking your work…',
   both: 'Working it out…',
 }
-
-type Effort = 'none' | 'low' | 'high'
 
 /** How one provider is called: a short complete reply, or a stream of events. */
 type Transport = {
@@ -112,7 +113,7 @@ function chatCompletions(provider: KeyProvider, model: string, signal: AbortSign
     },
     async *stream(messages, effort) {
       const res = await send(
-        chatBody(provider, { model, messages, maxTokens: 8000, stream: true, reasoning: effort }),
+        chatBody(provider, { model, messages, maxTokens: 16000, stream: true, reasoning: effort }),
       )
       if (!res.body) throw new HelpFailure({ message: 'The model sent an empty reply.' })
       yield* chatEvents(res.body)
@@ -129,10 +130,10 @@ function chatCompletions(provider: KeyProvider, model: string, signal: AbortSign
 
 /** ChatGPT plan: the Responses API through Writey Helper on this computer. */
 function chatgptPlan(model: string, signal: AbortSignal): Transport {
-  const open = async (messages: ChatMessage[]) => {
+  const open = async (messages: ChatMessage[], effort: Effort) => {
     let res: Response
     try {
-      res = await chatgptResponses(responsesBody(model, messages), signal)
+      res = await chatgptResponses(responsesBody(model, messages, effort), signal)
     } catch (e) {
       if (e instanceof HelperError) throw new HelpFailure(describeChatgptError(0, '', e.code))
       throw e
@@ -152,15 +153,16 @@ function chatgptPlan(model: string, signal: AbortSignal): Transport {
     async complete(messages) {
       let text = ''
       let usage: Usage | undefined
-      for await (const ev of await open(messages)) {
+      // The PLAN call only sorts the request, so it thinks briefly.
+      for await (const ev of await open(messages, 'low')) {
         if (ev.type === 'text') text += ev.text
         else if (ev.type === 'usage') usage = ev.usage
         else if (ev.type === 'error') throw new HelpFailure(failure(ev))
       }
       return { text, usage }
     },
-    async *stream(messages) {
-      yield* await open(messages)
+    async *stream(messages, effort) {
+      yield* await open(messages, effort)
     },
     failure,
   }
@@ -198,7 +200,13 @@ export async function askWritey(opts: {
   onUpdate({ type: 'plan', plan })
   onUpdate({ type: 'status', text: plan.status_line || MODE_STATUS[plan.mode] })
 
-  const effort = plan.scope === 'full' || plan.mode === 'check' ? 'high' : 'low'
+  // Writey thinks before it answers; harder for full solutions, checking and explaining.
+  const effort: Effort =
+    plan.mode === 'chat' || plan.scope === 'hint'
+      ? 'low'
+      : plan.scope === 'full' || plan.mode === 'check'
+        ? 'high'
+        : 'medium'
   const spoken = Boolean(opts.spoken)
   const produce = produceMessages(utterance, ctx, plan, turns, spoken)
   if (inkMode(plan.mode)) {

@@ -132,10 +132,14 @@ export function toBlock(raw: unknown): InkBlock | null {
   }
 }
 
+/** LaTeX commands that start with n, which a raw backslash in JSON would read as a line break. */
+const LATEX_N =
+  /^n(e|eq|eg|u|abla|ot|otin|i|ewline|mid|parallel|leq|geq|less|gtr|exists|subseteq|cong|sim|earrow|warrow|Rightarrow|Leftarrow|leftarrow|rightarrow|atural|ormalsize)(?![a-zA-Z])/
+
 /**
  * Models often forget to escape LaTeX in JSON strings: "\frac" would parse as a form feed
  * plus "rac", "\times" as a tab, and "\Delta" fails outright. Such backslashes are LaTeX,
- * so they get escaped before parsing; real escapes like "\n" before a capital stay.
+ * so they get escaped before parsing; real escapes like "\n" (a line break) stay.
  */
 export function repairJson(json: string): string {
   let out = ''
@@ -145,13 +149,16 @@ export function repairJson(json: string): string {
       out += c
       continue
     }
-    const rest = json.slice(i + 1, i + 6)
+    const rest = json.slice(i + 1, i + 12)
     if (rest[0] === '\\') {
       out += '\\\\'
       i++
     } else {
-      // \D, \, or \{ are invalid JSON anyway; \f, \n… count as LaTeX when a lowercase letter follows.
-      const valid = /^(["/]|[bfnrt](?![a-z])|u[0-9a-fA-F]{4})/.test(rest)
+      // \D, \, or \{ are invalid JSON anyway; \f, \t… count as LaTeX when a lowercase letter
+      // follows. \n is a line break (explanations have many) unless a LaTeX \n… command follows.
+      const valid =
+        /^(["/]|[bfrt](?![a-z])|u[0-9a-fA-F]{4})/.test(rest) ||
+        (rest[0] === 'n' && !LATEX_N.test(rest))
       out += valid ? c : '\\\\'
     }
   }

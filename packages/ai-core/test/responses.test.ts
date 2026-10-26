@@ -23,6 +23,16 @@ async function collect(it: AsyncIterable<StreamEvent>): Promise<StreamEvent[]> {
 }
 
 describe('responsesBody', () => {
+  it('asks reasoning models to think, with a summary', () => {
+    const m: ChatMessage[] = [{ role: 'user', content: 'hi' }]
+    expect(JSON.parse(responsesBody('gpt-6', m, 'medium')).reasoning).toEqual({
+      effort: 'medium',
+      summary: 'auto',
+    })
+    expect(JSON.parse(responsesBody('gpt-4.1', m, 'medium')).reasoning).toBeUndefined()
+    expect(JSON.parse(responsesBody('gpt-6', m, 'none')).reasoning).toBeUndefined()
+  })
+
   it('moves system text to instructions and maps parts to Responses input', () => {
     const messages: ChatMessage[] = [
       { role: 'system', content: 'Be Writey.' },

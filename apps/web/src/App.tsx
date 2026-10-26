@@ -72,8 +72,9 @@ function SignIn() {
           Your notebook <em>that writes back.</em>
         </h1>
         <p className="signin-lede">
-          Work through problems with your pen. When you’re stuck, say “Writey, what’s next?” It
-          reads the page and writes the next step under your own, or explains it on the side.
+          Work through problems with your pen. When you’re stuck, say “Hey, what’s next?” It reads
+          the page and writes the next step under your own, or sketches and explains it like a tutor
+          with a pen.
         </p>
         <button type="button" className="google" onClick={signIn}>
           <GoogleIcon />
@@ -94,7 +95,7 @@ function SignIn() {
 function DemoSheet() {
   return (
     <figure className="signin-sheet" aria-hidden="true">
-      <span className="sheet-ask">Writey, what’s next?</span>
+      <span className="sheet-ask">Hey, what’s next?</span>
       <span className="sheet-line q">3. Find ∫ x eˣ dx</span>
       <span className="sheet-line">by parts:</span>
       <span className="sheet-line">u = x, dv = eˣ dx</span>

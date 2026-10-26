@@ -1,4 +1,4 @@
-import { type ChatMessage, type StreamEvent, sseData } from './chat'
+import { type ChatMessage, type Effort, type StreamEvent, sseData } from './chat'
 
 // The OpenAI Responses API, used for ChatGPT plan usage through the Helper (docs §6.1).
 // Plan usage requires store=false and stream=true and rejects temperature,
@@ -14,7 +14,14 @@ const textOf = (m: ChatMessage) =>
     ? m.content
     : m.content.map((p) => (p.type === 'text' ? p.text : '')).join('')
 
-export function responsesBody(model: string, messages: readonly ChatMessage[]): string {
+/** Older ChatGPT models without reasoning, which reject the `reasoning` option. */
+const NO_REASONING = /^(gpt-4|gpt-3|chatgpt-4)/
+
+export function responsesBody(
+  model: string,
+  messages: readonly ChatMessage[],
+  effort?: Effort,
+): string {
   const instructions = messages
     .filter((m) => m.role === 'system')
     .map(textOf)
@@ -33,7 +40,12 @@ export function responsesBody(model: string, messages: readonly ChatMessage[]): 
             )
       return { role: m.role, content: parts }
     })
-  return JSON.stringify({ model, instructions, input, store: false, stream: true })
+  const body: Record<string, unknown> = { model, instructions, input, store: false, stream: true }
+  // A summary of the thinking streams back, so the student sees Writey is thinking.
+  if (effort && effort !== 'none' && !NO_REASONING.test(model)) {
+    body.reasoning = { effort, summary: 'auto' }
+  }
+  return JSON.stringify(body)
 }
 
 type ResponsesEvent = {

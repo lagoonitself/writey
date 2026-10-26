@@ -60,7 +60,8 @@ type Shown = StoredMessage & {
 type Live = { status: string; seen: string | null; text: string; thinking: boolean }
 
 const MODE_LABEL: Record<string, string> = {
-  explain: 'Explained',
+  chat: 'Explained',
+  explain: 'Explained on the page',
   write: 'Written on the page',
   check: 'Checked on the page',
   both: 'Written on the page',
@@ -92,7 +93,7 @@ export default function ChatPanel(p: Props) {
   /** A thread made by sending in this panel already has its messages on screen. */
   const madeHere = useRef<string | null>(null)
   const creating = useRef<Promise<string> | null>(null)
-  /** Pages showing the last answer's preview, which a new question replaces. */
+  /** Pages showing the last answer's preview, which a new question keeps (accepts). */
   const lastGhosts = useRef<PageHandle[]>([])
   const busy = live !== null
 
@@ -154,8 +155,9 @@ export default function ChatPanel(p: Props) {
       if (!utterance || busy || !on) return
       const handle = p.handle(on.id)
       if (!handle) return
-      // A new question replaces a preview that was never accepted.
-      for (const h of lastGhosts.current) h.ghostDiscard()
+      // Asking on keeps the last answer's ink, so the new one goes below it, like a tutor
+      // carrying on down the page. "Scrap that" or Discard still removes it first.
+      for (const h of lastGhosts.current) h.ghostAccept()
       const ghosts = new Map<string, PageHandle>()
       lastGhosts.current = []
       setNotice(null)
@@ -523,7 +525,7 @@ export default function ChatPanel(p: Props) {
                   !busy &&
                   m.role === 'assistant' &&
                   !m.error &&
-                  m.mode === 'explain'
+                  (m.mode === 'chat' || (m.mode === 'explain' && !m.text.includes('ink-copy')))
                     ? () => void send('Write this on the page')
                     : undefined
                 }

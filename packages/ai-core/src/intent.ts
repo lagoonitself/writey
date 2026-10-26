@@ -1,8 +1,11 @@
 // Intent routing, rules first (docs §5.2, HANDOFF D3). Anything the rules can't decide
 // is left null for the PLAN call.
 
-/** write = ink on the page, explain = chat, check = marks + chat, both = short ink + chat. */
-export type Mode = 'write' | 'explain' | 'check' | 'both'
+/**
+ * write = ink on the page, explain = a sketch on the page + the full explanation beside it
+ * (a tutor with a pen), check = marks + chat, both = short ink + chat, chat = words only.
+ */
+export type Mode = 'write' | 'explain' | 'check' | 'both' | 'chat'
 /** Tutor vs solver (HANDOFF D2). */
 export type Scope = 'hint' | 'next_step' | 'full'
 
@@ -10,7 +13,10 @@ export type Route = { mode: Mode | null; scope: Scope | null }
 
 const MODE_RULES: [RegExp, Mode][] = [
   // Explicit overrides win over everything else.
-  [/\b(just|only) explain\b/, 'explain'],
+  [
+    /\b(just|only) (explain|tell me|say)\b|\b(don'?t|do not|no need to) (write|draw)\b|\bin (the )?chat\b/,
+    'chat',
+  ],
   [/\bwrite (it|this|that)( down| out| on the page)?\b|\bjust show me the answer\b/, 'write'],
   [/\bwhat('?s| is) next\b/, 'write'],
   [
@@ -41,7 +47,7 @@ export function routeIntent(utterance: string): Route {
   const text = utterance
     .toLowerCase()
     .replace(/[’‘]/g, "'")
-    .replace(/^\s*(hey\s+)?writey[\s,.:!]*/, '')
+    .replace(/^\s*(hey\b[\s,.:!]*)?(writey\b)?[\s,.:!]*/, '')
   const mode = MODE_RULES.find(([re]) => re.test(text))?.[1] ?? null
   const scope = SCOPE_RULES.find(([re]) => re.test(text))?.[1] ?? null
   return { mode, scope }

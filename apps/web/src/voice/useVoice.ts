@@ -5,7 +5,7 @@ import type { VoiceCommand } from './trigger'
 const PREFS_KEY = 'writey.voice'
 /** Writey talks back by default (HANDOFF D9, changed 2026-10-25). */
 const DEFAULT_PREFS: VoicePrefs = { replies: true, voice: 'af_heart' }
-/** Hold this key (or a pen button mapped to it) to talk without saying "Writey". */
+/** Hold this key (or a pen button mapped to it) to talk without saying "Hey". */
 export const PTT_CODE = 'Backquote'
 export const PTT_LABEL = '`'
 
@@ -30,18 +30,18 @@ export type Voice = {
   speaking: boolean
   /** The last thing heard, shown briefly. */
   heard: string | null
-  /** A sound-alike of "Writey" waiting for "yes, ask that". */
-  confirm: string | null
-  /** Writey just answered and is waiting for your reply (no "Writey" needed). */
+  /** Why Writey can't talk right now, e.g. its voice is still downloading. */
+  speechIssue: string | null
+  /** Writey just answered and is waiting for your reply (no "Hey" needed). */
   replying: boolean
-  /** Writey is listening and talks back. */
+  /** Writey talks back. */
   speaks(): boolean
   /** An answer finished. */
   answered(): void
   toggle(): void
   start(): void
   ask(text: string): void
-  dismissConfirm(): void
+  dismissSpeechIssue(): void
   say(text: string): void
   stopSpeaking(): void
   transcript(): string
@@ -57,7 +57,7 @@ export function useVoice(handlers: {
   const [state, setState] = useState<VoiceState>({ kind: 'off' })
   const [speaking, setSpeaking] = useState(false)
   const [heard, setHeard] = useState<string | null>(null)
-  const [confirm, setConfirm] = useState<string | null>(null)
+  const [speechIssue, setSpeechIssue] = useState<string | null>(null)
   const [replying, setReplying] = useState(false)
   const latest = useRef(handlers)
   latest.current = handlers
@@ -83,12 +83,9 @@ export function useVoice(handlers: {
           window.clearTimeout(heardTimer.current)
           heardTimer.current = window.setTimeout(() => setHeard(null), 4000)
         },
-        request: (text) => {
-          setConfirm(null)
-          latest.current.request(text)
-        },
-        confirm: setConfirm,
+        request: (text) => latest.current.request(text),
         command: (c) => latest.current.command(c),
+        speechIssue: setSpeechIssue,
         followUp: setReplying,
       },
       () => prefs.current,
@@ -124,7 +121,7 @@ export function useVoice(handlers: {
     state,
     speaking,
     heard,
-    confirm,
+    speechIssue,
     replying,
     speaks: useCallback(() => c.speaks, [c]),
     answered: useCallback(() => c.answered(), [c]),
@@ -133,11 +130,8 @@ export function useVoice(handlers: {
       else void c.start()
     }, [c]),
     start: useCallback(() => void c.start(), [c]),
-    ask: useCallback((text: string) => {
-      setConfirm(null)
-      latest.current.request(text)
-    }, []),
-    dismissConfirm: useCallback(() => setConfirm(null), []),
+    ask: useCallback((text: string) => latest.current.request(text), []),
+    dismissSpeechIssue: useCallback(() => setSpeechIssue(null), []),
     say: useCallback((text: string) => c.say(text), [c]),
     stopSpeaking: useCallback(() => c.stopSpeaking(), [c]),
     transcript: useCallback(() => c.transcript(), [c]),

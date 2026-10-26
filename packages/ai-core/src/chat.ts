@@ -19,13 +19,16 @@ export type StreamEvent =
   | { type: 'usage'; usage: Usage }
   | { type: 'error'; message: string; status?: number; code?: string }
 
+/** How hard the model thinks before it answers. */
+export type Effort = 'none' | 'low' | 'medium' | 'high'
+
 export type ChatRequest = {
   model: string
   messages: ChatMessage[]
   maxTokens: number
   stream: boolean
   /** OpenRouter only; other providers ignore it. */
-  reasoning?: 'none' | 'low' | 'high'
+  reasoning?: Effort
 }
 
 export function chatBody(provider: KeyProvider, req: ChatRequest): string {

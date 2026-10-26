@@ -37,6 +37,8 @@ async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {
 describe('routeIntent', () => {
   it.each([
     ["Writey, what's next?", 'write', 'next_step'],
+    ["Hey, what's next?", 'write', 'next_step'],
+    ['explain the full adder circuit', 'explain', null],
     ['continue', 'write', 'next_step'],
     ['solve this', 'write', 'full'],
     ['show me the full solution', 'write', 'full'],
@@ -47,7 +49,8 @@ describe('routeIntent', () => {
     ['did I make a mistake', 'check', null],
     ['how do I start this one', 'explain', 'hint'],
     ['give me a hint', null, 'hint'],
-    ['just explain, please continue', 'explain', 'next_step'],
+    ['just explain, please continue', 'chat', 'next_step'],
+    ["explain it, don't write anything", 'chat', null],
     ['write it', 'write', null],
     ['draw a free body diagram', 'write', null],
     ['make a truth table for XOR', 'write', null],
@@ -220,16 +223,19 @@ describe('prompts', () => {
     const msgs = produceMessages('hint?', ctx, plan, turns)
     expect(msgs).toHaveLength(1 + 10 + 1)
     expect(msgs[1]?.content).toBe('t4')
-    expect(String(msgs[0]?.content)).toContain('hint only')
+    expect(String(msgs[0]?.content)).toMatch(/hint only/i)
   })
 
-  it('asks for InkScript in the writing modes, Markdown when explaining', () => {
+  it('asks for InkScript whenever Writey has the pen, Markdown for chat', () => {
     expect(produceSystem('write', 'next_step')).toContain('InkScript')
     expect(produceSystem('check', 'next_step')).toContain('"type":"mark"')
     expect(produceSystem('write', 'next_step')).toContain('"latex":"\\\\frac{d}{dx}')
-    expect(produceSystem('explain', 'next_step')).toContain('Markdown')
+    expect(produceSystem('chat', 'next_step')).toContain('Answer in Markdown')
+    expect(produceSystem('explain', 'next_step')).toContain('InkScript')
+    expect(produceSystem('explain', 'next_step')).toContain('page lines first')
     expect(inkMode('both')).toBe(true)
-    expect(inkMode('explain')).toBe(false)
+    expect(inkMode('explain')).toBe(true)
+    expect(inkMode('chat')).toBe(false)
   })
 
   it('passes Writey’s own ink and the spoken transcript', () => {
