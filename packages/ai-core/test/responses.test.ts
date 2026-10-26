@@ -87,7 +87,14 @@ describe('Responses tool calls', () => {
       ),
     )
     expect(body.tools).toEqual([
-      { type: 'function', name: 'look_at_page', description: 'd', parameters: { type: 'object' } },
+      // Not strict: strict mode drops every field a schema doesn't list (diagram items).
+      {
+        type: 'function',
+        name: 'look_at_page',
+        description: 'd',
+        parameters: { type: 'object' },
+        strict: false,
+      },
     ])
     expect(body.include).toEqual(['reasoning.encrypted_content'])
     expect(body.input.slice(1)).toEqual([

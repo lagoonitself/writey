@@ -246,12 +246,8 @@ export async function askWritey(opts: {
   const hinted = decide(route, null)
   onUpdate({ type: 'plan', plan: hinted })
   onUpdate({ type: 'status', text: 'Thinking…' })
-  const effort: Effort =
-    route.scope === 'hint'
-      ? 'low'
-      : route.mode === 'check' || route.scope === 'full'
-        ? 'high'
-        : 'medium'
+  // Medium for every answer (owner, 2026-10-26).
+  const effort: Effort = 'medium'
 
   const agent = new Agent(transport, capture, opts)
   const out = await agent.run(

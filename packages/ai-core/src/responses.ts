@@ -68,7 +68,9 @@ export function responsesBody(
     if (tools?.length) body.include = ['reasoning.encrypted_content']
   }
   if (tools?.length) {
-    body.tools = tools.map((t) => ({ type: 'function', ...t }))
+    // Responses tools are strict by default, which keeps only the listed fields: diagram
+    // items (free-form objects) would arrive as bare {"kind": …} and draw nothing.
+    body.tools = tools.map((t) => ({ type: 'function', ...t, strict: false }))
     if (toolChoice) body.tool_choice = toolChoice
   }
   return JSON.stringify(body)
