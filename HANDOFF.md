@@ -173,4 +173,5 @@ The owner gave the go on 2026-10-25.
 - Voice needs Helper API 4 (`VOICE_API` in `apps/web/src/lib/helper.ts`); ChatGPT still needs only 2. Speech models live in `%APPDATA%\Writey\helper\models` and are shared by every Helper install on the machine.
 - The VAD model and the ONNX runtime WebAssembly are served under `/vad/` by a Vite plugin (`apps/web/vite.config.ts`): from `node_modules` in dev (Vite refuses imports from `public/`), emitted as assets in the build. `ort-wasm-simd-threaded.wasm` is ~14 MB, under the 25 MiB Workers asset limit.
 - The Claude desktop browser pane blocks microphones. To test voice there, replace `navigator.mediaDevices.getUserMedia` with a stream from an AudioContext and play Helper TTS into it.
+- Commits from the owner's laptop are SSH-signed (key `~/.ssh/git_signing_ed25519`, added to GitHub as a signing key; `commit.gpgsign` is on globally), so they show as Verified. The key has no passphrase so agents can commit non-interactively.
 - Python patches written with `open(..., 'w')` on Windows produce CRLF; `.gitattributes` normalizes on commit, but Biome may complain first.
