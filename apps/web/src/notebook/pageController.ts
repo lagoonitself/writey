@@ -17,7 +17,7 @@ import {
   translateItem,
   unionBounds,
 } from '@writey/ink-engine'
-import type { Look, Written } from '@writey/inkscript'
+import { type Look, PICTURE_MS, type Written } from '@writey/inkscript'
 import type { AssetRow, PageRow } from '@writey/shared'
 import { loadImage } from '../lib/assets'
 import { backupPage, clearBackup, loadPage, savePage } from '../lib/pageStore'
@@ -169,10 +169,12 @@ export class PageController {
     // Writey looking at its own preview between rounds: the preview counts as the newest work.
     const ghost = withGhost ? (this.ghost?.blocks.map((b) => b.written) ?? []) : []
     const strokes = ghost.flatMap((w) => w.strokes.map((s) => s.stroke))
+    const pictures = ghost.flatMap((w) => w.items ?? [])
     for (const s of strokes) recent.add(s.id)
     const sources = new Map(ghost.map((w) => [w.groupId, { source: w.source }]))
+    const extra = [...pictures, ...strokes]
     return {
-      items: strokes.length ? [...this.editor.items, ...strokes] : this.editor.items,
+      items: extra.length ? [...this.editor.items, ...extra] : this.editor.items,
       recent,
       selection: unionBounds(this.selectedItems()),
       aiSource: (groupId) => this.editor.aiSource(groupId) ?? sources.get(groupId),
@@ -200,7 +202,8 @@ export class PageController {
   private ghostAdd(written: Written): void {
     const g = this.ghost
     if (!g) return
-    g.blocks.push({ written, offset: this.ghostOffset(g, written.strokes[0]?.at ?? 0) })
+    const first = written.at ?? written.strokes[0]?.at ?? 0
+    g.blocks.push({ written, offset: this.ghostOffset(g, first) })
     this.emitGhost()
     this.requestWet()
   }
@@ -252,6 +255,7 @@ export class PageController {
     const g = this.ghost
     if (!g?.blocks.length) return false
     const strokes = g.blocks.flatMap((b) => b.written.strokes.map((s) => s.stroke))
+    const pictures = g.blocks.flatMap((b) => b.written.items ?? [])
     const sources = Object.fromEntries(
       g.blocks.map(({ written: w }) => [
         w.groupId,
@@ -262,7 +266,8 @@ export class PageController {
     const now = Date.now()
     for (const s of strokes) this.written.set(s.id, now)
     this.settleGhost('accepted')
-    this.editor.addAi(strokes, sources)
+    // Pictures go under the ink, so names and leader lines sit on top of them.
+    this.editor.addAi([...pictures, ...strokes], sources)
     return true
   }
 
@@ -318,6 +323,18 @@ export class PageController {
     const elapsed = g.skipped ? Number.POSITIVE_INFINITY : performance.now() - g.start
     let animating = false
     ctx.save()
+    // Pasted pictures fade in, under the preview's ink.
+    for (const { written, offset } of g.blocks) {
+      if (!written.items?.length) continue
+      const local = elapsed - ((written.at ?? 0) + offset)
+      if (local < 0) {
+        animating = true
+        continue
+      }
+      if (local < PICTURE_MS) animating = true
+      ctx.globalAlpha = GHOST_ALPHA * Math.min(1, local / PICTURE_MS)
+      drawItems(ctx, written.items, { images: this.image })
+    }
     ctx.globalAlpha = GHOST_ALPHA
     for (const { written, offset } of g.blocks) {
       for (const { stroke, at } of written.strokes) {

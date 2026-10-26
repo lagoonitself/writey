@@ -57,3 +57,8 @@ export function loadImage(id: string): Promise<HTMLImageElement> {
   }
   return p
 }
+
+/** Seeds the cache with a picture Writey just uploaded, so it shows without a download. */
+export function primeImage(id: string, img: HTMLImageElement): void {
+  images.set(id, Promise.resolve(img))
+}

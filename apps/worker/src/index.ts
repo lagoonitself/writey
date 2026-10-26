@@ -39,6 +39,32 @@ app.use('*', async (c, next) => {
 
 app.get('/me', (c) => c.json<MeResponse>(c.get('user')))
 
+// Pictures Writey pastes from Wikimedia Commons (HANDOFF D49), for browsers that can't fetch
+// them directly. Only Commons' own image host, streamed through unparsed.
+const PICTURE_HOST = 'upload.wikimedia.org'
+
+app.get('/picture', async (c) => {
+  let url: URL
+  try {
+    url = new URL(c.req.query('url') ?? '')
+  } catch {
+    return c.json<ApiError>({ error: 'bad_url' }, 400)
+  }
+  if (url.protocol !== 'https:' || url.hostname !== PICTURE_HOST) {
+    return c.json<ApiError>({ error: 'bad_url' }, 400)
+  }
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Writey/1.0 (https://writey.writey.workers.dev; notebook app)' },
+  })
+  const type = res.headers.get('Content-Type') ?? ''
+  if (!res.ok || !type.startsWith('image/')) {
+    return c.json<ApiError>({ error: 'picture_unavailable' }, 502)
+  }
+  return new Response(res.body, {
+    headers: { 'Content-Type': type, 'Cache-Control': 'private, max-age=86400' },
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Page ink: gzipped JSON in R2, version number in Postgres (docs §4.5)
 // ---------------------------------------------------------------------------

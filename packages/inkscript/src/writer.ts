@@ -1,4 +1,4 @@
-import { newId, type Rect } from '@writey/ink-engine'
+import { type ImageItem, newId, type Rect, type TextItem } from '@writey/ink-engine'
 import { drawDiagram } from './diagram'
 import { penStrokes, type TimedStroke } from './hand'
 import { type Box, handLine, layoutMath, type Path, type Rng, seeded } from './layout'
@@ -24,6 +24,24 @@ export type Written = {
   why?: string
   strokes: TimedStroke[]
   rect: Rect
+  /** Pictures and their credit lines, shown at `at` ms (blocks without strokes). */
+  items?: (ImageItem | TextItem)[]
+  at?: number
+}
+
+/** A picture pasted in this answer: where it is, and the band reserved round it for names. */
+export type PlacedPicture = { rect: Rect; band: Rect }
+
+export type PictureSpec = {
+  assetId: string
+  /** Natural size, pixels. */
+  width: number
+  height: number
+  after?: string
+  size?: 'small' | 'medium' | 'large'
+  /** Written small under the picture. */
+  credit?: string
+  source: string
 }
 
 export type WriteResult = Written | { noRoom: true } | null
@@ -44,6 +62,21 @@ const HIGHLIGHT = '#ffe14a'
 
 /** Pause between blocks, ms. */
 const BLOCK_PAUSE = 260
+/** How long a pasted picture takes to fade in, ms. */
+export const PICTURE_MS = 700
+/** Pause between a block's light layer and its ink, ms. */
+const PEN_PAUSE = 120
+
+/** A paler shade of a #rrggbb colour, for grids and shading. */
+function paler(hex: string): string {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex)
+  if (!m) return hex
+  const h = m[1] as string
+  const n = Number.parseInt(h.length === 3 ? [...h].map((c) => c + c).join('') : h, 16)
+  const mix = (c: number) => Math.round(c + (255 - c) * 0.5)
+  const rgb = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(mix)
+  return `#${rgb.map((c) => c.toString(16).padStart(2, '0')).join('')}`
+}
 /** How long the pen rests on what it reads, ms. */
 const LOOK_MS = 1100
 
@@ -113,9 +146,171 @@ export class InkWriter {
         return this.diagram(block)
       case 'table':
         return this.table(block)
+      case 'labels':
+        return this.labels(block)
       default:
         return null
     }
+  }
+
+  /** Pictures on this page, newest last, for naming their parts. */
+  pictures: PlacedPicture[] = []
+
+  /**
+   * Pastes a picture below the work, centred in a band as wide as the column so its parts
+   * can be named on both sides.
+   */
+  picture(p: PictureSpec): WriteResult {
+    const { size } = this.opts
+    const x = this.placer.startX(p.after)
+    const room = this.placer.room(x)
+    const share = p.size === 'small' ? 0.4 : p.size === 'large' ? 0.72 : 0.56
+    let w = Math.min(room * share, p.width * 0.75)
+    let h = (w * p.height) / p.width
+    const maxH = 360
+    if (h > maxH) {
+      w = (w * maxH) / h
+      h = maxH
+    }
+    const creditH = p.credit ? 9 : 0
+    const spot = this.placer.place(room, h + creditH + 2, p.after, size * 0.5)
+    if (!spot) return { noRoom: true }
+    const k = spot.scale
+    const bandW = room * k
+    const rect = { x: spot.x + (bandW - w * k) / 2, y: spot.y, w: w * k, h: h * k }
+    const items: (ImageItem | TextItem)[] = [
+      { kind: 'image', id: newId(), assetId: p.assetId, ...rect },
+    ]
+    if (p.credit)
+      items.push({
+        kind: 'text',
+        id: newId(),
+        x: rect.x,
+        y: rect.y + rect.h + 1,
+        w: Math.max(rect.w, 160),
+        h: 8,
+        text: p.credit,
+        size: 5.5,
+        color: '#8c8577',
+      })
+    const band = { x: spot.x, y: spot.y, w: bandW, h: (h + creditH + 2) * k }
+    this.pictures.push({ rect, band })
+    const at = this.time
+    this.time += PICTURE_MS + BLOCK_PAUSE
+    return { groupId: newId(), source: p.source, strokes: [], rect: band, items, at }
+  }
+
+  /**
+   * Names parts of a picture: names in columns left and right of it with leader lines to
+   * the parts, as in a textbook. Points outside any pasted picture get their name nearby.
+   */
+  private labels(block: Extract<InkBlock, { type: 'labels' }>): WriteResult {
+    const { size } = this.opts
+    const parts = block.labels.flatMap((l) => {
+      const p = this.placer.toPage(l.pin.img, l.pin.at[0], l.pin.at[1])
+      return p && l.text ? [{ p: p as [number, number], text: l.text }] : []
+    })
+    if (!parts.length) return null
+    const inside = (r: Rect, p: [number, number]) =>
+      p[0] >= r.x - 2 && p[0] <= r.x + r.w + 2 && p[1] >= r.y - 2 && p[1] <= r.y + r.h + 2
+    const pic = [...this.pictures]
+      .reverse()
+      .find((q) => parts.filter((t) => inside(q.rect, t.p)).length * 2 >= parts.length)
+    const k = size * 0.62
+    const names: Path[] = []
+    const leaders: Path[] = []
+    const dots: Path[] = []
+    const dot = (p: [number, number]) => {
+      const out: number[] = []
+      for (let i = 0; i <= 14; i++) {
+        const t = (i / 14) * Math.PI * 4
+        const r = 1.6 * (1 - i / 18)
+        out.push(p[0] + Math.cos(t) * r, p[1] + Math.sin(t) * r)
+      }
+      dots.push(out)
+    }
+    const write = (box: Box, x: number, top: number, scale: number) => {
+      const base = top + box.h * scale
+      names.push(
+        ...box.paths.map((q) => q.map((n, i) => (i % 2 === 0 ? x + n * scale : base + n * scale))),
+      )
+    }
+    const xs: number[] = []
+    const ys: number[] = []
+    const keep = (x: number, y: number, w: number, h: number) => {
+      xs.push(x, x + w)
+      ys.push(y, y + h)
+    }
+    if (pic) {
+      const { rect: P, band: B } = pic
+      const mid = P.x + P.w / 2
+      const gap = size * 0.5
+      for (const side of ['left', 'right'] as const) {
+        const col = parts
+          .filter((t) => t.p[0] < mid === (side === 'left'))
+          .sort((a, b) => a.p[1] - b.p[1])
+        if (!col.length) continue
+        const width = Math.max(
+          size * 2,
+          side === 'left' ? P.x - B.x - gap * 2 : B.x + B.w - (P.x + P.w) - gap * 2,
+        )
+        const boxes = col.map((t) => {
+          const box = stackLines(layoutParagraph(t.text, Math.max(3, width / k), this.rng))
+          const s = Math.min(k, width / Math.max(box.w, 0.1))
+          return { ...t, box, s, h: (box.h + box.d) * s, y: 0 }
+        })
+        // Spread the names so they never overlap, each as near its part's height as it can be.
+        let next = -Infinity
+        for (const b of boxes) {
+          b.y = Math.max(b.p[1] - b.h / 2, next)
+          next = b.y + b.h + size * 0.18
+        }
+        const over = next - (B.y + B.h)
+        if (over > 0) {
+          const lift = Math.min(over, Math.max(0, (boxes[0]?.y ?? 0) - B.y))
+          for (const b of boxes) b.y -= lift
+        }
+        for (const b of boxes) {
+          const w = b.box.w * b.s
+          const x = side === 'left' ? P.x - gap - w : P.x + P.w + gap
+          write(b.box, x, b.y, b.s)
+          keep(x, b.y, w, b.h)
+          const end: [number, number] = [side === 'left' ? x + w + 2 : x - 2, b.y + b.h / 2]
+          leaders.push([b.p[0], b.p[1], end[0], end[1]])
+          dot(b.p)
+        }
+      }
+    } else {
+      for (const t of parts) {
+        const box = stackLines(layoutParagraph(t.text, 12, this.rng))
+        const w = box.w * k
+        const h = (box.h + box.d) * k
+        const r = { x: t.p[0] - 3, y: t.p[1] - 3, w: 6, h: 6 }
+        const spot = this.placer.near(r, w, h)
+        if (!spot) continue
+        write(box, spot.x, spot.y, k)
+        keep(spot.x, spot.y, w, h)
+        const end = edgeToward({ x: spot.x, y: spot.y, w, h }, r)
+        leaders.push([t.p[0], t.p[1], end[0], end[1]])
+        dot(t.p)
+      }
+    }
+    if (!names.length) return null
+    for (const p of [...leaders, ...dots]) {
+      for (let i = 0; i < p.length; i += 2) keep(p[i] as number, p[i + 1] as number, 0, 0)
+    }
+    const rect = {
+      x: Math.min(...xs),
+      y: Math.min(...ys),
+      w: Math.max(...xs) - Math.min(...xs),
+      h: Math.max(...ys) - Math.min(...ys),
+    }
+    const source = `[labels] ${parts.map((t) => t.text).join(', ')}`
+    // Leaders first, faint, then a dot on each part and its name.
+    return this.pen([...dots, ...names], this.opts.color, source, undefined, rect, {
+      light: leaders,
+      width: Math.max(1, this.penWidth * 0.8),
+    })
   }
 
   /** Moves the pen to a line or spot to read it; nothing is written. */
@@ -220,7 +415,13 @@ export class InkWriter {
       source,
       why,
       { x: spot.x, y: spot.y, w: drawn.w * spot.scale, h: drawn.h * spot.scale },
-      { width: this.penWidth * 0.85, speed: 1.6 },
+      {
+        width: this.penWidth * 0.85,
+        speed: 1.6,
+        light: drawn.light?.map((p) =>
+          p.map((n, i) => (i % 2 === 0 ? spot.x : spot.y) + n * spot.scale),
+        ),
+      },
     )
   }
 
@@ -251,19 +452,39 @@ export class InkWriter {
     source: string,
     why: string | undefined,
     rect: Rect,
-    style: { width?: number; speed?: number; tool?: 'pen' | 'highlighter' } = {},
+    style: {
+      width?: number
+      speed?: number
+      tool?: 'pen' | 'highlighter'
+      /** Grid lines and shading: drawn first, thin and pale. */
+      light?: Path[]
+    } = {},
   ): Written {
     const groupId = newId()
+    const width = style.width ?? this.penWidth
+    let start = this.time
+    const pale: TimedStroke[] = []
+    if (style.light?.length) {
+      const l = penStrokes(style.light, {
+        color: paler(color),
+        width: width * 0.55,
+        groupId,
+        startAt: start,
+        speed: (style.speed ?? 1) * 3,
+      })
+      pale.push(...l.strokes)
+      start = l.end + PEN_PAUSE
+    }
     const { strokes, end } = penStrokes(paths, {
       color,
-      width: style.width ?? this.penWidth,
+      width,
       groupId,
-      startAt: this.time,
+      startAt: start,
       speed: style.speed,
       tool: style.tool,
     })
     this.time = end + BLOCK_PAUSE
-    return { groupId, source, why, strokes, rect }
+    return { groupId, source, why, strokes: [...pale, ...strokes], rect }
   }
 
   /** The spot a mark is on: a line, a pointed-at box, or a small square around a point. */

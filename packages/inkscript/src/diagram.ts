@@ -10,6 +10,7 @@ import { compile } from './expr'
 import { drawField, FIELD_KINDS, fieldExtent } from './fields'
 import { expandFigure, FIGURE_NAMES } from './figures'
 import { calloutRoom, drawFreehand, FREEHAND_KINDS, freehandExtent, type PageBox } from './freehand'
+import { drawGraph, endDot, fmtNum, GRAPH_KINDS, GRAPH_SET, graphExtent } from './graphs'
 import { type Box, layoutMath, type Path, type Rng } from './layout'
 import { drawLogic, LOGIC_KINDS, logicExtent } from './logic'
 import { drawOptics, OPTICS_KINDS, opticsExtent } from './optics'
@@ -45,11 +46,15 @@ export type DiagramSpec = {
   y?: [number, number]
   /** Coordinates run downward, as in SVG (for freehand pictures drawn with SVG paths). */
   ydown?: boolean
+  /** Log scales: "log" on an axis, or log: "x" | "y" | "both". Also accepted on the axes item. */
+  xscale?: 'log' | 'linear'
+  yscale?: 'log' | 'linear'
+  log?: 'x' | 'y' | 'both'
   items: DiagramItem[]
 }
 
 /** A drawn diagram in points, top-left at 0,0, y down, paths in drawing order. */
-export type DrawnDiagram = { w: number; h: number; paths: Path[] }
+export type DrawnDiagram = { w: number; h: number; paths: Path[]; light?: Path[] }
 
 const KINDS: Record<string, string> = {
   line: 'line',
@@ -104,6 +109,7 @@ const KINDS: Record<string, string> = {
   ...FIELD_KINDS,
   ...LOGIC_KINDS,
   ...FREEHAND_KINDS,
+  ...GRAPH_KINDS,
   figure: 'figure',
   picture: 'figure',
   // A figure's own name works as a kind too: {"kind":"heart"}.
@@ -191,6 +197,18 @@ function sample(f: (x: number) => number, [a, b]: [number, number], n = 240): Pt
   return out
 }
 
+/** Evenly spaced on a log axis. */
+function sampleLog(f: (x: number) => number, [a, b]: [number, number], n = 400): Pt[] {
+  const lo = Math.log10(Math.max(a, 1e-12))
+  const hi = Math.log10(Math.max(b, 1e-12))
+  const out: Pt[] = []
+  for (let k = 0; k <= n; k++) {
+    const x = 10 ** (lo + ((hi - lo) * k) / n)
+    out.push([x, f(x)])
+  }
+  return out
+}
+
 function paramPoints(o: DiagramItem): Pt[] {
   if (typeof o.x !== 'string' || typeof o.y !== 'string') return []
   const fx = compile(o.x, ['t'])
@@ -272,19 +290,46 @@ function extent(o: DiagramItem, xr: [number, number] | null): Pt[] {
       if (FIELDS.has(o.kind)) return fieldExtent(o)
       if (o.kind === 'logic') return logicExtent(o)
       if (FREEHAND.has(o.kind)) return freehandExtent(o)
+      if (GRAPH_SET.has(o.kind)) return graphExtent(o)
       return []
   }
 }
 
-/** The world box, in y-up units (a y-down spec's y values are negated). */
-function fitWorld(spec: DiagramSpec): { x: [number, number]; y: [number, number] } {
+/** Log scales asked for on the diagram or its axes. */
+function logScales(spec: DiagramSpec): { x: boolean; y: boolean } {
+  const axes = spec.items.find((o) => o.kind === 'axes') as Record<string, unknown> | undefined
+  const s = { ...spec, ...axes } as Record<string, unknown>
+  const log = typeof s.log === 'string' ? s.log : s.log === true ? 'both' : ''
+  return {
+    x: s.xscale === 'log' || s.xlog === true || log === 'x' || log === 'both' || log === 'xy',
+    y: s.yscale === 'log' || s.ylog === true || log === 'y' || log === 'both' || log === 'xy',
+  }
+}
+
+const log10 = (v: number) => (v > 0 ? Math.log10(v) : Number.NaN)
+
+/**
+ * The world box, in y-up units (a y-down spec's y values are negated), after the log
+ * scales: a log axis from 1 to 1000 is the range [0, 3].
+ */
+function fitWorld(
+  spec: DiagramSpec,
+  T: (p: Pt) => Pt,
+  logs: { x: boolean; y: boolean },
+): { x: [number, number]; y: [number, number] } {
   const fy = spec.ydown ? -1 : 1
   const axes = spec.items.find((o) => o.kind === 'axes')
-  const xr = range(spec.x) ?? (axes && range(axes.x))
+  const xRaw = range(spec.x) ?? (axes && range(axes.x))
+  const xr = xRaw && (logs.x ? ([log10(xRaw[0]), log10(xRaw[1])] as [number, number]) : xRaw)
   const y0 = range(spec.y) ?? (axes && range(axes.y))
-  const yr: [number, number] | null | undefined = y0 && (fy > 0 ? y0 : [-y0[1], -y0[0]])
-  if (xr && yr) return { x: xr, y: yr }
-  const all = spec.items.flatMap((o) => extent(o, xr ?? null)).map((p): Pt => [p[0], fy * p[1]])
+  const yLog = y0 && logs.y ? ([log10(y0[0]), log10(y0[1])] as [number, number]) : y0
+  const yr: [number, number] | null | undefined = yLog && (fy > 0 ? yLog : [-yLog[1], -yLog[0]])
+  if (xr?.every(Number.isFinite) && yr?.every(Number.isFinite)) return { x: xr, y: yr }
+  const all = spec.items
+    .flatMap((o) => extent(o, xRaw ?? null))
+    .map(T)
+    .filter((p) => p.every(Number.isFinite))
+    .map((p): Pt => [p[0], fy * p[1]])
   const xs = all.map((p) => p[0])
   const ys = all.map((p) => p[1])
   const pad = (lo: number, hi: number): [number, number] => {
@@ -293,9 +338,10 @@ function fitWorld(spec: DiagramSpec): { x: [number, number]; y: [number, number]
     const m = (hi - lo) * 0.08
     return [lo - m, hi + m]
   }
+  const ok = (r: [number, number] | null | undefined) => (r?.every(Number.isFinite) ? r : null)
   return {
-    x: xr ?? pad(Math.min(...xs), Math.max(...xs)),
-    y: yr ?? pad(Math.min(...ys), Math.max(...ys)),
+    x: ok(xr) ?? pad(Math.min(...xs), Math.max(...xs)),
+    y: ok(yr) ?? pad(Math.min(...ys), Math.max(...ys)),
   }
 }
 
@@ -306,10 +352,20 @@ function niceStep(span: number, target = 6): number {
   return (m < 1.5 ? 1 : m < 3 ? 2 : m < 7 ? 5 : 10) * p
 }
 
-const fmt = (v: number): string => {
-  const r = Math.round(v * 1000) / 1000
-  return Object.is(r, -0) ? '0' : String(r)
+const fmt = fmtNum
+
+/** Tick labels in multiples of π/2 (or π/k): "π/2", "π", "3π/2", "−π". */
+function piLabel(v: number, den: number): string {
+  const n = Math.round((v / Math.PI) * den)
+  const g = gcd(Math.abs(n), den)
+  const [a, b] = [n / g, den / g]
+  const top = a === 1 ? '\\pi' : a === -1 ? '-\\pi' : `${a}\\pi`
+  return b === 1 ? top : `${top}/${b}`
 }
+const gcd = (a: number, b: number): number => (b ? gcd(b, a % b) : a || 1)
+
+/** A log axis's tick label: 1, 10, 100… while short, else 10^k. */
+const decade = (k: number) => (k >= -2 && k <= 4 ? fmtNum(10 ** k) : `10^{${k}}`)
 
 // ---------------------------------------------------------------------------
 // Drawing
@@ -331,7 +387,9 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
     if (!items.length) return { w: 0, h: 0, paths: [] }
     spec = { ...spec, ydown: true, items }
   }
-  const world = fitWorld(spec)
+  const logs = logScales(spec)
+  const T = (p: Pt): Pt => [logs.x ? log10(p[0]) : p[0], logs.y ? log10(p[1]) : p[1]]
+  const world = fitWorld(spec, T, logs)
   const xr = world.x[1] - world.x[0]
   const yr = world.y[1] - world.y[0]
   // Circuits get a fixed scale (a gate is about two letters' height across), so a big
@@ -371,7 +429,19 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
   const sx = W / xr
   const sy = H / yr
   const fy = spec.ydown ? -1 : 1
-  const map = (p: Pt): Pt => [(p[0] - world.x[0]) * sx, H - (fy * p[1] - world.y[0]) * sy]
+  /** Logged world → page. */
+  const mapT = (p: Pt): Pt => [(p[0] - world.x[0]) * sx, H - (fy * p[1] - world.y[0]) * sy]
+  const map = (p: Pt): Pt => mapT(T(p))
+  const unmap = (q: Pt): Pt => {
+    const u = q[0] / sx + world.x[0]
+    const v = (fy * (H - q[1])) / sy + fy * world.y[0]
+    return [logs.x ? 10 ** u : u, logs.y ? 10 ** v : v]
+  }
+  const raw = (lo: number, hi: number, log: boolean): [number, number] =>
+    log ? [10 ** lo, 10 ** hi] : [lo, hi]
+  const xRange = raw(world.x[0], world.x[1], logs.x)
+  const yRange =
+    fy > 0 ? raw(world.y[0], world.y[1], logs.y) : ([-world.y[1], -world.y[0]] as [number, number])
   const pen = new Pen(rng, Math.max(0.35, size * 0.03))
   const headSize = Math.max(4, size * 0.32)
   const labelK = size * 0.62
@@ -420,6 +490,9 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
   const sketch: Sketch = {
     pen,
     map,
+    unmap,
+    xRange,
+    yRange,
     sx,
     sy,
     world,
@@ -432,26 +505,49 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
 
   const yMin = world.y[0] - yr * 0.02
   const yMax = world.y[1] + yr * 0.02
-  /** World points → screen runs, broken where the curve leaves the frame or blows up. */
-  const runs = (points: readonly Pt[]): Pt[][] => {
+  /**
+   * World points → screen runs, broken where the curve leaves the frame, blows up or jumps
+   * (tan x at π/2, ⌊x⌋ at the integers).
+   */
+  const runs = (rawPoints: readonly Pt[]): Pt[][] => {
+    const points = rawPoints.map(T)
     const out: Pt[][] = []
     let run: Pt[] = []
-    const inside = (p: Pt) => Number.isFinite(p[1]) && p[1] >= yMin && p[1] <= yMax
+    const inside = (p: Pt) =>
+      Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[1] >= yMin && p[1] <= yMax
+    const dy = (i: number): number | null => {
+      const a = points[i - 1]
+      const b = points[i]
+      const d = a && b ? Math.abs(b[1] - a[1]) : Number.NaN
+      return Number.isFinite(d) ? d : null
+    }
+    /** A step much bigger than the steps either side of it is a jump, not a steep curve. */
+    const jump = (i: number) => {
+      const d = dy(i)
+      if (d === null || d < yr * 0.01) return false
+      if (d > yr * 0.45) return true
+      const near = [dy(i - 1), dy(i + 1)].filter((v): v is number => v !== null)
+      return near.length > 0 && d > Math.max(...near) * 8
+    }
     for (let i = 0; i < points.length; i++) {
       const p = points[i] as Pt
       const prev = points[i - 1]
+      if (inside(p) && run.length && prev && jump(i)) {
+        if (run.length > 1) out.push(run)
+        run = []
+      }
       if (inside(p)) {
         if (!run.length && prev && Number.isFinite(prev[1])) {
           const edge = prev[1] > yMax ? yMax : yMin
           const t = (edge - prev[1]) / (p[1] - prev[1])
-          if (t > 0 && t < 1) run.push(map([prev[0] + (p[0] - prev[0]) * t, edge]))
+          if (t > 0 && t < 1) run.push(mapT([prev[0] + (p[0] - prev[0]) * t, edge]))
         }
-        run.push(map(p))
+        run.push(mapT(p))
       } else {
         if (run.length && prev && Number.isFinite(p[1]) && inside(prev)) {
           const edge = p[1] > yMax ? yMax : yMin
           const t = (edge - prev[1]) / (p[1] - prev[1])
-          run.push(map([prev[0] + (p[0] - prev[0]) * t, edge]))
+          run.push(mapT([prev[0] + (p[0] - prev[0]) * t, edge]))
         }
         if (run.length > 1) out.push(run)
         run = []
@@ -572,67 +668,146 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
         break
       }
       case 'axes': {
-        const x = range(o.x) ?? world.x
-        const y = range(o.y) ?? world.y
-        const ox = Math.min(Math.max(0, x[0]), x[1])
-        const oy = Math.min(Math.max(0, y[0]), y[1])
-        const xa = map([x[0], oy])
-        const xb = map([x[1], oy])
-        const ya = map([ox, y[0]])
-        const yb = map([ox, y[1]])
+        // In logged units: a log axis from 1 to 1000 runs 0…3 here.
+        const xr0 = range(o.x)
+        const yr0 = range(o.y)
+        const x: [number, number] =
+          xr0 && logs.x ? [log10(xr0[0]), log10(xr0[1])] : (xr0 ?? world.x)
+        const y: [number, number] =
+          yr0 && logs.y ? [log10(yr0[0]), log10(yr0[1])] : (yr0 ?? world.y)
+        // Axes cross at the origin when it is in view, else at the low end (always for log).
+        const ox = logs.x ? x[0] : Math.min(Math.max(0, x[0]), x[1])
+        const oy = logs.y ? y[0] : Math.min(Math.max(0, y[0]), y[1])
+        const xa = mapT([x[0], oy])
+        const xb = mapT([x[1], oy])
+        const ya = mapT([ox, y[0]])
+        const yb = mapT([ox, y[1]])
+        const names = Array.isArray(o.labels) ? o.labels : []
+        const xl = typeof names[0] === 'string' ? names[0] : 'x'
+        const yl = typeof names[1] === 'string' ? names[1] : 'y'
+        const tick = size * 0.18
+        const numbers = o.numbers !== false
+        /** Tick positions in logged units, with their labels (null: a minor tick). */
+        const ticksFor = (
+          lo: number,
+          hi: number,
+          log: boolean,
+          step: unknown,
+          pi: boolean,
+        ): { v: number; label: string | null; latex: boolean }[] => {
+          const out: { v: number; label: string | null; latex: boolean }[] = []
+          if (log) {
+            for (let k = Math.floor(lo); k <= Math.ceil(hi); k++) {
+              if (k >= lo - 1e-9 && k <= hi + 1e-9)
+                out.push({ v: k, label: decade(k), latex: true })
+              if (hi - lo <= 6)
+                for (const m of hi - lo <= 3 ? [2, 3, 4, 5, 6, 7, 8, 9] : [2, 5]) {
+                  const v = k + Math.log10(m)
+                  if (v > lo && v < hi) out.push({ v, label: null, latex: false })
+                }
+            }
+            return out
+          }
+          if (pi) {
+            const den = typeof o.pi === 'number' && o.pi > 0 ? Math.round(o.pi) : 2
+            const st = Math.PI / den
+            const span = (hi - lo) / st
+            const every = Math.max(1, Math.ceil(span / 12))
+            for (let n = Math.ceil(lo / st); n * st <= hi; n++) {
+              if (n === 0 || n % every) continue
+              out.push({ v: n * st, label: piLabel(n * st, den), latex: true })
+            }
+            return out
+          }
+          const st = typeof step === 'number' && step > 0 ? step : niceStep(hi - lo)
+          for (let v = Math.ceil((lo + st * 0.4) / st) * st; v <= hi - st * 0.4; v += st) {
+            if (Math.abs(v) > st * 1e-6) out.push({ v, label: fmt(v), latex: false })
+          }
+          return out.slice(0, 16)
+        }
+        const piX = o.pi === true || typeof o.pi === 'number' || o.pi === 'x'
+        const xt = ticksFor(x[0], x[1], logs.x, o.ticks, piX)
+        const yt = ticksFor(
+          y[0],
+          y[1],
+          logs.y,
+          typeof o.yticks === 'number' ? o.yticks : o.ticks,
+          o.pi === 'y',
+        )
+        if (o.grid === true || o.grid === 'major' || o.grid === 'minor') {
+          // A light grid, like squared or log paper.
+          const minor = o.grid === 'minor' || logs.x || logs.y
+          pen.faint(() => {
+            for (const t of xt)
+              if (t.label !== null || minor)
+                pen.line(mapT([t.v, y[0]]), mapT([t.v, y[1]]), false, true)
+            for (const t of yt)
+              if (t.label !== null || minor)
+                pen.line(mapT([x[0], t.v]), mapT([x[1], t.v]), false, true)
+          })
+        }
         pen.line(xa, xb)
         pen.head(xb, xa, headSize)
         pen.line(ya, yb)
         pen.head(yb, ya, headSize)
-        const names = Array.isArray(o.labels) ? o.labels : []
-        const xl = typeof names[0] === 'string' ? names[0] : 'x'
-        const yl = typeof names[1] === 'string' ? names[1] : 'y'
-        label(xl, xb, [0.4, 1], 3)
-        label(yl, yb, [1, 0.3], 4)
+        label(xl, xb, [0.4, 1], 3, /\\/.test(xl))
+        label(yl, yb, [1, 0.3], 4, /\\/.test(yl))
         if (o.ticks !== false) {
-          const tick = size * 0.18
-          const numbers = o.numbers !== false
-          const steps = (lo: number, hi: number, step: number) => {
-            const out: number[] = []
-            for (
-              let v = Math.ceil((lo + step * 0.4) / step) * step;
-              v <= hi - step * 0.4;
-              v += step
-            ) {
-              if (Math.abs(v) > step * 1e-6) out.push(v)
-            }
-            return out.slice(0, 14)
+          for (const t of xt) {
+            const p = mapT([t.v, oy])
+            const k = t.label === null ? tick * 0.55 : tick
+            pen.line([p[0], p[1] - k], [p[0], p[1] + k])
+            if (numbers && t.label !== null)
+              label(t.label, [p[0], p[1] + tick], [0, 1], 1.5, t.latex)
           }
-          const tx = typeof o.ticks === 'number' && o.ticks > 0 ? o.ticks : niceStep(x[1] - x[0])
-          const ty =
-            typeof o.yticks === 'number' && o.yticks > 0
-              ? o.yticks
-              : typeof o.ticks === 'number' && o.ticks > 0
-                ? o.ticks
-                : niceStep(y[1] - y[0])
-          for (const v of steps(x[0], x[1], tx)) {
-            const p = map([v, oy])
-            pen.line([p[0], p[1] - tick], [p[0], p[1] + tick])
-            if (numbers) label(fmt(v), [p[0], p[1] + tick], [0, 1], 1.5)
+          for (const t of yt) {
+            const p = mapT([ox, t.v])
+            const k = t.label === null ? tick * 0.55 : tick
+            pen.line([p[0] - k, p[1]], [p[0] + k, p[1]])
+            if (numbers && t.label !== null)
+              label(t.label, [p[0] - tick, p[1]], [-1, 0], 1.5, t.latex)
           }
-          for (const v of steps(y[0], y[1], ty)) {
-            const p = map([ox, v])
-            pen.line([p[0] - tick, p[1]], [p[0] + tick, p[1]])
-            if (numbers) label(fmt(v), [p[0] - tick, p[1]], [-1, 0], 1.5)
-          }
+          if (numbers && o.origin === true && !logs.x && !logs.y)
+            label('O', mapT([ox, oy]), [-0.8, 0.8], 2)
         }
         break
       }
       case 'plot':
       case 'parametric': {
         let points: Pt[]
+        let f: ((x: number) => number) | null = null
         if (o.kind === 'plot') {
-          const f = plotFn(o)
+          f = plotFn(o)
           if (!f) break
-          points = sample(f, domain(o, world.x))
+          const xr0 = logs.x ? ([10 ** world.x[0], 10 ** world.x[1]] as [number, number]) : world.x
+          const d = domain(o, xr0)
+          points = logs.x ? sampleLog(f, d) : sample(f, d, 600)
         } else points = paramPoints(o)
         const rs = runs(points)
         for (const r of rs) pen.poly(r, false, dashed)
+        if (f) {
+          const F = f
+          // Open or closed ends (piecewise functions) and holes (removable discontinuities).
+          const d = domain(o, world.x)
+          const ends = Array.isArray(o.ends)
+            ? o.ends
+            : typeof o.ends === 'string'
+              ? [o.ends, o.ends]
+              : []
+          d.forEach((x, i) => {
+            const e = ends[i]
+            if (e !== 'open' && e !== 'closed') return
+            const h = (d[1] - d[0]) * 1e-6 * (i ? -1 : 1)
+            const yv = F(x + h)
+            if (Number.isFinite(yv)) endDot(sketch, map([x, yv]), e === 'open')
+          })
+          for (const hx of Array.isArray(o.holes) ? o.holes : []) {
+            const xv = num(hx, Number.NaN)
+            if (!Number.isFinite(xv)) continue
+            const yv = (F(xv - 1e-7) + F(xv + 1e-7)) / 2
+            if (Number.isFinite(yv)) endDot(sketch, map([xv, yv]), true)
+          }
+        }
         const end = rs.at(-1)?.at(-1)
         if (end) itemLabel(o, end, [0.6, -0.8])
         break
@@ -728,6 +903,7 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
         else if (FIELDS.has(o.kind)) drawField(o, sketch)
         else if (o.kind === 'logic') drawLogic(o, sketch)
         else if (FREEHAND.has(o.kind)) drawFreehand(o, sketch, content)
+        else if (GRAPH_SET.has(o.kind)) drawGraph(o, sketch)
     }
   }
 
@@ -742,18 +918,30 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
   // The frame is wherever the ink went (labels can overhang it).
   const xs: number[] = []
   const ys: number[] = []
-  for (const p of pen.paths) {
+  for (const p of [...pen.paths, ...pen.light]) {
     for (let i = 0; i < p.length; i += 2) {
       xs.push(p[i] as number)
       ys.push(p[i + 1] as number)
     }
   }
   if (!xs.length) return { w: 0, h: 0, paths: [] }
-  const x0 = Math.min(...xs)
-  const y0 = Math.min(...ys)
+  let x0 = xs[0] as number
+  let y0 = ys[0] as number
+  let x1 = x0
+  let y1 = y0
+  for (const v of xs) {
+    x0 = Math.min(x0, v)
+    x1 = Math.max(x1, v)
+  }
+  for (const v of ys) {
+    y0 = Math.min(y0, v)
+    y1 = Math.max(y1, v)
+  }
+  const shift = (p: Path) => p.map((n, i) => n - (i % 2 === 0 ? x0 : y0))
   return {
-    w: Math.max(...xs) - x0,
-    h: Math.max(...ys) - y0,
-    paths: pen.paths.map((p) => p.map((n, i) => n - (i % 2 === 0 ? x0 : y0))),
+    w: x1 - x0,
+    h: y1 - y0,
+    paths: pen.paths.map(shift),
+    light: pen.light.length ? pen.light.map(shift) : undefined,
   }
 }

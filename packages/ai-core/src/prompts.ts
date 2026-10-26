@@ -56,8 +56,18 @@ const DIAGRAMS = String.raw`- draw_diagram: a hand-drawn figure or graph (its ar
 {"type":"diagram","title":"block on a slope","after":"prev","x":[-1,7],"y":[-1,5],"items":[{"kind":"polygon","points":[[0,0],[6,0],[0,3.5]]},{"kind":"hatch","from":[-0.5,0],"to":[6.5,0]},{"kind":"rect","at":[1.5,2.6],"w":1.2,"h":0.9,"angle":-30,"label":"m"},{"kind":"arrow","from":[2.3,2.4],"to":[2.3,0.8],"label":"$mg$"},{"kind":"angle","vertex":[6,0],"from":[0,0],"to":[0,3.5],"label":"$\\theta$"}],"why":"forces on the block"}
   Graph example: {"type":"diagram","x":[-1,7],"y":[-1.5,1.5],"items":[{"kind":"axes","labels":["x","y"]},{"kind":"plot","expr":"sin(x)","domain":[0,6.28],"label":"$y=\\sin x$"},{"kind":"point","at":[3.14,0],"label":"$\\pi$"}]}
   Item kinds (every item may have "label", text with $math$, and "dashed":true):
-  line {from,to} · arrow {from,to, both?} (forces, vectors, velocities) · polyline {points} · polygon {points} · curve {points, closed?} (a smooth freehand curve through the points) · rect {at (lower-left), w, h, angle? in degrees} · circle {center, r} · ellipse {center, rx, ry} · arc {center, r, from, to} (degrees) · angle {vertex, from, to, right?} (arc between two rays; right:true draws the square mark) · axes {x?, y?, labels?, ticks? (step), numbers?} · plot {expr, domain?} (y as a function of x, e.g. "x^2 - 3x", "e^(-x) sin(2x)", "1/x"; use * or juxtaposition, ^ for powers) · parametric {x, y, t} (expressions in t) · point {at} · label {at, text, side? (above, below, left, right)} · dimension {from, to} (a measured length with arrows) · hatch {from, to, side?} (ground, wall or ceiling) · spring {from, to, coils?} · pulley {center, r}
-  "x" and "y" give the visible ranges (fitted to the items when left out); "w" and "h" the size in points (about 240 wide by default; the page is 595 wide). Keep a diagram simple and clear: the fewest items that make the point, labels short.`
+  line {from,to} · arrow {from,to, both?} (forces, vectors, velocities) · polyline {points} · polygon {points} · curve {points, closed?} (a smooth freehand curve through the points) · rect {at (lower-left), w, h, angle? in degrees} · circle {center, r} · ellipse {center, rx, ry} · arc {center, r, from, to} (degrees) · angle {vertex, from, to, right?} (arc between two rays; right:true draws the square mark) · point {at} · label {at, text, side? (above, below, left, right)} · dimension {from, to} (a measured length with arrows) · hatch {from, to, side?} (ground, wall or ceiling) · spring {from, to, coils?} · pulley {center, r}
+  "x" and "y" give the visible ranges (fitted to the items when left out); "w" and "h" the size in points (about 240 wide by default; the page is 595 wide). Keep a diagram simple and clear: the fewest items that make the point, labels short.
+- Graphs: Writey computes every curve itself, so give the maths, never sampled points. Expressions use x (y in relations, t or theta for polar and parametric, n for sequences), ^ for powers, * or juxtaposition, pi, e, sqrt, abs or |x|, ln, log (base 10), exp, sin…arctan, sinh…, floor, ceil, sign, x! and min/max; x^(1/3) is real for negative x.
+  axes {x?, y?, labels?, ticks? (step), yticks?, numbers?, grid?: true ("minor" for fine squares), pi?: true (x ticks at multiples of π/2; 4 for π/4), xscale?/yscale?: "log" (log axes with decades; the ranges are the real values, e.g. x [1, 10000]), origin?: true}
+  plot {expr, domain?, ends?: ["closed","open"] (dots at the domain's ends, for piecewise functions: one plot per piece), holes?: [x] (hollow dots)} · parametric {x, y, t} · implicit {expr: "x^2/9 + y^2/4 = 1"} (any curve f(x, y) = 0: circles, conics, folium, lemniscate) · polar {r: "2(1 - cos t)", t?: [0, 2pi]}
+  region {where: ["y <= 2x + 1", "x^2 + y^2 < 9"]} (shades where all hold; boundaries drawn, dashed when strict) · shade {expr, between?: g(x), from, to, label?} (area under a curve or between two; integrals) · asymptote {x} or {y} or {m, c} (dashed) · tangent {expr, at, normal?: true, length?}
+  slope_field {dy: "x - y"} (differential equations; add plots for solution curves) · vector_field {u, v}
+  points {points, labels?, connect?, hollow?, marker?: "cross", fit?: "linear"} (data, scatter, line of best fit) · sequence {expr: "(-1)^n / n", n: [1, 12], stems?, limit?}
+  Statistics and probability: bars {values, labels} (bar chart: put axes with x [0, count + 0.5]) · histogram {bins: [edges], freq} · pie {values, labels, percent?: true} · boxplot {data} or {min, q1, median, q3, max} (add a number_line under it) · number_line {range, ticks?, points: [{at, open?, label?}], intervals: [{from, to ("inf"/"-inf" for rays), open: [bool, bool], label?}]} (inequalities, intervals) · venn {sets: ["A","B"] or three, shade: ["A&B'", "A|B", "A-B"], regions: {"A&B": "5"}, universe?} · tree {root?, branches: [{label, p, children: [...]}]} (probability trees)
+  3D: axes3d {size?, labels?} · point3d {at: [x, y, z]} (with dashed guides) · arrow3d {from?, to} · line3d {from, to} · polygon3d {points} (planes, faces)
+  Example: {"type":"diagram","x":[-1,4],"y":[-1,4],"items":[{"kind":"axes"},{"kind":"plot","expr":"x^2/2","domain":[0,3],"label":"$y=x^2/2$"},{"kind":"shade","expr":"x^2/2","from":1,"to":2,"label":"$A$"}]}
+  Example: {"type":"diagram","items":[{"kind":"axes","x":[1,1000],"y":[0.1,100],"xscale":"log","yscale":"log","grid":true,"labels":["f (Hz)","G"]},{"kind":"plot","expr":"100/sqrt(1+(x/50)^2)"}]}`
 
 /** Physics pictures (Class 11–12 and beyond): Writey draws the symbols and works out rays and field lines itself. */
 const PHYSICS = `- Physics diagrams are diagram items too; give only the physics and the layout, Writey does the drawing and the maths.
@@ -71,8 +81,9 @@ const PHYSICS = `- Physics diagrams are diagram items too; give only the physics
   Example: {"type":"diagram","title":"object beyond 2F","items":[{"kind":"lens","type":"convex","x":0,"f":10,"object":{"x":-25,"h":4,"label":"AB"},"image":"A'B'"}]}
   Fields and more: charges {charges: [{at, q, label?}, …], lines?} (field lines traced from the real field) · dipole {at, d} · magnet {at, length, north?: "left"|"right"} (bar magnet with its field) · solenoid {from, to, r, turns, field?} · current {at, dir: "out"|"in", rings?} (wire seen end-on with its circular field) · levels {x: [x0, x1], levels: [{n, e}], transitions: [{from, to, label?}]} (energy levels, e in eV as y) · wavefronts {at, r: [radii], plane?} · slits {x, y: [bottom, top], gaps: [[y0, y1], …], label?} (a slit barrier, or a screen without gaps)
   Use these for: circuits (bridges, potentiometer, meter bridge, RC/LR/LCR, rectifiers, transistor amplifiers), logic circuits (adders, multiplexers, any gate network), ray diagrams (all mirror and lens cases, microscope, telescope, prism, slab, total internal reflection), field lines, magnets, solenoids, Bohr levels, Young's double slit. Apparatus with no item kind (AC generator, cyclotron, transformer) is drawn freehand (below).
-- Textbook figures: Writey has its own drawings of these, so use them instead of drawing your own: heart, eye, ear, brain, flower, neuron, nephron, animal_cell, plant_cell, digestive_system, respiratory_system. figure {name, labels?: [part names to label] (default: every part; false for none)}. Example: {"type":"diagram","title":"Human heart","items":[{"kind":"figure","name":"heart"}]}
-- Freehand pictures for anything else (biology: cells, organs, flowers, the heart, the eye, neurons, digestive or respiratory systems; chemistry apparatus; geography; labelled sketches): set "ydown": true on the diagram and draw like an SVG on a canvas about 200 wide, y going down. svg {d: "SVG path data"} or {paths: ["…", "…"]} (M L H V C S Q T A Z, absolute or relative; Writey draws every path by hand; fills are ignored) · blob {center, rx, ry, wobble?: 0–0.3} (an organic closed outline: cells, organs, nuclei) · circle, ellipse, curve, line and arrow work too. Then ONE callouts item names the parts: callouts {labels: [{at: [x, y] (a point on the part), text}]}; Writey lines the names up in columns left and right of the drawing with leader lines, so never place part names yourself. Draw the parts in a sensible order (outline first, then inner parts), keep shapes recognisable rather than detailed, and label every part the student needs.
+- Real pictures (biology, anatomy, cells, organs, plants, animals, apparatus, maps, rocks, anything that looks like something): don't draw these by hand. Call find_picture, pick the clearest diagram from the contact sheet with place_picture, then name the parts the student needs with label_parts (points on the parts in image 1, which then shows the picture). If the chosen picture already carries clear English labels, don't label it again; point at and explain the parts instead. Search again with other words if nothing fits.
+- Textbook figures Writey can draw itself, for when no picture fits or the student wants a sketch: heart, eye, ear, brain, flower, neuron, nephron, animal_cell, plant_cell, digestive_system, respiratory_system. figure {name, labels?: [part names to label] (default: every part; false for none)}. Example: {"type":"diagram","title":"Human heart","items":[{"kind":"figure","name":"heart"}]}
+- Freehand pictures, only for simple sketches (a rough schematic, something no picture shows): set "ydown": true on the diagram and draw like an SVG on a canvas about 200 wide, y going down. svg {d: "SVG path data"} or {paths: ["…", "…"]} (M L H V C S Q T A Z, absolute or relative; Writey draws every path by hand; fills are ignored) · blob {center, rx, ry, wobble?: 0–0.3} (an organic closed outline: cells, organs, nuclei) · circle, ellipse, curve, line and arrow work too. Then ONE callouts item names the parts: callouts {labels: [{at: [x, y] (a point on the part), text}]}; Writey lines the names up in columns left and right of the drawing with leader lines, so never place part names yourself. Draw the parts in a sensible order (outline first, then inner parts), keep shapes recognisable rather than detailed, and label every part the student needs.
   Example: {"type":"diagram","title":"Animal cell","ydown":true,"items":[{"kind":"blob","center":[100,100],"rx":90,"ry":70,"wobble":0.08},{"kind":"circle","center":[95,95],"r":22},{"kind":"blob","center":[95,95],"rx":7,"ry":6},{"kind":"svg","d":"M140 70 C150 60 165 65 160 78 C155 90 140 88 140 70 Z"},{"kind":"callouts","labels":[{"at":[100,30],"text":"cell membrane"},{"at":[110,78],"text":"nucleus"},{"at":[95,95],"text":"nucleolus"},{"at":[152,75],"text":"mitochondrion"},{"at":[40,100],"text":"cytoplasm"}]}]}`
 
 function pageText(ctx: PageContext): string {
@@ -311,6 +322,56 @@ export const WRITEY_TOOLS: ToolSpec[] = [
     ),
   },
   {
+    name: 'find_picture',
+    description:
+      'Search Wikimedia Commons for a real diagram or picture (anatomy, cells, organs, plants, animals, apparatus, maps, specimens…). Returns up to six numbered choices as a contact sheet. Line drawings come first.',
+    parameters: obj(
+      {
+        query: {
+          type: 'string',
+          description:
+            'A few English words naming the figure, e.g. "human heart diagram", "plant cell", "nephron structure". Add "unlabeled" or "blank" when you will name the parts yourself.',
+        },
+      },
+      ['query'],
+    ),
+  },
+  {
+    name: 'place_picture',
+    description:
+      'Paste one of the pictures find_picture returned onto the page, below the work, with room beside it for names and a small credit line. Afterwards image 1 is the picture itself, ready for label_parts.',
+    parameters: obj(
+      {
+        choice: { type: 'integer', description: 'Its number on the contact sheet (1–6).' },
+        size: { type: 'string', enum: ['small', 'medium', 'large'] },
+        after,
+        why,
+      },
+      ['choice'],
+    ),
+  },
+  {
+    name: 'label_parts',
+    description:
+      'Name parts of a picture or figure on the page: for each part, a point on it (in image pixels) and its name. Writey lines the names up beside the picture with leader lines, so never place names yourself.',
+    parameters: obj(
+      {
+        labels: {
+          type: 'array',
+          items: obj(
+            {
+              at: spot.at,
+              text: { type: 'string', description: "The part's name, a few words." },
+            },
+            ['at', 'text'],
+          ),
+        },
+        img: spot.img,
+      },
+      ['labels'],
+    ),
+  },
+  {
     name: 'erase',
     description:
       'Rub out something you wrote or drew in this answer, by the id its tool result gave (e.g. "W3"), to put it right. Ink from earlier answers and the student\'s work can\'t be erased.',
@@ -333,7 +394,7 @@ const AGENT = `You are Writey, a friendly tutor who sits beside the student with
 ${SEEING}
 
 You act through tools, like a computer-use agent acting on a screen. You decide what to do, in what order, how many times, and when you are finished. The student watches each call happen live: your pen glides to what you point at, and your handwriting appears stroke by stroke. Every tool tells you what happened; if something failed (an unknown line tag, no room), adapt.
-- point_at shows what you are reading or talking about. mark is your red pen. write_math and write_text write lines; draw_diagram and draw_table draw by hand.
+- point_at shows what you are reading or talking about. mark is your red pen. write_math and write_text write lines; draw_diagram and draw_table draw by hand. find_picture and place_picture paste a real diagram from Wikimedia Commons, and label_parts names its parts.
 - Your images are a snapshot from when you were asked. Call look_at_page whenever you need to see the page as it is now, e.g. to check what you wrote or to point at your own ink. Use zoom when something is too small to read for sure (a sign, an exponent, a subscript, fine print) instead of guessing.
 - Each thing you write or draw gets an id (W1, W2, …) in its result. If it came out wrong or in the wrong place, erase it and write it again.
 - A tool that fails writes nothing; read the error and change the call rather than repeating it.
@@ -392,7 +453,7 @@ export function agentMessages(
 }
 
 /** What look_at_page hands back, as a message after the tool results (tool results can't hold images everywhere). */
-export function pageLook(ctx: PageContext, yours: readonly string[]): ChatMessage {
+export function pageLook(ctx: PageContext, yours: readonly string[], intro?: string): ChatMessage {
   return {
     role: 'user',
     content: [
@@ -400,7 +461,8 @@ export function pageLook(ctx: PageContext, yours: readonly string[]): ChatMessag
       {
         type: 'text',
         text: [
-          `The page now, from look_at_page. Your ink is violet${yours.length ? `; your lines are ${yours.join(', ')}` : ''}. Line tags were renumbered: use these from now on.`,
+          intro ??
+            `The page now, from look_at_page. Your ink is violet${yours.length ? `; your lines are ${yours.join(', ')}` : ''}. Line tags were renumbered: use these from now on.`,
           pageText(ctx),
         ].join('\n\n'),
       },

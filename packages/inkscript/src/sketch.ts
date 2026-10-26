@@ -45,12 +45,21 @@ export const deg = (d: number) => (d * Math.PI) / 180
 
 export class Pen {
   readonly paths: Path[] = []
+  /** Grid lines and shading, drawn thinner and lighter. */
+  readonly light: Path[] = []
 
   constructor(
     private readonly rng: Rng,
     /** Wobble in points. */
     private readonly rough: number,
   ) {}
+
+  /** Whatever `draw` puts down goes on the light layer. */
+  faint(draw: () => void): void {
+    const n = this.paths.length
+    draw()
+    this.light.push(...this.paths.splice(n))
+  }
 
   private j(n = 1): number {
     return (this.rng() - 0.5) * 2 * this.rough * n
@@ -181,8 +190,13 @@ export function smooth(points: readonly Pt[], closed: boolean, steps = 10): Pt[]
 /** What a drawing module gets: the pen, the world → page map and the label writer. */
 export type Sketch = {
   pen: Pen
-  /** World (y up) → page points (y down). */
+  /** World (y up) → page points (y down). Log axes are applied here. */
   map(p: Pt): Pt
+  /** Page points → world, the inverse of map. */
+  unmap(p: Pt): Pt
+  /** The visible world ranges in the model's own units (not logged). */
+  xRange: [number, number]
+  yRange: [number, number]
   /** Points per world unit. */
   sx: number
   sy: number

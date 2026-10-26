@@ -272,6 +272,10 @@ Primitives: `line, arrow, vector, polyline, polygon, rect, circle, ellipse, arc,
 
 **Physics kinds (HANDOFF D40):** `circuit.ts` (parts between two points, transistors, gates), `optics.ts` (lens/mirror/optics traced from f and the object; prism, slab, refraction by Snell's law), `fields.ts` (charges and dipoles by RK4 field-line tracing, magnet, solenoid, current, levels, wavefronts, slits). They share the pen and the world → page map through `Sketch` (`sketch.ts`); `diagram.ts` dispatches to them and asks them for their extents when fitting the world.
 
+**Maths kinds (HANDOFF D48):** `graphs.ts` adds implicit curves (marching squares), polar, inequality regions and areas (hatched on the pen's light layer), asymptotes, tangents, slope and vector fields, data points, sequences, bar charts, histograms, pie charts, box plots, number lines, Venn diagrams, probability trees and simple 3D (oblique projection). Log axes are applied inside `Sketch.map`, so every kind works on them; `Sketch.unmap` goes back from the page to the world for shading. `Pen.faint()` puts grids and shading on a light layer that the writer draws thinner and paler.
+
+**Real pictures (HANDOFF D49):** `apps/web/src/help/pictures.ts` searches Wikimedia Commons and builds the contact sheet; the agent uploads the chosen picture as an image asset and `InkWriter.picture()` places it (a `Written` with `items` instead of strokes, shown at `at`). `label_parts` becomes a `labels` block that `InkWriter` lays out in columns beside the picture. The ghost preview fades pictures in and Accept adds them under the ink.
+
 ### 5.7 Ghost preview and accept
 
 AI ink first appears as a faint ghost (40% opacity) with a floating bar: **Accept · Redo · Discard · Why?**. Saying "Writey, keep it" or "redo that" works too. Accepting turns it into normal AI-colored ink, still grouped. **Why?** opens the chat with that step's explanation.

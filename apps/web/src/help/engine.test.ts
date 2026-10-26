@@ -17,6 +17,32 @@ vi.mock('../lib/ai', () => ({
   },
 }))
 vi.mock('../lib/helper', () => ({ chatgptResponses: vi.fn(), HelperError: class {} }))
+vi.mock('../lib/assets', () => ({
+  uploadAsset: async () => ({ id: 'asset-1' }),
+  primeImage: () => {},
+}))
+const searched: string[] = []
+vi.mock('./pictures', () => ({
+  searchPictures: async (q: string) => {
+    searched.push(q)
+    return [1, 2].map((n) => ({
+      title: `Heart ${n}`,
+      url: `https://upload.wikimedia.org/x/960px-Heart${n}.svg.png`,
+      width: 960,
+      height: 720,
+      drawing: true,
+      license: 'CC BY-SA 4.0',
+      artist: 'Someone',
+      page: 'https://commons.wikimedia.org/wiki/File:Heart.svg',
+      description: '',
+    }))
+  },
+  pictureBlob: async () => new Blob(['png'], { type: 'image/png' }),
+  decode: async () => ({ naturalWidth: 800, naturalHeight: 600 }),
+  contactSheet: async () => 'data:image/jpeg;base64,SHEET',
+  describeHit: (h: { title: string }, n: number) => `${n}. ${h.title}`,
+  credit: (h: { title: string }) => `${h.title} · Wikimedia Commons`,
+}))
 
 const line = (label: string, y: number) => ({
   label,
@@ -194,5 +220,45 @@ describe('askWritey', () => {
     expect(JSON.stringify(sent[1]?.at(-1))).toContain('base64,Z')
     expect(result.ink).toHaveLength(1)
     expect(result.text).toContain('Writey was cut off')
+  })
+
+  it('finds a real picture, pastes it, and names its parts beside it', async () => {
+    sent.length = 0
+    replies.push(
+      [call(0, 'a', 'find_picture', { query: 'human heart diagram' })],
+      [call(0, 'b', 'place_picture', { choice: 2 })],
+      // Image 1 is 2 px per point from the page's corner (see the capture mock).
+      [
+        call(0, 'c', 'label_parts', {
+          labels: [
+            { at: [300, 400], text: 'aorta' },
+            { at: [700, 450], text: 'right ventricle' },
+          ],
+        }),
+      ],
+      [text('The heart has four chambers.')],
+    )
+    const written: { items?: { kind: string }[]; source: string }[] = []
+    const result = await ask((u) => {
+      if (u.type === 'ink') written.push((u as never as { written: (typeof written)[0] }).written)
+    })
+    expect(searched).toEqual(['human heart diagram'])
+    // The contact sheet came back to the model as an image.
+    expect(JSON.stringify(sent[1])).toContain('base64,SHEET')
+    expect(toolResults(1)[0]).toMatch(/^Found 2 pictures/)
+    expect(toolResults(2).at(-1)).toMatch(/^Pasted the picture \(W1\)/)
+    expect(written[0]?.items?.map((i) => i.kind)).toEqual(['image', 'text'])
+    expect(written[0]?.source).toContain('Heart 2')
+    expect(toolResults(3).at(-1)).toMatch(/^Done \(W2\)/)
+    expect(written[1]?.source).toContain('right ventricle')
+    expect(result.text).toContain('1 picture')
+    expect(result.ink).toHaveLength(2)
+  })
+
+  it('asks for a search before a paste', async () => {
+    sent.length = 0
+    replies.push([call(0, 'a', 'place_picture', { choice: 1 })], [text('ok')])
+    await ask()
+    expect(toolResults(1)[0]).toBe('Error: call find_picture first.')
   })
 })

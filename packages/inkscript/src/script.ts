@@ -41,6 +41,8 @@ export type InkBlock =
   | ({ type: 'diagram'; after?: string; title?: string; why?: string } & DiagramSpec)
   /** A ruled table (truth tables, observations, comparisons); cells may hold $math$. */
   | ({ type: 'table'; after?: string; title?: string; why?: string } & TableSpec)
+  /** Names for parts of a picture (or anything on the page), at pixel spots. */
+  | { type: 'labels'; labels: { text: string; pin: Pin & { at: [number, number] } }[] }
   /** Start a fresh page and carry on at its top. */
   | { type: 'page' }
   /** Markdown for the chat panel: explanations that don't belong on the page. */
@@ -187,6 +189,14 @@ export function toBlock(raw: unknown): InkBlock | null {
         x: range(spec.x ?? spec.xrange),
         y: range(spec.y ?? spec.yrange),
         ydown: spec.ydown === true || spec.coords === 'svg' || undefined,
+        xscale: spec.xscale === 'log' ? 'log' : undefined,
+        yscale: spec.yscale === 'log' ? 'log' : undefined,
+        log:
+          spec.log === 'x' || spec.log === 'y' || spec.log === 'both'
+            ? spec.log
+            : spec.log === true
+              ? 'both'
+              : undefined,
         title: str(o.title) || str(spec.title) || undefined,
         after: after(o.after),
         why,
@@ -211,6 +221,19 @@ export function toBlock(raw: unknown): InkBlock | null {
         after: after(o.after),
         why,
       }
+    }
+    case 'labels':
+    case 'label_parts': {
+      const img = o.img === 2 || o.image === 2 ? 2 : 1
+      const list = Array.isArray(o.labels) ? o.labels : Array.isArray(o.parts) ? o.parts : []
+      const labels = list.flatMap((l) => {
+        if (!l || typeof l !== 'object') return []
+        const r = l as Record<string, unknown>
+        const p = pin({ ...r, img: r.img ?? img, box: undefined })
+        const t = str(r.text) || str(r.name) || str(r.label)
+        return p?.at && t ? [{ text: t, pin: { ...p, at: p.at } }] : []
+      })
+      return labels.length ? { type: 'labels', labels } : null
     }
     case 'page':
     case 'new_page':
@@ -237,6 +260,7 @@ const TOOL_BLOCKS: Record<string, string> = {
   write_text: 'text',
   draw_diagram: 'diagram',
   draw_table: 'table',
+  label_parts: 'labels',
   new_page: 'page',
   say: 'say',
 }

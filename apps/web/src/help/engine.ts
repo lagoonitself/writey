@@ -27,6 +27,7 @@ import {
   type InkBlock,
   InkWriter,
   type Look,
+  type PlacedPicture,
   repairJson,
   sizeFromLines,
   toolBlock,
@@ -34,9 +35,19 @@ import {
 } from '@writey/inkscript'
 import type { AiSettings, KeyProvider, PageRow } from '@writey/shared'
 import { chatRequest } from '../lib/ai'
+import { primeImage, uploadAsset } from '../lib/assets'
 import { chatgptResponses, HelperError } from '../lib/helper'
 import type { PageSnapshot } from '../notebook/tools'
 import { type Capture, capturePage, zoomRegion } from './capture'
+import {
+  contactSheet,
+  credit,
+  decode,
+  describeHit,
+  type PictureHit,
+  pictureBlob,
+  searchPictures,
+} from './pictures'
 
 // The help engine (docs §5, HANDOFF D46): Writey is an agent with a pen. The model sees the
 // page and calls tools (point at, mark, write, draw, look at the page again, say), as many
@@ -272,6 +283,8 @@ function blockMarkdown(b: InkBlock): string {
       return `**${b.target ?? 'spot'}** (${b.kind})${b.note ? `: ${b.note}` : ''}`
     case 'diagram':
       return `*Diagram${b.title ? `: ${b.title}` : ''}*${why}`
+    case 'labels':
+      return `*Labelled: ${b.labels.map((l) => l.text).join(', ')}*`
     case 'table': {
       const row = (r: readonly string[]) => `   | ${r.join(' | ')} |`
       const head = b.header?.length ? b.header : (b.rows[0] ?? [])
@@ -300,7 +313,7 @@ type ToolOutcome = {
   result: string
   /** A fresh picture of the page: every older picture is dropped. */
   look?: ChatMessage
-  /** A close-up: only older close-ups are dropped. */
+  /** A close-up or a contact sheet of pictures: only older ones are dropped. */
   zoom?: ChatMessage
 }
 
@@ -320,7 +333,16 @@ const REQUIRED = new Map(
 )
 
 /** Tools that put ink on the page (or speak): an identical second call is not done again. */
-const ONCE = new Set(['mark', 'write_math', 'write_text', 'draw_diagram', 'draw_table', 'say'])
+const ONCE = new Set([
+  'mark',
+  'write_math',
+  'write_text',
+  'draw_diagram',
+  'draw_table',
+  'label_parts',
+  'place_picture',
+  'say',
+])
 
 /** What is wrong with a tool call's name or arguments, said so the model can fix it. */
 function argProblem(name: string, args: string): string | null {
@@ -397,6 +419,10 @@ class Agent {
   private readonly said: string[] = []
   private usage: Usage | undefined
   private thinking = false
+  /** What the last find_picture showed, by its number on the contact sheet. */
+  private found: PictureHit[] = []
+  /** Pictures pasted in this answer, by page, so label_parts finds them after a new look. */
+  private readonly pictures = new Map<string, PlacedPicture[]>()
 
   constructor(
     private readonly transport: Transport,
@@ -444,6 +470,14 @@ class Agent {
     )
     // Strokes keep their order on the page's timeline.
     w.time = this.writer?.time ?? 0
+    const placed = this.pictures.get(this.page.id) ?? []
+    this.pictures.set(this.page.id, placed)
+    w.pictures = placed
+    // After a new look, the next line still follows what Writey wrote last on this page.
+    const last = [...(this.entries?.values() ?? [])]
+      .filter((e) => e.page === this.page && !e.md.startsWith('*Labelled'))
+      .at(-1)
+    if (last) w.placer.pin(last.written.rect)
     return w
   }
 
@@ -574,6 +608,12 @@ class Agent {
     const { onUpdate } = this.o
     if (c.name === 'look_at_page') return this.lookAtPage()
     if (c.name === 'zoom') return this.zoom(JSON.parse(repairJson(c.arguments || '{}')))
+    if (c.name === 'find_picture') {
+      return this.findPicture(JSON.parse(repairJson(c.arguments || '{}')))
+    }
+    if (c.name === 'place_picture') {
+      return this.placePicture(JSON.parse(repairJson(c.arguments || '{}')), key)
+    }
     if (c.name === 'erase') {
       const a = JSON.parse(repairJson(c.arguments || '{}')) as { id?: unknown }
       return { result: this.erase(String(a.id ?? '')) }
@@ -617,6 +657,7 @@ class Agent {
       case 'mark':
       case 'diagram':
       case 'table':
+      case 'labels':
         return { result: await this.ink(b, key) }
       default:
         return { result: 'Nothing to do.' }
@@ -700,6 +741,123 @@ class Agent {
     }
   }
 
+  /** Searches Wikimedia Commons and shows the model a numbered contact sheet. */
+  private async findPicture(a: { query?: unknown }): Promise<ToolOutcome> {
+    const { signal, onUpdate } = this.o
+    const query = String(a.query ?? '').trim()
+    onUpdate({ type: 'status', text: 'Looking for a picture…' })
+    let hits: PictureHit[]
+    try {
+      hits = await searchPictures(query, signal)
+    } catch (e) {
+      if (signal.aborted) throw e
+      return {
+        result: `Error: couldn't search Wikimedia Commons (${(e as Error).message}). Draw it with draw_diagram instead.`,
+      }
+    }
+    // Small renderings for the contact sheet (Commons serves 330 px thumbnails ready-made).
+    const small = (url: string) => url.replace(/\/\d+px-/, '/330px-')
+    const imgs = await Promise.all(
+      hits.map((h) =>
+        pictureBlob(small(h.url), signal)
+          .then(decode)
+          .catch(() => null),
+      ),
+    )
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+    const shown = hits.flatMap((h, i) => (imgs[i] ? [{ h, img: imgs[i] as HTMLImageElement }] : []))
+    if (!shown.length) {
+      return {
+        result: `No pictures found for "${query}". Try other words (the figure's textbook name, or fewer words), or draw it with draw_diagram.`,
+      }
+    }
+    this.found = shown.map((s) => s.h)
+    const sheet = await contactSheet(shown.map((s) => s.img))
+    return {
+      result: `Found ${shown.length} pictures: see the contact sheet in the next message. Pick one with place_picture, or search again with other words.`,
+      zoom: {
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: sheet } },
+          {
+            type: 'text',
+            text: `Pictures from Wikimedia Commons for "${query}", numbered as on the sheet:\n${this.found.map((h, i) => describeHit(h, i + 1)).join('\n')}\nPrefer a clear diagram that fits what the student needs; one with labels in another language or cluttered with labels is worse than an unlabelled one you label yourself. This sheet is for choosing only, not for pointing.`,
+          },
+        ],
+      },
+    }
+  }
+
+  /** Pastes a picture from the last search, then looks at it closely for labelling. */
+  private async placePicture(
+    a: { choice?: unknown; size?: unknown; after?: unknown; why?: unknown },
+    key: string,
+  ): Promise<ToolOutcome> {
+    const { signal, onUpdate } = this.o
+    const n = Number(a.choice)
+    const hit = this.found[n - 1]
+    if (!hit) {
+      return {
+        result: this.found.length
+          ? `Error: choose a number from 1 to ${this.found.length}.`
+          : 'Error: call find_picture first.',
+      }
+    }
+    onUpdate({ type: 'status', text: 'Pasting the picture…' })
+    let blob: Blob
+    let img: HTMLImageElement
+    try {
+      blob = await pictureBlob(hit.url, signal)
+      img = await decode(blob)
+    } catch (e) {
+      if (signal.aborted) throw e
+      return { result: "Error: that picture couldn't be downloaded. Pick another." }
+    }
+    if (!/^image\/(png|jpeg|webp|gif)$/.test(blob.type)) blob = await asPng(img)
+    const asset = await uploadAsset(await blob.arrayBuffer(), blob.type, 'image')
+    primeImage(asset.id, img)
+    const after = typeof a.after === 'string' ? a.after : undefined
+    const spec = {
+      assetId: asset.id,
+      width: img.naturalWidth,
+      height: img.naturalHeight,
+      after: /^l\d+$/i.test(after ?? '')
+        ? after?.toUpperCase()
+        : after === 'prev'
+          ? 'prev'
+          : undefined,
+      size: (['small', 'medium', 'large'] as const).find((s) => s === a.size),
+      credit: credit(hit),
+      source: `[picture: ${hit.title}] from Wikimedia Commons, ${hit.license}`,
+    }
+    let r = this.writer.picture(spec)
+    if (r && 'noRoom' in r && (await this.turnPage())) r = this.writer.picture(spec)
+    if (!r || 'noRoom' in r) {
+      return { result: 'Error: no room left for the picture. Try size "small", or new_page first.' }
+    }
+    const id = this.record(r, `*Picture: ${hit.title}*`, false, key)
+    const rect = r.items?.[0] ?? r.rect
+    // Image 1 becomes the picture itself, big, so the model can point at its parts.
+    const snap = this.o.lookAgain(this.page)
+    if (!snap) return { result: `Pasted (${id}).` }
+    this.capture = await capturePage(this.page, {
+      ...snap,
+      selection: { x: rect.x, y: rect.y, w: rect.w, h: rect.h },
+    })
+    this.captured = this.page.id
+    this.looks++
+    this.writer = this.newWriter(this.capture)
+    const [w, h] = this.capture.ctx.imageSizes?.focus ?? [0, 0]
+    return {
+      result: `Pasted the picture (${id}). Image 1 is now the picture itself (${w}×${h} px), in the next message.`,
+      look: pageLook(
+        this.capture.ctx,
+        [],
+        `Image 1 is now the picture you pasted, ${w}×${h} px; image 2 is the whole page. To name its parts, call label_parts with a point on each part in image 1 pixels (zoom first if a part is small).`,
+      ),
+    }
+  }
+
   private erase(raw: string): string {
     const id = raw.trim().toUpperCase()
     const e = this.entries.get(id)
@@ -740,13 +898,13 @@ class Agent {
   }
 
   private async ink(b: InkBlock, key: string): Promise<string> {
-    const { onUpdate } = this.o
     const md = blockMarkdown(b)
     let r = this.writer.write(b)
     if (r && 'noRoom' in r && b.type !== 'mark' && (await this.turnPage())) r = this.writer.write(b)
     if (!r) {
       const at = b as { target?: string; pin?: unknown }
       if (at.target || at.pin) return this.missing(at)
+      if (b.type === 'labels') return this.missing({})
       return b.type === 'diagram'
         ? "Error: nothing was drawn: check the items' kinds and coordinates."
         : b.type === 'table'
@@ -757,15 +915,21 @@ class Agent {
       this.unwritten.push(md)
       return 'Error: no room left on the page; it was not written. Put it in your explanation instead.'
     }
-    this.open()
-    this.onThisPage++
-    const id = `W${++this.ids}`
-    this.entries.set(id, { written: r, page: this.page, md, mark: b.type === 'mark', key })
-    onUpdate({ type: 'ink', page: this.page, written: r })
-    onUpdate({ type: 'status', text: 'Writing on your page…' })
+    const id = this.record(r, md, b.type === 'mark', key)
     const where = this.pixels(r.rect)
     const pageNo = this.pages.length > 1 ? ` on page ${this.o.pageNumber(this.page)}` : ''
     return `Done (${id})${pageNo}${where ? `, at ${where} in image 2 pixels` : ''}.`
+  }
+
+  /** Puts a written block in the preview and gives it its id. */
+  private record(r: Written, md: string, mark: boolean, key: string): string {
+    this.open()
+    this.onThisPage++
+    const id = `W${++this.ids}`
+    this.entries.set(id, { written: r, page: this.page, md, mark, key })
+    this.o.onUpdate({ type: 'ink', page: this.page, written: r })
+    this.o.onUpdate({ type: 'status', text: 'Writing on your page…' })
+    return id
   }
 
   /** A page rect in image 2 pixels, for the model to point at its own ink. */
@@ -789,12 +953,16 @@ class Agent {
     if (failure && !written.length && !this.margin.length && !spoken) throw failure
     const parts: string[] = [...this.margin]
     if (written.length) {
-      const drawings = written.filter((w) => w.source.startsWith('[diagram')).length
-      const tables = written.filter((w) => w.source.startsWith('[table')).length
-      const marks = written.filter((w) => w.source.startsWith('[')).length - drawings - tables
-      const lines = written.length - marks - drawings - tables
+      const count = (tag: string) => written.filter((w) => w.source.startsWith(tag)).length
+      const drawings = count('[diagram')
+      const tables = count('[table')
+      const pictures = count('[picture')
+      const named = count('[labels')
+      const marks = count('[') - drawings - tables - pictures - named
+      const lines = written.length - marks - drawings - tables - pictures - named
       const did = [
         lines && `${lines} line${lines === 1 ? '' : 's'}`,
+        pictures && `${pictures} picture${pictures === 1 ? '' : 's'}`,
         drawings && `${drawings} diagram${drawings === 1 ? '' : 's'}`,
         tables && `${tables} table${tables === 1 ? '' : 's'}`,
         marks && `${marks} mark${marks === 1 ? '' : 's'}`,
@@ -822,4 +990,18 @@ class Agent {
       said: spoken || undefined,
     }
   }
+}
+
+/** A picture as PNG, for formats the asset store doesn't take (SVG, AVIF…). */
+async function asPng(img: HTMLImageElement): Promise<Blob> {
+  const c = document.createElement('canvas')
+  c.width = img.naturalWidth
+  c.height = img.naturalHeight
+  ;(c.getContext('2d') as CanvasRenderingContext2D).drawImage(img, 0, 0)
+  return new Promise((resolve, reject) =>
+    c.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error('could not convert the picture'))),
+      'image/png',
+    ),
+  )
 }
