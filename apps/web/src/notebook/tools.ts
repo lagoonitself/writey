@@ -72,6 +72,8 @@ export type PageHandle = {
   ghostAdd(block: Written): void
   /** Writey's pen goes to a spot and rests there while it reads it. */
   ghostLook(look: Look): void
+  /** Writey rubs out one block of its preview. */
+  ghostErase(groupId: string): void
   /** The answer finished streaming; the bar shows Accept / Redo / Discard / Why?. */
   ghostEnd(): void
   /** Accepts or throws away the current preview. Returns false if there is none. */

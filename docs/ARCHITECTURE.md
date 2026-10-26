@@ -206,7 +206,7 @@ Modes: `write` (ink), `explain` (chat), `check` (red marks plus chat), `both` (s
 
 ### 5.3 The two calls
 
-> **Changed (HANDOFF D46):** there is no PLAN call and no single PRODUCE stream any more. Writey is an agent with tools (`look_at_page`, `point_at`, `mark`, `write_math`, `write_text`, `draw_diagram`, `draw_table`, `new_page`, `say`; `ai-core/prompts.ts` `WRITEY_TOOLS`). The model calls them as it decides, each call runs on the page as it arrives and its result goes back to the model, and its reply without tool calls is the margin explanation. The wording rules (§5.2) only add hints such as "hint only" or "words only". The text below is the original design.
+> **Changed (HANDOFF D46):** there is no PLAN call and no single PRODUCE stream any more. Writey is an agent with tools (`look_at_page`, `zoom`, `point_at`, `mark`, `write_math`, `write_text`, `draw_diagram`, `draw_table`, `erase`, `new_page`, `say`; `ai-core/prompts.ts` `WRITEY_TOOLS`). The model calls them as it decides, each call runs on the page as it arrives and its result goes back to the model, and its reply without tool calls is the margin explanation. Since D47 the loop retries hiccups, resumes after a cut-off reply, skips repeated writes, explains bad calls, forces a words-only last request and keeps partial work on failure. The wording rules (§5.2) only add hints such as "hint only" or "words only". The text below is the original design.
 - **PLAN** (small, fast, JSON): `{problem, user_progress, mode, scope: hint|next_step|full, target_line, status_line}`. Its `status_line` is shown and spoken (if voice replies are on). That's the "tell me what you're doing" part.
 - **PRODUCE** (streaming):
   - `explain` → Markdown with KaTeX math in the chat panel.

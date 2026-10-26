@@ -34,9 +34,26 @@ const hits = (a: Rect, b: Rect) =>
 export class Placer {
   private readonly taken: Rect[]
   private prev: Rect | null = null
+  /** Every block "prev" pointed at, so erasing the last one falls back to the one before. */
+  private readonly prevs: Rect[] = []
 
   constructor(private readonly env: PlaceEnv) {
     this.taken = [...env.obstacles]
+  }
+
+  /** Frees the space of erased ink (its strokes' bounds), so later blocks can use it. */
+  free(r: Rect): void {
+    const n = this.env.obstacles.length
+    const gone = (t: Rect) => {
+      const w = Math.min(right(t), right(r)) - Math.max(t.x, r.x)
+      const h = Math.min(bottom(t), bottom(r)) - Math.max(t.y, r.y)
+      return w > 0 && h > 0 && w * h >= 0.6 * Math.min(t.w * t.h, r.w * r.h)
+    }
+    const kept = this.taken.slice(n).filter((t) => !gone(t))
+    this.taken.splice(n, this.taken.length - n, ...kept)
+    const prevs = this.prevs.filter((t) => !gone(t))
+    this.prevs.splice(0, this.prevs.length, ...prevs)
+    this.prev = prevs.at(-1) ?? null
   }
 
   line(label: string): Rect | null {
@@ -112,6 +129,7 @@ export class Placer {
       const rect = { x, y, w: w * scale, h: h * scale }
       this.taken.push(rect)
       this.prev = rect
+      this.prevs.push(rect)
       return { x, y, scale }
     }
     return null
@@ -151,6 +169,7 @@ export class Placer {
   pin(r: Rect): void {
     this.taken.push(r)
     this.prev = r
+    this.prevs.push(r)
   }
 
   /** A free w × h spot next to `r` (right, left, below, above), for a note on a marked spot. */

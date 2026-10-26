@@ -27,6 +27,7 @@ import {
   type InkBlock,
   InkWriter,
   type Look,
+  repairJson,
   sizeFromLines,
   toolBlock,
   type Written,
@@ -35,7 +36,7 @@ import type { AiSettings, KeyProvider, PageRow } from '@writey/shared'
 import { chatRequest } from '../lib/ai'
 import { chatgptResponses, HelperError } from '../lib/helper'
 import type { PageSnapshot } from '../notebook/tools'
-import { type Capture, capturePage } from './capture'
+import { type Capture, capturePage, zoomRegion } from './capture'
 
 // The help engine (docs §5, HANDOFF D46): Writey is an agent with a pen. The model sees the
 // page and calls tools (point at, mark, write, draw, look at the page again, say), as many
@@ -60,6 +61,8 @@ export type HelpUpdate =
   | { type: 'ink'; page: PageRow; written: Written }
   /** Writey's pen goes to a spot to read it. */
   | { type: 'look'; page: PageRow; look: Look }
+  /** Writey rubs out one of its own blocks. */
+  | { type: 'erase'; page: PageRow; groupId: string }
 
 export type HelpResult = {
   text: string
@@ -72,27 +75,51 @@ export type HelpResult = {
 }
 
 export class HelpFailure extends Error {
-  constructor(readonly help: HelpError) {
+  constructor(
+    readonly help: HelpError,
+    /** A hiccup (rate limit, server error, dropped connection): trying again may work. */
+    readonly retry = false,
+  ) {
     super(help.message)
   }
 }
 
 /**
  * A safety stop on model requests in one answer, not a plan: the model ends its turn
- * itself by replying without tool calls.
+ * itself by replying without tool calls. The last request offers no tools.
  */
 const MAX_STEPS = 40
+/** Tries of one request that failed before anything came back. */
+const MAX_RETRIES = 2
+/** From this many steps left, each result reminds the model to wrap up. */
+const WRAP_UP = 3
+/** Failed tool calls in a row before Writey suggests looking again or finishing. */
+const FAIL_STREAK = 4
+
+const retryable = (status: number) => status === 408 || status === 429 || status >= 500
+
+/** Stream errors after which the model can carry on from what it already sent. */
+const RESUMABLE = new Set(['length', 'interrupted', 'incomplete'])
+
+type StreamError = Extract<StreamEvent, { type: 'error' }>
 
 /** How one provider is called: a stream of events, with Writey's tools offered. */
 type Transport = {
-  stream(messages: ChatMessage[], effort: Effort): AsyncIterable<StreamEvent>
-  failure(ev: Extract<StreamEvent, { type: 'error' }>): HelpError
+  /** `final`: tools stay listed (the history refers to them) but may not be called. */
+  stream(messages: ChatMessage[], effort: Effort, final: boolean): AsyncIterable<StreamEvent>
+  failure(ev: StreamError): HelpError
 }
+
+const failureOf = (t: Transport, ev: StreamError) =>
+  new HelpFailure(
+    t.failure(ev),
+    RESUMABLE.has(ev.code ?? '') || (ev.status !== undefined && retryable(ev.status)),
+  )
 
 /** OpenRouter and OpenCode Zen: Chat Completions through the Worker. */
 function chatCompletions(provider: KeyProvider, model: string, signal: AbortSignal): Transport {
   return {
-    async *stream(messages, effort) {
+    async *stream(messages, effort, final) {
       let res: Response
       try {
         res = await chatRequest(
@@ -104,15 +131,22 @@ function chatCompletions(provider: KeyProvider, model: string, signal: AbortSign
             stream: true,
             reasoning: effort,
             tools: WRITEY_TOOLS,
+            toolChoice: final ? 'none' : undefined,
           }),
           signal,
         )
       } catch (e) {
         if (signal.aborted) throw e
-        throw new HelpFailure({ message: "Couldn't reach Writey's server. Check your connection." })
+        throw new HelpFailure(
+          { message: "Couldn't reach Writey's server. Check your connection." },
+          true,
+        )
       }
       if (!res.ok)
-        throw new HelpFailure(describeError(provider, model, res.status, await res.text()))
+        throw new HelpFailure(
+          describeError(provider, model, res.status, await res.text()),
+          retryable(res.status),
+        )
       if (!res.body) throw new HelpFailure({ message: 'The model sent an empty reply.' })
       yield* chatEvents(res.body)
     },
@@ -129,15 +163,22 @@ function chatCompletions(provider: KeyProvider, model: string, signal: AbortSign
 /** ChatGPT plan: the Responses API through Writey Helper on this computer. */
 function chatgptPlan(model: string, signal: AbortSignal): Transport {
   return {
-    async *stream(messages, effort) {
+    async *stream(messages, effort, final) {
       let res: Response
       try {
-        res = await chatgptResponses(responsesBody(model, messages, effort, WRITEY_TOOLS), signal)
+        res = await chatgptResponses(
+          responsesBody(model, messages, effort, WRITEY_TOOLS, final ? 'none' : undefined),
+          signal,
+        )
       } catch (e) {
         if (e instanceof HelperError) throw new HelpFailure(describeChatgptError(0, '', e.code))
         throw e
       }
-      if (!res.ok) throw new HelpFailure(describeChatgptError(res.status, await res.text()))
+      if (!res.ok)
+        throw new HelpFailure(
+          describeChatgptError(res.status, await res.text()),
+          retryable(res.status),
+        )
       if (!res.body) throw new HelpFailure({ message: 'ChatGPT sent an empty reply.' })
       yield* responsesEvents(res.body)
     },
@@ -255,7 +296,82 @@ const list = (lines: readonly string[]) => lines.map((l, i) => `${i + 1}. ${l}`)
 const pagesLabel = (numbers: readonly number[]) =>
   numbers.length > 1 ? `pages ${numbers[0]}–${numbers.at(-1)}` : `page ${numbers[0] ?? ''}`.trim()
 
-type ToolOutcome = { result: string; look?: ChatMessage }
+type ToolOutcome = {
+  result: string
+  /** A fresh picture of the page: every older picture is dropped. */
+  look?: ChatMessage
+  /** A close-up: only older close-ups are dropped. */
+  zoom?: ChatMessage
+}
+
+/** One model request: what it said, the tools it called and what they did. */
+type Step = {
+  text: string
+  calls: ToolCall[]
+  results: ChatMessage[]
+  thoughts: unknown[]
+  look?: ChatMessage
+  zooms: ChatMessage[]
+  failure?: HelpFailure
+}
+
+const REQUIRED = new Map(
+  WRITEY_TOOLS.map((t) => [t.name, (t.parameters.required as string[] | undefined) ?? []]),
+)
+
+/** Tools that put ink on the page (or speak): an identical second call is not done again. */
+const ONCE = new Set(['mark', 'write_math', 'write_text', 'draw_diagram', 'draw_table', 'say'])
+
+/** What is wrong with a tool call's name or arguments, said so the model can fix it. */
+function argProblem(name: string, args: string): string | null {
+  const required = REQUIRED.get(name)
+  if (!required)
+    return `Error: there is no tool "${name}". Tools: ${[...REQUIRED.keys()].join(', ')}.`
+  let o: unknown
+  try {
+    o = JSON.parse(repairJson(args || '{}'))
+  } catch {
+    return `Error: the arguments for ${name} are not valid JSON (cut off?). Nothing was done; send the call again, complete and shorter.`
+  }
+  if (!o || typeof o !== 'object' || Array.isArray(o)) {
+    return `Error: the arguments for ${name} must be a JSON object.`
+  }
+  const a = o as Record<string, unknown>
+  const missing = required.filter((k) => a[k] === undefined || a[k] === null || a[k] === '')
+  return missing.length ? `Error: ${name} needs ${missing.join(' and ')}. Nothing was done.` : null
+}
+
+/** The same call, however its JSON was spaced. */
+function callKey(c: ToolCall): string {
+  try {
+    return `${c.name} ${JSON.stringify(JSON.parse(repairJson(c.arguments || '{}')))}`
+  } catch {
+    return `${c.name} ${c.arguments}`
+  }
+}
+
+const wait = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    const t = setTimeout(resolve, ms)
+    signal.addEventListener('abort', () => {
+      clearTimeout(t)
+      resolve()
+    })
+  })
+
+const OUT_OF_STEPS =
+  'You have used all your steps for this answer. Stop calling tools now and reply with the explanation for the margin, saying briefly what is left to do if anything.'
+
+type AgentResult = {
+  text: string
+  written: Written[]
+  marked: boolean
+  usage?: Usage
+  said?: string
+}
+
+/** A block Writey wrote in this answer, by the id the model knows it by (W1, W2…). */
+type Entry = { written: Written; page: PageRow; md: string; mark: boolean; key: string }
 
 /** One answer: runs the model's tool calls on the page until it replies without any. */
 class Agent {
@@ -270,11 +386,12 @@ class Agent {
   /** Pages with a preview open (it opens on the first look or line). */
   private readonly started = new Set<string>()
   private readonly pages: PageRow[]
-  /** Pages that got ink, in order. */
-  private readonly inked: PageRow[] = []
-  readonly written: Written[] = []
-  marked = false
-  private readonly onPage: string[] = []
+  /** Ink in this answer, by id, in the order it was written. */
+  private readonly entries = new Map<string, Entry>()
+  private ids = 0
+  /** Calls that already put something on the page, and what they returned. */
+  private readonly done = new Map<string, string>()
+  private failedInARow = 0
   private readonly unwritten: string[] = []
   private readonly margin: string[] = []
   private readonly said: string[] = []
@@ -330,54 +447,146 @@ class Agent {
     return w
   }
 
-  async run(
-    first: ChatMessage[],
-    effort: Effort,
-  ): Promise<{ text: string; written: Written[]; marked: boolean; usage?: Usage; said?: string }> {
+  get written(): Written[] {
+    return [...this.entries.values()].map((e) => e.written)
+  }
+
+  async run(first: ChatMessage[], effort: Effort): Promise<AgentResult> {
     let messages = first
+    let retries = 0
     for (let step = 0; step < MAX_STEPS && !this.o.signal.aborted; step++) {
-      let text = ''
-      const calls: ToolCall[] = []
-      const results: ChatMessage[] = []
-      const thoughts: unknown[] = []
-      let look: ChatMessage | undefined
-      for await (const ev of this.transport.stream(messages, effort)) {
-        if (ev.type === 'text') {
-          if (!text && this.margin.length) this.o.onUpdate({ type: 'text', text: '\n\n' })
-          text += ev.text
-          this.o.onUpdate({ type: 'text', text: ev.text })
-        } else if (ev.type === 'tool') {
-          calls.push(ev.call)
-          const out = await this.call(ev.call)
-          results.push({ role: 'tool', toolCallId: ev.call.id, content: out.result })
-          if (out.look) look = out.look
-        } else if (ev.type === 'thought') thoughts.push(ev.item)
-        else if (ev.type === 'reasoning' && !this.thinking) {
-          this.thinking = true
-          this.o.onUpdate({ type: 'thinking' })
-        } else if (ev.type === 'usage') this.usage = addUsage(this.usage, ev.usage)
-        else if (ev.type === 'error') throw new HelpFailure(this.transport.failure(ev))
+      const final = step === MAX_STEPS - 1
+      const ask = final ? [...messages, { role: 'user' as const, content: OUT_OF_STEPS }] : messages
+      const s = await this.step(ask, effort, final)
+      if (this.o.signal.aborted) break
+      if (s.text.trim()) this.margin.push(s.text.trim())
+      if (s.failure) {
+        const nothing = !s.text && !s.calls.length
+        if (s.failure.retry && nothing && retries < MAX_RETRIES) {
+          // Nothing happened yet: the same request again, after a pause.
+          retries++
+          this.o.onUpdate({ type: 'status', text: 'The model hiccuped, trying again…' })
+          await wait(1500 * retries, this.o.signal)
+          step--
+          continue
+        }
+        // Tools that already ran stay done: the model carries on from their results.
+        if (!s.failure.retry || !s.calls.length) return this.finish(s.failure)
       }
-      if (text.trim()) this.margin.push(text.trim())
-      if (!calls.length) break
-      // Only the newest picture of the page is sent again.
+      if (!s.calls.length) break
+      retries = 0
+      const left = MAX_STEPS - 2 - step
+      const notes = [
+        s.failure && `(Your reply was cut off: ${s.failure.message} Keep each call smaller.)`,
+        left <= WRAP_UP &&
+          `(${left === 0 ? 'No tool steps' : `${left} step${left === 1 ? '' : 's'}`} left: finish up.)`,
+        this.failedInARow >= FAIL_STREAK &&
+          '(Several calls in a row failed. Call look_at_page to see the page as it is now, or finish with your explanation.)',
+      ].filter(Boolean)
+      if (this.failedInARow >= FAIL_STREAK) this.failedInARow = 0
+      const results = s.results.map((r, i) =>
+        i === s.results.length - 1 && notes.length
+          ? { ...r, content: `${r.content}\n${notes.join('\n')}` }
+          : r,
+      )
+      // Only the newest picture of the page is sent again, and only the newest close-ups.
+      const base = s.look
+        ? withoutImages(messages)
+        : s.zooms.length
+          ? messages.map((m) => (this.isZoom(m) ? (withoutImages([m])[0] as ChatMessage) : m))
+          : messages
       messages = [
-        ...(look ? withoutImages(messages) : messages),
-        { role: 'assistant', content: text, toolCalls: calls, reasoning: thoughts },
+        ...base,
+        { role: 'assistant', content: s.text, toolCalls: s.calls, reasoning: s.thoughts },
         ...results,
-        ...(look ? [look] : []),
+        ...(s.look ? [s.look] : []),
+        ...s.zooms,
       ]
       this.o.onUpdate({ type: 'status', text: 'Thinking…' })
     }
     return this.finish()
   }
 
+  private readonly zoomMessages = new WeakSet<ChatMessage>()
+  private isZoom(m: ChatMessage): boolean {
+    return this.zoomMessages.has(m)
+  }
+
+  /** One model request, with its tool calls run on the page as they arrive. */
+  private async step(messages: ChatMessage[], effort: Effort, final: boolean): Promise<Step> {
+    const s: Step = { text: '', calls: [], results: [], thoughts: [], zooms: [] }
+    try {
+      for await (const ev of this.transport.stream(messages, effort, final)) {
+        if (ev.type === 'text') {
+          if (!s.text && this.margin.length) this.o.onUpdate({ type: 'text', text: '\n\n' })
+          s.text += ev.text
+          this.o.onUpdate({ type: 'text', text: ev.text })
+        } else if (ev.type === 'tool') {
+          // The last request is for words only; a model that calls a tool anyway is ignored.
+          if (final) continue
+          s.calls.push(ev.call)
+          const out = await this.call(ev.call)
+          this.failedInARow = out.result.startsWith('Error') ? this.failedInARow + 1 : 0
+          s.results.push({ role: 'tool', toolCallId: ev.call.id, content: out.result })
+          if (out.look) s.look = out.look
+          if (out.zoom) {
+            this.zoomMessages.add(out.zoom)
+            s.zooms.push(out.zoom)
+          }
+        } else if (ev.type === 'thought') s.thoughts.push(ev.item)
+        else if (ev.type === 'reasoning' && !this.thinking) {
+          this.thinking = true
+          this.o.onUpdate({ type: 'thinking' })
+        } else if (ev.type === 'usage') this.usage = addUsage(this.usage, ev.usage)
+        else if (ev.type === 'error') {
+          s.failure = failureOf(this.transport, ev)
+          break
+        }
+      }
+    } catch (e) {
+      if (!(e instanceof HelpFailure) || this.o.signal.aborted) throw e
+      s.failure = e
+    }
+    return s
+  }
+
   /** Runs one tool call on the page and says what happened, for the model. */
   private async call(c: ToolCall): Promise<ToolOutcome> {
+    const problem = argProblem(c.name, c.arguments)
+    if (problem) return { result: problem }
+    const key = callKey(c)
+    const before = ONCE.has(c.name) ? this.done.get(key) : undefined
+    if (before)
+      return { result: `Already done by an identical earlier call (${before}). Not repeated.` }
+    try {
+      const out = await this.run1(c, key)
+      if (ONCE.has(c.name) && !out.result.startsWith('Error')) this.done.set(key, out.result)
+      return out
+    } catch (e) {
+      // A bug in one tool shouldn't end the answer: the model hears about it and goes on.
+      if (this.o.signal.aborted) throw e
+      console.error(e)
+      return { result: `Error: ${c.name} failed (${(e as Error).message}). Nothing was done.` }
+    }
+  }
+
+  private async run1(c: ToolCall, key: string): Promise<ToolOutcome> {
     const { onUpdate } = this.o
     if (c.name === 'look_at_page') return this.lookAtPage()
+    if (c.name === 'zoom') return this.zoom(JSON.parse(repairJson(c.arguments || '{}')))
+    if (c.name === 'erase') {
+      const a = JSON.parse(repairJson(c.arguments || '{}')) as { id?: unknown }
+      return { result: this.erase(String(a.id ?? '')) }
+    }
     const b = toolBlock(c.name, c.arguments)
-    if (!b) return { result: `Error: unknown tool or unreadable arguments for ${c.name}.` }
+    if (!b) {
+      return {
+        result:
+          c.name === 'point_at' || c.name === 'mark'
+            ? 'Error: say where: a line tag (target), or a spot (box or at) in image pixels.'
+            : `Error: couldn't use those arguments for ${c.name}. Nothing was done.`,
+      }
+    }
     switch (b.type) {
       case 'say': {
         this.said.push(b.text)
@@ -385,12 +594,16 @@ class Agent {
         for (const s of [...buf.push(b.text), ...buf.flush()]) onUpdate({ type: 'say', text: s })
         return { result: 'Said.' }
       }
-      case 'page':
+      case 'page': {
+        if (this.page !== this.o.page && !this.onThisPage) {
+          return { result: 'You are already at the top of a fresh blank page; write there.' }
+        }
         return (await this.turnPage(true))
           ? {
               result: `Turned to a new blank page (page ${this.o.pageNumber(this.page)}). Write at its top.`,
             }
-          : { result: 'Could not add a page.' }
+          : { result: 'Error: could not add a page. Put the rest in your explanation.' }
+      }
       case 'look': {
         const look = this.writer.look(b)
         if (!look) return { result: this.missing(b) }
@@ -404,7 +617,7 @@ class Agent {
       case 'mark':
       case 'diagram':
       case 'table':
-        return { result: await this.ink(b) }
+        return { result: await this.ink(b, key) }
       default:
         return { result: 'Nothing to do.' }
     }
@@ -439,6 +652,71 @@ class Agent {
     }
   }
 
+  /** A close-up of part of image 1 or 2, like a computer-use model zooming in. */
+  private async zoom(a: { box?: unknown; img?: unknown }): Promise<ToolOutcome> {
+    if (this.page.id !== this.captured) {
+      return {
+        result: 'Error: this is a new page you have not looked at; call look_at_page first.',
+      }
+    }
+    const box = Array.isArray(a.box) ? a.box.map(Number) : []
+    if (box.length !== 4 || box.some((v) => !Number.isFinite(v))) {
+      return { result: 'Error: box must be [x0, y0, x1, y1] in image pixels.' }
+    }
+    const img = Number(a.img) === 2 ? 2 : 1
+    const f = img === 2 ? this.capture.images.page : this.capture.images.focus
+    const [x0, y0, x1, y1] = box as [number, number, number, number]
+    const pt = (px: number, o: number) => px / f.scale + o
+    // At least a couple of lines' worth, with a little room around it, inside the page.
+    const min = 24
+    let x = pt(Math.min(x0, x1), f.x) - 4
+    let y = pt(Math.min(y0, y1), f.y) - 4
+    let w = Math.abs(x1 - x0) / f.scale + 8
+    let h = Math.abs(y1 - y0) / f.scale + 8
+    if (w < min) [x, w] = [x - (min - w) / 2, min]
+    if (h < min) [y, h] = [y - (min - h) / 2, min]
+    x = Math.max(0, x)
+    y = Math.max(0, y)
+    w = Math.min(w, this.page.width - x)
+    h = Math.min(h, this.page.height - y)
+    if (w <= 0 || h <= 0) return { result: 'Error: that box is outside the page.' }
+    const snap = this.o.lookAgain(this.page)
+    if (!snap) return { result: "Error: the page isn't open right now." }
+    this.o.onUpdate({ type: 'status', text: 'Looking closer…' })
+    const z = await zoomRegion(this.page, snap, { x, y, w, h })
+    const times = Math.round((z.size[0] / (w * f.scale)) * 10) / 10
+    return {
+      result: 'Here is the close-up: see the image in the next message.',
+      zoom: {
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: z.image } },
+          {
+            type: 'text',
+            text: `Close-up from zoom of [${box.map(Math.round).join(',')}] in image ${img}, shown ${times}× bigger. It is for reading only: keep pointing in image 1 and image 2 pixels.`,
+          },
+        ],
+      },
+    }
+  }
+
+  private erase(raw: string): string {
+    const id = raw.trim().toUpperCase()
+    const e = this.entries.get(id)
+    if (!e) {
+      const mine = [...this.entries.keys()]
+      return `Error: there is no ${raw || 'id'} in this answer. Yours: ${mine.join(', ') || 'none'}.`
+    }
+    this.entries.delete(id)
+    this.done.delete(e.key)
+    if (e.page === this.page) {
+      this.writer.free(e.written.rect)
+      this.onThisPage--
+    }
+    this.o.onUpdate({ type: 'erase', page: e.page, groupId: e.written.groupId })
+    return `Erased ${id}.`
+  }
+
   private open(): void {
     if (this.started.has(this.page.id)) return
     this.started.add(this.page.id)
@@ -461,32 +739,33 @@ class Agent {
     return true
   }
 
-  private async ink(b: InkBlock): Promise<string> {
+  private async ink(b: InkBlock, key: string): Promise<string> {
     const { onUpdate } = this.o
     const md = blockMarkdown(b)
     let r = this.writer.write(b)
     if (r && 'noRoom' in r && b.type !== 'mark' && (await this.turnPage())) r = this.writer.write(b)
     if (!r) {
       const at = b as { target?: string; pin?: unknown }
-      return at.target || at.pin ? this.missing(at) : 'Error: nothing was written (empty).'
+      if (at.target || at.pin) return this.missing(at)
+      return b.type === 'diagram'
+        ? "Error: nothing was drawn: check the items' kinds and coordinates."
+        : b.type === 'table'
+          ? 'Error: the table has no cells.'
+          : 'Error: nothing was written (empty).'
     }
     if ('noRoom' in r) {
       this.unwritten.push(md)
       return 'Error: no room left on the page; it was not written. Put it in your explanation instead.'
     }
-    if (!this.onThisPage) {
-      this.inked.push(this.page)
-      this.open()
-    }
+    this.open()
     this.onThisPage++
-    this.written.push(r)
-    if (b.type === 'mark') this.marked = true
-    this.onPage.push(md)
+    const id = `W${++this.ids}`
+    this.entries.set(id, { written: r, page: this.page, md, mark: b.type === 'mark', key })
     onUpdate({ type: 'ink', page: this.page, written: r })
     onUpdate({ type: 'status', text: 'Writing on your page…' })
     const where = this.pixels(r.rect)
     const pageNo = this.pages.length > 1 ? ` on page ${this.o.pageNumber(this.page)}` : ''
-    return `Done${pageNo}${where ? `, at ${where} in image 2 pixels` : ''}.`
+    return `Done (${id})${pageNo}${where ? `, at ${where} in image 2 pixels` : ''}.`
   }
 
   /** A page rect in image 2 pixels, for the model to point at its own ink. */
@@ -497,11 +776,17 @@ class Agent {
     return `[${px(r.x, f.x)},${px(r.y, f.y)},${px(r.x + r.w, f.x)},${px(r.y + r.h, f.y)}]`
   }
 
-  private finish() {
+  /**
+   * The answer as it stands. After a failure, whatever is already on the page and in the
+   * margin is kept, with a note; a failure before anything happened is thrown.
+   */
+  private finish(failure?: HelpFailure): AgentResult {
     // The margin is the explanation. A copy of the page is kept for the model's history,
     // but the chat only shows that it was written (styles hide the list).
-    const { written } = this
+    const entries = [...this.entries.values()]
+    const written = entries.map((e) => e.written)
     const spoken = this.said.join(' ').trim()
+    if (failure && !written.length && !this.margin.length && !spoken) throw failure
     const parts: string[] = [...this.margin]
     if (written.length) {
       const drawings = written.filter((w) => w.source.startsWith('[diagram')).length
@@ -514,23 +799,25 @@ class Agent {
         tables && `${tables} table${tables === 1 ? '' : 's'}`,
         marks && `${marks} mark${marks === 1 ? '' : 's'}`,
       ].filter(Boolean)
-      const where = pagesLabel(this.inked.map(this.o.pageNumber))
+      const inked = [...new Set(entries.map((e) => e.page))]
+      const where = pagesLabel(inked.map(this.o.pageNumber))
       parts.push(
         `<details class="ink-copy"><summary>Written on ${where} · ${did.join(', ')}</summary>`,
-        list(this.onPage),
+        list(entries.map((e) => e.md)),
         '</details>',
       )
     }
     if (this.unwritten.length) {
       parts.push(`**This didn't fit on the page**, so here's the rest:`, list(this.unwritten))
     }
+    if (failure) parts.push(`*Writey was cut off: ${failure.help.message}*`)
     if (!parts.length && !spoken && !this.o.signal.aborted) {
       throw new HelpFailure({ message: 'The model sent an empty reply. Try again.' })
     }
     return {
       text: withSaid(spoken, parts.join('\n\n')),
       written,
-      marked: this.marked,
+      marked: entries.some((e) => e.mark),
       usage: this.usage,
       said: spoken || undefined,
     }

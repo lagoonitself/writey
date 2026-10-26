@@ -119,6 +119,11 @@ export class InkWriter {
   }
 
   /** Moves the pen to a line or spot to read it; nothing is written. */
+  /** Erased ink: its space is free again. */
+  free(rect: Rect): void {
+    this.placer.free(rect)
+  }
+
   look(block: Extract<InkBlock, { type: 'look' }>): Look | null {
     const rect = this.markRegion(block)
     if (!rect) return null

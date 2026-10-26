@@ -116,6 +116,26 @@ export async function capturePage(page: PageRow, snap: PageSnapshot): Promise<Ca
   }
 }
 
+/** A zoomed view is at most this big, and at most this many times the page's points. */
+const ZOOM_MAX_PX = 1024
+const ZOOM_MAX_SCALE = 8
+
+/** A close-up of one region of the page (the zoom tool), with Writey's preview on it. */
+export async function zoomRegion(
+  page: PageRow,
+  snap: PageSnapshot,
+  r: Rect,
+): Promise<{ image: string; size: [number, number] }> {
+  const images = await loadImages(snap.items)
+  const scale = Math.min(ZOOM_MAX_SCALE, ZOOM_MAX_PX / Math.max(r.w, r.h))
+  const canvas = await renderRegion(page, snap.items, images, r, scale)
+  const image =
+    page.background.kind === 'blank'
+      ? canvas.toDataURL('image/png')
+      : canvas.toDataURL('image/jpeg', 0.9)
+  return { image, size: [canvas.width, canvas.height] }
+}
+
 const intersects = (a: Rect, b: Rect) =>
   a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
 

@@ -22,6 +22,7 @@ export function responsesBody(
   messages: readonly ChatMessage[],
   effort?: Effort,
   tools?: readonly ToolSpec[],
+  toolChoice?: 'auto' | 'none',
 ): string {
   const instructions = messages
     .filter((m) => m.role === 'system')
@@ -65,6 +66,7 @@ export function responsesBody(
   }
   if (tools?.length) {
     body.tools = tools.map((t) => ({ type: 'function', ...t }))
+    if (toolChoice) body.tool_choice = toolChoice
   }
   return JSON.stringify(body)
 }
@@ -145,7 +147,7 @@ export async function* responsesEvents(
         const reason = ev.response?.incomplete_details?.reason
         yield {
           type: 'error',
-          code: 'incomplete',
+          code: reason === 'max_output_tokens' ? 'length' : 'incomplete',
           message: `The answer was cut short${reason ? ` (${reason})` : ''}.`,
         }
         return

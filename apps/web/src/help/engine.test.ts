@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { PageSnapshot } from '../notebook/tools'
 
 // A fake model that answers each request with the next scripted reply, as SSE.
-const replies: string[][] = []
+const replies: (string[] | Response)[] = []
 const sent: ChatMessage[][] = []
 const sse = (chunks: string[]) =>
   new Response(chunks.map((c) => `data: ${c}\n\n`).join('') + 'data: [DONE]\n\n')
@@ -12,7 +12,8 @@ const sse = (chunks: string[]) =>
 vi.mock('../lib/ai', () => ({
   chatRequest: async (_p: string, body: string) => {
     sent.push(JSON.parse(body).messages)
-    return sse(replies.shift() ?? [])
+    const next = replies.shift() ?? []
+    return next instanceof Response ? next : sse(next)
   },
 }))
 vi.mock('../lib/helper', () => ({ chatgptResponses: vi.fn(), HelperError: class {} }))
@@ -24,6 +25,7 @@ const line = (label: string, y: number) => ({
 })
 let captures = 0
 vi.mock('./capture', () => ({
+  zoomRegion: async () => ({ image: 'data:image/png;base64,Z', size: [400, 200] }),
   capturePage: async () => {
     captures++
     const lines = captures === 1 ? [line('L1', 100), line('L2', 140)] : [line('L1', 100)]
@@ -96,7 +98,7 @@ describe('askWritey', () => {
     const second = sent[1] as ChatMessage[]
     const tools = second.filter((m) => m.role === 'tool').map((m) => m.content)
     expect(tools[0]).toBe('Your pen is resting on it.')
-    expect(tools[1]).toMatch(/^Done, at \[/)
+    expect(tools[1]).toMatch(/^Done \(W1\), at \[/)
     expect(tools[2]).toContain('no line L9')
     expect(JSON.stringify(second.at(-1))).toContain('base64,2')
     // The first screenshot is dropped once there is a newer one.
@@ -104,5 +106,93 @@ describe('askWritey', () => {
     expect(result.plan.mode).toBe('check')
     expect(result.ink).toHaveLength(2)
     expect(result.text).toContain('The sign flips')
+  })
+
+  const ask = async (onUpdate: (u: { type: string }) => void = () => {}) => {
+    const { askWritey } = await import('./engine')
+    const page = { id: 'p1', width: 595, height: 842 } as PageRow
+    const snapshot = {} as PageSnapshot
+    return askWritey({
+      utterance: 'what next?',
+      page,
+      snapshot,
+      settings: { provider: 'openrouter', model: 'm' } as never,
+      turns: [],
+      signal: new AbortController().signal,
+      onUpdate,
+      nextPage: async () => null,
+      pageNumber: () => 1,
+      lookAgain: () => snapshot,
+    })
+  }
+  const toolResults = (i: number) =>
+    (sent[i] as ChatMessage[]).filter((m) => m.role === 'tool').map((m) => String(m.content))
+
+  it('tries again after a hiccup that happened before anything came back', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
+    sent.length = 0
+    replies.push(new Response('busy', { status: 503 }), [text('All good.')])
+    const run = ask()
+    await vi.runAllTimersAsync()
+    const result = await run
+    vi.useRealTimers()
+    expect(sent).toHaveLength(2)
+    expect(result.text).toContain('All good.')
+  })
+
+  it('keeps tools that ran when the reply is cut off, and carries on', async () => {
+    sent.length = 0
+    replies.push(
+      [
+        call(0, 'a', 'write_math', { latex: 'x = 1' }),
+        JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] }),
+      ],
+      [text('Done.')],
+    )
+    const result = await ask()
+    expect(sent).toHaveLength(2)
+    expect(toolResults(1)[0]).toMatch(/^Done \(W1\)/)
+    expect(toolResults(1)[0]).toContain('cut off')
+    expect(result.ink).toHaveLength(1)
+  })
+
+  it("doesn't write the same thing twice, explains bad calls, and erases its own ink", async () => {
+    sent.length = 0
+    const updates: string[] = []
+    replies.push(
+      [
+        call(0, 'a', 'write_math', { latex: 'x = 1' }),
+        call(1, 'b', 'write_math', { latex: 'x = 1' }),
+        call(2, 'c', 'write_math', {}),
+        call(3, 'd', 'draw_pictures', {}),
+        call(4, 'e', 'erase', { id: 'w1' }),
+        call(5, 'f', 'erase', { id: 'W7' }),
+      ],
+      [text('Fixed.')],
+    )
+    const result = await ask((u) => updates.push(u.type))
+    const r = toolResults(1)
+    expect(r[1]).toMatch(/^Already done/)
+    expect(r[2]).toContain('write_math needs latex')
+    expect(r[3]).toContain('no tool "draw_pictures"')
+    expect(r[4]).toBe('Erased W1.')
+    expect(r[5]).toContain('Yours: none')
+    expect(updates).toContain('erase')
+    expect(result.ink).toBeUndefined()
+  })
+
+  it('zooms in and keeps the work when a later request fails for good', async () => {
+    sent.length = 0
+    replies.push(
+      [
+        call(0, 'a', 'zoom', { box: [10, 10, 60, 40] }),
+        call(1, 'b', 'write_text', { text: 'Nearly there' }),
+      ],
+      new Response('{"error":{"message":"No credits"}}', { status: 402 }),
+    )
+    const result = await ask()
+    expect(JSON.stringify(sent[1]?.at(-1))).toContain('base64,Z')
+    expect(result.ink).toHaveLength(1)
+    expect(result.text).toContain('Writey was cut off')
   })
 })

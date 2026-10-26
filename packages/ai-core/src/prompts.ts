@@ -206,6 +206,12 @@ export const WRITEY_TOOLS: ToolSpec[] = [
     parameters: obj({}),
   },
   {
+    name: 'zoom',
+    description:
+      'Look closely at a region (box, in image 1 or 2 pixels): returns it magnified, for small handwriting, subscripts, signs or fine print. Your pixel coordinates stay those of image 1 and 2.',
+    parameters: obj({ box: spot.box, img: spot.img }, ['box']),
+  },
+  {
     name: 'point_at',
     description:
       'Move your pen to a line or spot and rest it there while you read it or talk about it. The student sees the pen and your note. Writes nothing.',
@@ -271,7 +277,14 @@ export const WRITEY_TOOLS: ToolSpec[] = [
       {
         title: { type: 'string' },
         after,
-        items: { type: 'array', items: { type: 'object' } },
+        items: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { kind: { type: 'string', description: 'The item kind, e.g. "arrow".' } },
+            required: ['kind'],
+          },
+        },
         x: { type: 'array', items: { type: 'number' }, description: 'Visible x range.' },
         y: { type: 'array', items: { type: 'number' }, description: 'Visible y range.' },
         w: { type: 'number' },
@@ -298,6 +311,12 @@ export const WRITEY_TOOLS: ToolSpec[] = [
     ),
   },
   {
+    name: 'erase',
+    description:
+      'Rub out something you wrote or drew in this answer, by the id its tool result gave (e.g. "W3"), to put it right. Ink from earlier answers and the student\'s work can\'t be erased.',
+    parameters: obj({ id: { type: 'string', description: 'An id such as "W3".' } }, ['id']),
+  },
+  {
     name: 'new_page',
     description:
       'Turn to a fresh page and carry on at its top. Writey also does this itself when a page fills up.',
@@ -315,8 +334,10 @@ ${SEEING}
 
 You act through tools, like a computer-use agent acting on a screen. You decide what to do, in what order, how many times, and when you are finished. The student watches each call happen live: your pen glides to what you point at, and your handwriting appears stroke by stroke. Every tool tells you what happened; if something failed (an unknown line tag, no room), adapt.
 - point_at shows what you are reading or talking about. mark is your red pen. write_math and write_text write lines; draw_diagram and draw_table draw by hand.
-- Your images are a snapshot from when you were asked. Call look_at_page whenever you need to see the page as it is now, e.g. to check what you wrote or to point at your own ink.
-- When you are finished, stop calling tools and reply with the explanation for the margin, in Markdown. That reply ends your turn.
+- Your images are a snapshot from when you were asked. Call look_at_page whenever you need to see the page as it is now, e.g. to check what you wrote or to point at your own ink. Use zoom when something is too small to read for sure (a sign, an exponent, a subscript, fine print) instead of guessing.
+- Each thing you write or draw gets an id (W1, W2, …) in its result. If it came out wrong or in the wrong place, erase it and write it again.
+- A tool that fails writes nothing; read the error and change the call rather than repeating it.
+- When you are finished, stop calling tools and reply with the explanation for the margin, in Markdown. That reply ends your turn. You have a limited number of steps; when a result says you are nearly out, wrap up.
 
 How a good tutor uses the pen (judge for yourself what this request needs):
 - The page holds what a tutor writes or draws: the working, one step per line; a sketch or diagram whenever there is anything to see; a table for anything with rows and columns; red-pen marks on their work. The margin explains in words. Never copy the page into the margin.

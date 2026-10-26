@@ -33,6 +33,10 @@ export type StreamEvent =
   | { type: 'tool'; call: ToolCall }
   /** Reasoning to hand back with the next request (OpenRouter details, Responses items). */
   | { type: 'thought'; item: unknown }
+  /**
+   * The stream failed. Codes "length" (cut off at the token limit), "interrupted" (the
+   * connection dropped) and "incomplete" mean the model can carry on from what it sent.
+   */
   | { type: 'error'; message: string; status?: number; code?: string }
 
 /** How hard the model thinks before it answers. */
@@ -46,6 +50,8 @@ export type ChatRequest = {
   /** OpenRouter only; other providers ignore it. */
   reasoning?: Effort
   tools?: readonly ToolSpec[]
+  /** "none" makes the model answer in words even though tools are on offer. */
+  toolChoice?: 'auto' | 'none'
 }
 
 /** Messages in Chat Completions wire format. */
@@ -83,6 +89,7 @@ export function chatBody(provider: KeyProvider, req: ChatRequest): string {
   if (provider === 'openrouter' && req.reasoning) body.reasoning = { effort: req.reasoning }
   if (req.tools?.length) {
     body.tools = req.tools.map((t) => ({ type: 'function', function: t }))
+    if (req.toolChoice) body.tool_choice = req.toolChoice
   }
   return JSON.stringify(body)
 }
@@ -133,6 +140,7 @@ type Chunk = {
         function?: { name?: string; arguments?: string }
       }[]
     }
+    finish_reason?: string | null
   }[]
   usage?: Usage
   error?: { message?: string; code?: number }
@@ -145,6 +153,10 @@ export async function* chatEvents(body: ReadableStream<Uint8Array>): AsyncGenera
   // Tool calls stream in pieces by index; each is complete once the next one starts.
   const calls: ToolCall[] = []
   let sent = 0
+  // Some providers send no call ids; made-up ones must not repeat across requests.
+  const stamp = Math.random().toString(36).slice(2, 8)
+  let finished: string | undefined
+  let done = false
   const details: Detail[] = []
   const finish = function* (all: boolean): Generator<StreamEvent> {
     const until = all ? calls.length : calls.length - 1
@@ -153,14 +165,21 @@ export async function* chatEvents(body: ReadableStream<Uint8Array>): AsyncGenera
       if (c.name) {
         yield {
           type: 'tool',
-          call: { id: c.id || `call_${sent}`, name: c.name, arguments: c.arguments || '{}' },
+          call: {
+            id: c.id || `call_${stamp}_${sent}`,
+            name: c.name,
+            arguments: c.arguments || '{}',
+          },
         }
       }
     }
     if (all) for (const d of details.splice(0)) yield { type: 'thought', item: d }
   }
   for await (const data of sseData(body)) {
-    if (data === '[DONE]') break
+    if (data === '[DONE]') {
+      done = true
+      break
+    }
     let chunk: Chunk
     try {
       chunk = JSON.parse(data) as Chunk
@@ -195,7 +214,11 @@ export async function* chatEvents(body: ReadableStream<Uint8Array>): AsyncGenera
       yield { type: 'text', text: delta.content }
     }
     for (const t of delta?.tool_calls ?? []) {
-      const i = t.index ?? calls.length - 1
+      let i = t.index ?? Math.max(0, calls.length - 1)
+      // A new id at an index that already holds a whole call is a new call (some providers
+      // send every call at index 0).
+      const at = calls[i]
+      if (at && t.id && at.id && t.id !== at.id) i = calls.length
       if (!calls[i]) calls[i] = { id: '', name: '', arguments: '' }
       const c = calls[i] as ToolCall
       if (t.id) c.id = t.id
@@ -203,9 +226,20 @@ export async function* chatEvents(body: ReadableStream<Uint8Array>): AsyncGenera
       if (t.function?.arguments) c.arguments += t.function.arguments
       yield* finish(false)
     }
+    const reason = chunk.choices?.[0]?.finish_reason
+    if (reason) finished = reason
     if (chunk.usage) yield { type: 'usage', usage: chunk.usage }
   }
   yield* finish(true)
+  if (finished === 'length') {
+    yield { type: 'error', code: 'length', message: 'The answer was cut off at the length limit.' }
+  } else if (!done && !finished) {
+    yield {
+      type: 'error',
+      code: 'interrupted',
+      message: 'The connection dropped before the model finished.',
+    }
+  }
 }
 
 /** Text of a non-streamed Chat Completions response. */

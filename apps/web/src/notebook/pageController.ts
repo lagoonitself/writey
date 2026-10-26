@@ -149,6 +149,7 @@ export class PageController {
       ghostStart: (actions) => this.ghostStart(actions),
       ghostAdd: (block) => this.ghostAdd(block),
       ghostLook: (look) => this.ghostLook(look),
+      ghostErase: (groupId) => this.ghostErase(groupId),
       ghostEnd: () => this.ghostEnd(),
       ghostAccept: () => this.ghostAccept(),
       ghostDiscard: () => this.ghostDiscard(),
@@ -214,6 +215,15 @@ export class PageController {
     const g = this.ghost
     if (!g) return
     g.looks.push({ look, offset: this.ghostOffset(g, look.at) })
+    this.requestWet()
+  }
+
+  /** Writey rubs out one of its own preview blocks. */
+  private ghostErase(groupId: string): void {
+    const g = this.ghost
+    if (!g) return
+    g.blocks = g.blocks.filter((b) => b.written.groupId !== groupId)
+    this.emitGhost()
     this.requestWet()
   }
 

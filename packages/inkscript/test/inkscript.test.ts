@@ -190,6 +190,15 @@ describe('placement', () => {
     expect(placer.place(150, 30, 'L2', 6)).toBeNull()
   })
 
+  it('frees the space of erased ink, and "prev" goes back to the block before', () => {
+    const placer = new Placer({ page, lines, obstacles: lines.map((l) => l.rect), target: 'L2' })
+    const a = placer.place(150, 30, undefined, 6)
+    const b = placer.place(150, 30, 'prev', 6)
+    if (!a || !b) throw new Error('not placed')
+    placer.free({ x: b.x, y: b.y, w: 150, h: 30 })
+    expect(placer.place(150, 30, 'prev', 6)?.y).toBe(b.y)
+  })
+
   it('starts near the top of an empty page', () => {
     const placer = new Placer({ page, lines: [], obstacles: [], target: null })
     const spot = placer.place(100, 20, undefined, 6)

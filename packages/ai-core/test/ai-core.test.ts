@@ -163,6 +163,55 @@ describe('streaming', () => {
     expect(events).toEqual([{ type: 'error', message: 'overloaded', status: 502 }])
   })
 
+  it('reports a reply cut off at the length limit, after the calls it finished', async () => {
+    const events = await collect(
+      chatEvents(
+        stream(
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"say","arguments":"{\\"text\\":\\"hi\\"}"}}]}}]}\n\n',
+          'data: {"choices":[{"delta":{},"finish_reason":"length"}]}\n\n',
+          'data: [DONE]\n\n',
+        ),
+      ),
+    )
+    expect(events.map((e) => e.type)).toEqual(['tool', 'error'])
+    expect(events[1]).toMatchObject({ code: 'length' })
+  })
+
+  it('reports a stream that drops before it finishes', async () => {
+    const events = await collect(
+      chatEvents(stream('data: {"choices":[{"delta":{"content":"Half"}}]}\n\n')),
+    )
+    expect(events.at(-1)).toMatchObject({ type: 'error', code: 'interrupted' })
+    const ok = await collect(
+      chatEvents(
+        stream('data: {"choices":[{"delta":{"content":"A"},"finish_reason":"stop"}]}\n\n'),
+      ),
+    )
+    expect(ok).toEqual([{ type: 'text', text: 'A' }])
+  })
+
+  it('splits calls that all arrive at index 0, and never repeats made-up ids', async () => {
+    const twoCalls = () =>
+      stream(
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"say","arguments":"{}"}}]}}]}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"b","function":{"name":"new_page","arguments":"{}"}}]}}]}\n\n',
+        'data: [DONE]\n\n',
+      )
+    const events = await collect(chatEvents(twoCalls()))
+    expect(events.map((e) => (e.type === 'tool' ? e.call.name : e.type))).toEqual([
+      'say',
+      'new_page',
+    ])
+    const noIds = () =>
+      stream(
+        'data: {"choices":[{"delta":{"tool_calls":[{"function":{"name":"say","arguments":"{}"}}]}}]}\n\n',
+        'data: [DONE]\n\n',
+      )
+    const [a] = await collect(chatEvents(noIds()))
+    const [b] = await collect(chatEvents(noIds()))
+    expect(a?.type === 'tool' && b?.type === 'tool' && a.call.id !== b.call.id).toBe(true)
+  })
+
   it('reads non-streamed replies', () => {
     expect(messageText({ choices: [{ message: { content: '{"a":1}' } }] })).toBe('{"a":1}')
   })
@@ -294,12 +343,14 @@ describe('prompts', () => {
     const names = WRITEY_TOOLS.map((t) => t.name)
     expect(names).toEqual([
       'look_at_page',
+      'zoom',
       'point_at',
       'mark',
       'write_math',
       'write_text',
       'draw_diagram',
       'draw_table',
+      'erase',
       'new_page',
       'say',
     ])
