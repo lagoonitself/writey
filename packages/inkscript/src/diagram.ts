@@ -1,4 +1,13 @@
 import {
+  BOND_EM,
+  CHEM_KINDS,
+  CHEM_SET,
+  type ChemRefs,
+  chemExtent,
+  drawChem,
+  expandChem,
+} from './chem'
+import {
   CIRCUIT_KINDS,
   circuitExtent,
   circuitSegments,
@@ -110,6 +119,7 @@ const KINDS: Record<string, string> = {
   ...LOGIC_KINDS,
   ...FREEHAND_KINDS,
   ...GRAPH_KINDS,
+  ...CHEM_KINDS,
   figure: 'figure',
   picture: 'figure',
   // A figure's own name works as a kind too: {"kind":"heart"}.
@@ -291,6 +301,7 @@ function extent(o: DiagramItem, xr: [number, number] | null): Pt[] {
       if (o.kind === 'logic') return logicExtent(o)
       if (FREEHAND.has(o.kind)) return freehandExtent(o)
       if (GRAPH_SET.has(o.kind)) return graphExtent(o)
+      if (CHEM_SET.has(o.kind)) return chemExtent(o)
       return []
   }
 }
@@ -387,6 +398,9 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
     if (!items.length) return { w: 0, h: 0, paths: [] }
     spec = { ...spec, ydown: true, items }
   }
+  // Reactions and lab set-ups are made of molecules, formulas, arrows and apparatus.
+  if (spec.items.some((o) => o.kind === 'reaction' || o.kind === 'setup' || o.kind === 'curly'))
+    spec = { ...spec, items: expandChem(spec.items) }
   const logs = logScales(spec)
   const T = (p: Pt): Pt => [logs.x ? log10(p[0]) : p[0], logs.y ? log10(p[1]) : p[1]]
   const world = fitWorld(spec, T, logs)
@@ -399,15 +413,19 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
     (o) => o.kind === 'optics' || o.kind === 'lens' || o.kind === 'mirror',
   )
   const instrument = rayItems.some((o) => Array.isArray(o.elements) && o.elements.length > 1)
-  const natural = wired
-    ? Math.max(230, xr * size * 1.25)
-    : instrument
-      ? opts.maxW
-      : rayItems.length
-        ? Math.max(300, size * 14)
-        : spec.items.some((o) => FREEHAND.has(o.kind))
-          ? opts.maxW
-          : Math.max(230, size * 11)
+  // Chemistry is drawn at a fixed scale too: a bond about one and a half letters long.
+  const chem = spec.items.some((o) => CHEM_SET.has(o.kind))
+  const natural = chem
+    ? Math.max(size * 4, xr * size * BOND_EM)
+    : wired
+      ? Math.max(230, xr * size * 1.25)
+      : instrument
+        ? opts.maxW
+        : rayItems.length
+          ? Math.max(300, size * 14)
+          : spec.items.some((o) => FREEHAND.has(o.kind))
+            ? opts.maxW
+            : Math.max(230, size * 11)
   // Callout names sit beside the drawing, so the drawing leaves them room.
   const room = calloutRoom(spec.items, { size }, (world.x[0] + world.x[1]) / 2)
   let W = Math.min(
@@ -415,8 +433,8 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
     Math.max(size * 4, num(spec.w, natural)),
   )
   // Pictures keep their proportions; a tall one gets narrower instead of squashed.
-  const picture = spec.items.some((o) => FREEHAND.has(o.kind)) && !spec.h
-  if (picture) W = Math.min(W, (size * 21 * xr) / yr)
+  const picture = (chem || spec.items.some((o) => FREEHAND.has(o.kind))) && !spec.h
+  if (picture && !chem) W = Math.min(W, (size * 21 * xr) / yr)
   // Same scale on both axes unless told otherwise, so circles stay round.
   // Ray diagrams stretch their heights, as textbooks do, so rays don't lie flat on the axis.
   const rays = spec.items.some(
@@ -425,7 +443,10 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
   const minH = W * (rays ? 0.62 : 0.4)
   const natH = picture ? (W * yr) / xr : Math.min(W * 1.15, Math.max(minH, (W * yr) / xr))
   // A ray diagram is never squashed flat, even when asked for a short frame.
-  const H = Math.max(size * 3, rays ? Math.max(num(spec.h, natH), minH) : num(spec.h, natH))
+  // Chemistry keeps one scale both ways, so rings stay regular.
+  const H = chem
+    ? natH
+    : Math.max(size * 3, rays ? Math.max(num(spec.h, natH), minH) : num(spec.h, natH))
   const sx = W / xr
   const sy = H / yr
   const fy = spec.ydown ? -1 : 1
@@ -487,7 +508,9 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
       }
     : { L: 0, R: W, T: 0, B: H }
   const terminals = circuitTerminals(spec.items)
+  const refs: ChemRefs = new Map()
   const sketch: Sketch = {
+    rng,
     pen,
     map,
     unmap,
@@ -904,6 +927,7 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
         else if (o.kind === 'logic') drawLogic(o, sketch)
         else if (FREEHAND.has(o.kind)) drawFreehand(o, sketch, content)
         else if (GRAPH_SET.has(o.kind)) drawGraph(o, sketch)
+        else if (CHEM_SET.has(o.kind)) drawChem(o, sketch, refs)
     }
   }
 

@@ -276,6 +276,8 @@ Primitives: `line, arrow, vector, polyline, polygon, rect, circle, ellipse, arc,
 
 **Real pictures (HANDOFF D49):** `apps/web/src/help/pictures.ts` searches Wikimedia Commons and builds the contact sheet; the agent uploads the chosen picture as an image asset and `InkWriter.picture()` places it (a `Written` with `items` instead of strokes, shown at `at`). `label_parts` becomes a `labels` block that `InkWriter` lays out in columns beside the picture. The ghost preview fades pictures in and Accept adds them under the ink.
 
+**Chemistry (HANDOFF D50):** `chem.ts`. `molecule()` runs smiles-drawer's `DrawerBase` (from `new SvgDrawer().preprocessor`, `compactDrawing: false`) with a recording canvas wrapper, so it returns atoms, bond lines, wedges and aromatic circles in bond-length units; `gridLayout()` redraws open chains straight for displayed formulas. Drawing is ours: bonds clipped round atom letters, hydrogens placed clear of each other, lone pairs in free directions. Molecules register their atoms by `id:n` and `id:El` for `curly` arrows, which are drawn after everything else. `reaction` and `setup` items expand into molecules, `ctext`, `rarrow`, apparatus and a callouts item before the world is fitted; chemistry uses a fixed scale (1 bond ≈ 1.5 em) with one scale on both axes. `ce.ts` turns `\ce{…}` into LaTeX, and `latex.ts`/`layout.ts` gained `\xrightarrow`-style stretchy arrows.
+
 ### 5.7 Ghost preview and accept
 
 AI ink first appears as a faint ghost (40% opacity) with a floating bar: **Accept · Redo · Discard · Why?**. Saying "Writey, keep it" or "redo that" works too. Accepting turns it into normal AI-colored ink, still grouped. **Why?** opens the chat with that step's explanation.

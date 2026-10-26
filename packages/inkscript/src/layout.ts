@@ -363,6 +363,8 @@ function classOf(n: MathNode): AtomClass | null {
       return n.cls
     case 'op':
       return 'op'
+    case 'xarrow':
+      return 'rel'
     case 'scripts':
       return n.base ? classOf(n.base) : 'ord'
     case 'space':
@@ -393,6 +395,8 @@ function node(n: MathNode, ctx: Ctx): Laid {
     }
     case 'op':
       return { box: opBox(n, ctx), cls }
+    case 'xarrow':
+      return { box: xarrowBox(n, ctx), cls: 'rel' }
     case 'scripts':
       return { box: scriptsBox(n, ctx), cls }
     case 'frac':
@@ -452,6 +456,71 @@ function opBox(n: Extract<MathNode, { t: 'op' }>, ctx: Ctx): Box {
   const center = (b.d - b.h) / 2
   const dy = -AXIS * s - center
   return { ...b, h: b.h - dy, d: b.d + dy, paths: shiftPaths(b.paths, 0, dy) }
+}
+
+/** A reaction arrow as long as its conditions need, with them written above and below. */
+function xarrowBox(n: Extract<MathNode, { t: 'xarrow' }>, ctx: Ctx): Box {
+  const { s, rng } = ctx
+  const small = { ...ctx, s: smaller(s) }
+  const above = n.above ? node(n.above, small).box : null
+  const below = n.below ? node(n.below, small).box : null
+  const pad = 0.25 * s
+  const w = Math.max(1.5 * s, (above?.w ?? 0) + pad * 2, (below?.w ?? 0) + pad * 2)
+  const a = -AXIS * s
+  const head = 0.16 * s
+  const m = 0.06 * s
+  const paths: Path[] = []
+  const right = (y: number, half = false) => {
+    paths.push(handLine(m, y, w - m, y, rng))
+    paths.push(
+      half
+        ? [w - m - head * 1.4, y - head, w - m, y]
+        : [w - m - head * 1.3, y - head, w - m, y, w - m - head * 1.3, y + head],
+    )
+  }
+  const left = (y: number, half = false) => {
+    paths.push(handLine(w - m, y, m, y, rng))
+    paths.push(
+      half
+        ? [m + head * 1.4, y + head, m, y]
+        : [m + head * 1.3, y - head, m, y, m + head * 1.3, y + head],
+    )
+  }
+  const g = 0.09 * s
+  switch (n.kind) {
+    case '->':
+      right(a)
+      break
+    case '<-':
+      left(a)
+      break
+    case '<->':
+      paths.push(handLine(m, a, w - m, a, rng))
+      paths.push([w - m - head * 1.3, a - head, w - m, a, w - m - head * 1.3, a + head])
+      paths.push([m + head * 1.3, a - head, m, a, m + head * 1.3, a + head])
+      break
+    case '<=>':
+      right(a - g, true)
+      left(a + g, true)
+      break
+    case '=':
+      paths.push(handLine(m, a - g, w - m, a - g, rng), handLine(m, a + g, w - m, a + g, rng))
+      break
+  }
+  let h = -a + head + g
+  let d = 0
+  const gap = 0.12 * s
+  if (above) {
+    const y = a - g - head - gap - above.d
+    paths.push(...shiftPaths(above.paths, (w - above.w) / 2, y))
+    h = -y + above.h
+  }
+  if (below) {
+    const y = a + g + head + gap + below.h
+    paths.push(...shiftPaths(below.paths, (w - below.w) / 2, y))
+    d = y + below.d
+  }
+  return { w, h, d, paths }
 }
 
 function scriptsBox(n: Extract<MathNode, { t: 'scripts' }>, ctx: Ctx): Box {

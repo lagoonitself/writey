@@ -208,6 +208,8 @@ export type Sketch = {
   /** Where wires may end (gate and transistor pins); wire ends close to one snap onto it. */
   terminals?: readonly Pt[]
   itemLabel(o: DiagramItem, at: Pt, dir: Pt, gap?: number): void
+  /** The diagram's random source, for handwriting written by drawing modules. */
+  rng: Rng
 }
 
 export const dist = (a: Pt, b: Pt): number => Math.hypot(b[0] - a[0], b[1] - a[1])
