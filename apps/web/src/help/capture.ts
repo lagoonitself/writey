@@ -6,6 +6,7 @@ import {
   type Rect,
 } from '@writey/ai-core'
 import { drawItems, type Item, itemBounds } from '@writey/ink-engine'
+import type { ImageFrame } from '@writey/inkscript'
 import type { PageRow } from '@writey/shared'
 import { loadImage } from '../lib/assets'
 import { drawPdfRegion, type PdfTextLine, pdfTextLines } from '../lib/pdf'
@@ -16,8 +17,12 @@ import type { PageSnapshot } from '../notebook/tools'
 
 const FOCUS_MAX_PX = 1344
 const FOCUS_MAX_SCALE = 4
-const THUMB_MAX_PX = 512
+/** The whole page is sent big enough to point at any part of it; PDFs and photos bigger still. */
+const PAGE_MAX_PX = 768
+const PAGE_MAX_PX_PRINTED = 1280
 const TAG_COLOR = '#d4148c'
+/** Printed lines listed with their boxes, like browser-use's element list. */
+const MAX_PRINTED = 150
 
 export type Capture = {
   ctx: PageContext
@@ -26,6 +31,8 @@ export type Capture = {
   lines: LabeledLine[]
   /** Everything AI ink must not overlap: items and printed PDF text. */
   obstacles: Rect[]
+  /** How image 1 and image 2 map to the page, for ink the model places by pixel. */
+  images: { focus: ImageFrame; page: ImageFrame }
 }
 
 export async function capturePage(page: PageRow, snap: PageSnapshot): Promise<Capture> {
@@ -51,13 +58,18 @@ export async function capturePage(page: PageRow, snap: PageSnapshot): Promise<Ca
   const focusCanvas = await renderRegion(page, snap.items, images, r, scale)
   drawTags(focusCanvas, focus.lines, r, scale)
 
-  const thumbScale = THUMB_MAX_PX / Math.max(page.width, page.height)
+  const printed = bg.kind !== 'blank' || snap.items.some((i) => i.kind === 'image')
+  const thumbScale =
+    (printed ? PAGE_MAX_PX_PRINTED : PAGE_MAX_PX) / Math.max(page.width, page.height)
   const whole = { x: 0, y: 0, w: page.width, h: page.height }
   const thumb = await renderRegion(page, snap.items, images, whole, thumbScale)
   const tctx = thumb.getContext('2d') as CanvasRenderingContext2D
   tctx.strokeStyle = TAG_COLOR
   tctx.lineWidth = 2
   tctx.strokeRect(r.x * thumbScale, r.y * thumbScale, r.w * thumbScale, r.h * thumbScale)
+  drawRulers(focusCanvas)
+  drawRulers(thumb)
+  const px = (v: number) => Math.round(v * thumbScale)
 
   // Ink on white compresses best as PNG; photos and PDFs as JPEG.
   const encode = (c: HTMLCanvasElement) =>
@@ -73,7 +85,17 @@ export async function capturePage(page: PageRow, snap: PageSnapshot): Promise<Ca
     focusRect: r,
     lines: focus.lines,
     obstacles: [...snap.items.map(itemBounds), ...pdfLines],
+    images: { focus: { x: r.x, y: r.y, scale }, page: { x: 0, y: 0, scale: thumbScale } },
     ctx: {
+      imageSizes: {
+        focus: [focusCanvas.width, focusCanvas.height],
+        page: [thumb.width, thumb.height],
+      },
+      printed: pdfLines
+        .slice(0, MAX_PRINTED)
+        .map(
+          (l) => `[${px(l.x)},${px(l.y)},${px(l.x + l.w)},${px(l.y + l.h)}] ${l.text.slice(0, 90)}`,
+        ),
       focusImage: encode(focusCanvas),
       pageImage: encode(thumb),
       labels: focus.lines.map((l) => l.label),
@@ -92,6 +114,26 @@ export async function capturePage(page: PageRow, snap: PageSnapshot): Promise<Ca
       transcript: snap.transcript,
     },
   }
+}
+
+/** A zoomed view is at most this big, and at most this many times the page's points. */
+const ZOOM_MAX_PX = 1024
+const ZOOM_MAX_SCALE = 8
+
+/** A close-up of one region of the page (the zoom tool), with Writey's preview on it. */
+export async function zoomRegion(
+  page: PageRow,
+  snap: PageSnapshot,
+  r: Rect,
+): Promise<{ image: string; size: [number, number] }> {
+  const images = await loadImages(snap.items)
+  const scale = Math.min(ZOOM_MAX_SCALE, ZOOM_MAX_PX / Math.max(r.w, r.h))
+  const canvas = await renderRegion(page, snap.items, images, r, scale)
+  const image =
+    page.background.kind === 'blank'
+      ? canvas.toDataURL('image/png')
+      : canvas.toDataURL('image/jpeg', 0.9)
+  return { image, size: [canvas.width, canvas.height] }
 }
 
 const intersects = (a: Rect, b: Rect) =>
@@ -136,6 +178,36 @@ async function renderRegion(
   drawItems(ctx, items, { images: (id) => images.get(id) ?? null })
   ctx.setTransform(1, 0, 0, 1, 0, 0)
   return canvas
+}
+
+/**
+ * Faint pixel rulers along the top and left edges (every 100 px), so models that weren't
+ * trained for computer use can still read coordinates off the image (grid prompting, as in
+ * Set-of-Mark).
+ */
+function drawRulers(canvas: HTMLCanvasElement) {
+  const ctx = canvas.getContext('2d') as CanvasRenderingContext2D
+  ctx.save()
+  ctx.fillStyle = 'rgba(70, 110, 180, 0.75)'
+  ctx.strokeStyle = 'rgba(70, 110, 180, 0.6)'
+  ctx.lineWidth = 1
+  ctx.font = '10px system-ui, sans-serif'
+  ctx.textBaseline = 'top'
+  for (let x = 100; x < canvas.width; x += 100) {
+    ctx.beginPath()
+    ctx.moveTo(x + 0.5, 0)
+    ctx.lineTo(x + 0.5, 6)
+    ctx.stroke()
+    ctx.fillText(String(x), x + 2, 1)
+  }
+  for (let y = 100; y < canvas.height; y += 100) {
+    ctx.beginPath()
+    ctx.moveTo(0, y + 0.5)
+    ctx.lineTo(6, y + 0.5)
+    ctx.stroke()
+    ctx.fillText(String(y), 1, y + 2)
+  }
+  ctx.restore()
 }
 
 /** Magenta L1, L2… tags left of each line, in image pixels so they stay readable. */

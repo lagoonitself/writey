@@ -4,18 +4,45 @@ import type { TableSpec } from './table'
 // InkScript: the AI's drawing language (docs §5.4). The model streams one JSON object
 // per block; each block is drawn as soon as it arrives.
 
-export type MarkKind = 'circle' | 'underline' | 'cross' | 'tick' | 'arrow' | 'highlight'
+export type MarkKind =
+  | 'circle'
+  | 'underline'
+  | 'cross'
+  | 'tick'
+  | 'arrow'
+  | 'highlight'
+  | 'box'
+  | 'point'
+
+/**
+ * A spot the model points at, in pixels of an image it was shown (like a computer-use
+ * click): image 1 is the focus region, image 2 the whole page. Writey maps it to the page.
+ */
+export type Pin = { img: 1 | 2; at?: [number, number]; box?: [number, number, number, number] }
 
 export type InkBlock =
   | { type: 'status'; text: string }
   /** Words, with inline $math$. `after`: a line tag ("L3") or "prev". */
-  | { type: 'text'; text: string; after?: string; why?: string }
-  | { type: 'math'; latex: string; after?: string; box?: boolean; why?: string }
-  | { type: 'mark'; kind: MarkKind; target: string; note?: string }
+  | { type: 'text'; text: string; after?: string; why?: string; pin?: Pin; size?: number }
+  | {
+      type: 'math'
+      latex: string
+      after?: string
+      box?: boolean
+      why?: string
+      pin?: Pin
+      size?: number
+    }
+  /** Writey's pen moves to a line or spot and hovers there while it reads it (no ink). */
+  | { type: 'look'; target?: string; pin?: Pin; note?: string }
+  /** Red pen on a line (`target`) or on any spot (`pin`). */
+  | { type: 'mark'; kind: MarkKind; target?: string; pin?: Pin; note?: string }
   /** A hand-drawn diagram or graph (docs §5.6). */
   | ({ type: 'diagram'; after?: string; title?: string; why?: string } & DiagramSpec)
   /** A ruled table (truth tables, observations, comparisons); cells may hold $math$. */
   | ({ type: 'table'; after?: string; title?: string; why?: string } & TableSpec)
+  /** Names for parts of a picture (or anything on the page), at pixel spots. */
+  | { type: 'labels'; labels: { text: string; pin: Pin & { at: [number, number] } }[] }
   /** Start a fresh page and carry on at its top. */
   | { type: 'page' }
   /** Markdown for the chat panel: explanations that don't belong on the page. */
@@ -24,7 +51,45 @@ export type InkBlock =
   | { type: 'say'; text: string }
   | { type: 'done'; summary?: string }
 
-const MARKS: readonly string[] = ['circle', 'underline', 'cross', 'tick', 'arrow', 'highlight']
+const MARKS: readonly string[] = [
+  'circle',
+  'underline',
+  'cross',
+  'tick',
+  'arrow',
+  'highlight',
+  'box',
+  'point',
+]
+
+const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+
+/** Reads `at: [x, y]` and/or `box: [x0, y0, x1, y1]` (pixels) and `img`. */
+function pin(o: Record<string, unknown>): Pin | undefined {
+  const nums = (v: unknown, n: number) =>
+    Array.isArray(v) && v.length === n && v.every((x) => num(x) !== null) ? (v as number[]) : null
+  const at = nums(o.at ?? o.point, 2)
+  const b = nums(o.box ?? o.bbox ?? o.region, 4)
+  if (!at && !b) return undefined
+  const box = b
+    ? ([
+        Math.min(b[0] as number, b[2] as number),
+        Math.min(b[1] as number, b[3] as number),
+        Math.max(b[0] as number, b[2] as number),
+        Math.max(b[1] as number, b[3] as number),
+      ] as [number, number, number, number])
+    : undefined
+  return {
+    img: o.img === 2 || o.image === 2 || o.img === 'page' ? 2 : 1,
+    at: at ? [at[0] as number, at[1] as number] : undefined,
+    box,
+  }
+}
+
+const size = (v: unknown) => {
+  const n = num(v)
+  return n !== null && n > 0 ? n : undefined
+}
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
 
@@ -45,21 +110,55 @@ export function toBlock(raw: unknown): InkBlock | null {
       return str(o.text) ? { type: 'status', text: str(o.text) } : null
     case 'text':
     case 'write':
-      return str(o.text) ? { type: 'text', text: str(o.text), after: after(o.after), why } : null
+      return str(o.text)
+        ? {
+            type: 'text',
+            text: str(o.text),
+            after: after(o.after),
+            why,
+            pin: pin(o),
+            size: size(o.size),
+          }
+        : null
     case 'math':
     case 'equation': {
       const latex = str(o.latex) || str(o.text)
-      return latex ? { type: 'math', latex, after: after(o.after), box: o.box === true, why } : null
+      return latex
+        ? {
+            type: 'math',
+            latex,
+            after: after(o.after),
+            box: o.box === true,
+            why,
+            pin: pin({ ...o, box: undefined }),
+            size: size(o.size),
+          }
+        : null
     }
     case 'mark': {
       const kind = str(o.kind).toLowerCase()
       const target = str(o.target).toUpperCase()
-      if (!/^L\d+$/.test(target)) return null
+      const at = pin(o)
+      if (!/^L\d+$/.test(target) && !at) return null
       return {
         type: 'mark',
         kind: (MARKS.includes(kind) ? kind : 'circle') as MarkKind,
-        target,
-        note: str(o.note) || undefined,
+        target: /^L\d+$/.test(target) ? target : undefined,
+        pin: at,
+        note: str(o.note) || str(o.text) || undefined,
+      }
+    }
+    case 'look':
+    case 'hover':
+    case 'read': {
+      const target = str(o.target ?? o.line).toUpperCase()
+      const at = pin(o)
+      if (!/^L\d+$/.test(target) && !at) return null
+      return {
+        type: 'look',
+        target: /^L\d+$/.test(target) ? target : undefined,
+        pin: at,
+        note: str(o.note) || str(o.text) || undefined,
       }
     }
     case 'diagram':
@@ -90,6 +189,14 @@ export function toBlock(raw: unknown): InkBlock | null {
         x: range(spec.x ?? spec.xrange),
         y: range(spec.y ?? spec.yrange),
         ydown: spec.ydown === true || spec.coords === 'svg' || undefined,
+        xscale: spec.xscale === 'log' ? 'log' : undefined,
+        yscale: spec.yscale === 'log' ? 'log' : undefined,
+        log:
+          spec.log === 'x' || spec.log === 'y' || spec.log === 'both'
+            ? spec.log
+            : spec.log === true
+              ? 'both'
+              : undefined,
         title: str(o.title) || str(spec.title) || undefined,
         after: after(o.after),
         why,
@@ -115,6 +222,19 @@ export function toBlock(raw: unknown): InkBlock | null {
         why,
       }
     }
+    case 'labels':
+    case 'label_parts': {
+      const img = o.img === 2 || o.image === 2 ? 2 : 1
+      const list = Array.isArray(o.labels) ? o.labels : Array.isArray(o.parts) ? o.parts : []
+      const labels = list.flatMap((l) => {
+        if (!l || typeof l !== 'object') return []
+        const r = l as Record<string, unknown>
+        const p = pin({ ...r, img: r.img ?? img, box: undefined })
+        const t = str(r.text) || str(r.name) || str(r.label)
+        return p?.at && t ? [{ text: t, pin: { ...p, at: p.at } }] : []
+      })
+      return labels.length ? { type: 'labels', labels } : null
+    }
     case 'page':
     case 'new_page':
     case 'newpage':
@@ -132,10 +252,42 @@ export function toBlock(raw: unknown): InkBlock | null {
   }
 }
 
+/** Writey's pen tools (ai-core WRITEY_TOOLS) and the blocks they make. */
+const TOOL_BLOCKS: Record<string, string> = {
+  point_at: 'look',
+  mark: 'mark',
+  write_math: 'math',
+  write_text: 'text',
+  draw_diagram: 'diagram',
+  draw_table: 'table',
+  label_parts: 'labels',
+  new_page: 'page',
+  say: 'say',
+}
+
+/** The block a tool call stands for, or null for other tools or unusable arguments. */
+export function toolBlock(name: string, args: string): InkBlock | null {
+  const type = TOOL_BLOCKS[name]
+  if (!type) return null
+  let o: unknown
+  try {
+    o = JSON.parse(repairJson(args || '{}'))
+  } catch {
+    return null
+  }
+  const a = o && typeof o === 'object' ? (o as Record<string, unknown>) : {}
+  // write_math's "boxed" is the boxed answer; "box" there would be a pinned region.
+  return toBlock(type === 'math' ? { ...a, type, box: a.boxed === true } : { ...a, type })
+}
+
+/** LaTeX commands that start with n, which a raw backslash in JSON would read as a line break. */
+const LATEX_N =
+  /^n(e|eq|eg|u|abla|ot|otin|i|ewline|mid|parallel|leq|geq|less|gtr|exists|subseteq|cong|sim|earrow|warrow|Rightarrow|Leftarrow|leftarrow|rightarrow|atural|ormalsize)(?![a-zA-Z])/
+
 /**
  * Models often forget to escape LaTeX in JSON strings: "\frac" would parse as a form feed
  * plus "rac", "\times" as a tab, and "\Delta" fails outright. Such backslashes are LaTeX,
- * so they get escaped before parsing; real escapes like "\n" before a capital stay.
+ * so they get escaped before parsing; real escapes like "\n" (a line break) stay.
  */
 export function repairJson(json: string): string {
   let out = ''
@@ -145,13 +297,16 @@ export function repairJson(json: string): string {
       out += c
       continue
     }
-    const rest = json.slice(i + 1, i + 6)
+    const rest = json.slice(i + 1, i + 12)
     if (rest[0] === '\\') {
       out += '\\\\'
       i++
     } else {
-      // \D, \, or \{ are invalid JSON anyway; \f, \n… count as LaTeX when a lowercase letter follows.
-      const valid = /^(["/]|[bfnrt](?![a-z])|u[0-9a-fA-F]{4})/.test(rest)
+      // \D, \, or \{ are invalid JSON anyway; \f, \t… count as LaTeX when a lowercase letter
+      // follows. \n is a line break (explanations have many) unless a LaTeX \n… command follows.
+      const valid =
+        /^(["/]|[bfrt](?![a-z])|u[0-9a-fA-F]{4})/.test(rest) ||
+        (rest[0] === 'n' && !LATEX_N.test(rest))
       out += valid ? c : '\\\\'
     }
   }

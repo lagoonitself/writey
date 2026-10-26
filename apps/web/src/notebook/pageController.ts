@@ -17,7 +17,7 @@ import {
   translateItem,
   unionBounds,
 } from '@writey/ink-engine'
-import type { Written } from '@writey/inkscript'
+import { type Look, PICTURE_MS, type Written } from '@writey/inkscript'
 import type { AssetRow, PageRow } from '@writey/shared'
 import { loadImage } from '../lib/assets'
 import { backupPage, clearBackup, loadPage, savePage } from '../lib/pageStore'
@@ -50,6 +50,10 @@ const TOUCH_MS = 260
 /** AI ink being previewed: blocks arrive while the answer streams and animate in. */
 type Ghost = {
   blocks: { written: Written; offset: number }[]
+  /** Where the pen goes to read before it writes (no ink). */
+  looks: { look: Look; offset: number }[]
+  /** Offset of the latest block or look: later ones never start before it. */
+  offset: number
   /** performance.now() when writing started. */
   start: number
   writing: boolean
@@ -141,9 +145,11 @@ export class PageController {
       flush: () => this.flush(),
       isDirty: () => this.isDirty(),
       isLoaded: () => this.loaded,
-      snapshot: () => this.snapshot(),
+      snapshot: (withGhost) => this.snapshot(withGhost),
       ghostStart: (actions) => this.ghostStart(actions),
       ghostAdd: (block) => this.ghostAdd(block),
+      ghostLook: (look) => this.ghostLook(look),
+      ghostErase: (groupId) => this.ghostErase(groupId),
       ghostEnd: () => this.ghostEnd(),
       ghostAccept: () => this.ghostAccept(),
       ghostDiscard: () => this.ghostDiscard(),
@@ -152,19 +158,26 @@ export class PageController {
         this.ghostAction('redo')
         return true
       },
-      hasGhost: () => this.ghost !== null,
+      hasGhost: () => Boolean(this.ghost?.blocks.length),
     }
   }
 
-  private snapshot(): PageSnapshot {
+  private snapshot(withGhost = false): PageSnapshot {
     const since = Date.now() - RECENT_MS
     const recent = new Set<string>()
     for (const [id, at] of this.written) if (at >= since) recent.add(id)
+    // Writey looking at its own preview between rounds: the preview counts as the newest work.
+    const ghost = withGhost ? (this.ghost?.blocks.map((b) => b.written) ?? []) : []
+    const strokes = ghost.flatMap((w) => w.strokes.map((s) => s.stroke))
+    const pictures = ghost.flatMap((w) => w.items ?? [])
+    for (const s of strokes) recent.add(s.id)
+    const sources = new Map(ghost.map((w) => [w.groupId, { source: w.source }]))
+    const extra = [...pictures, ...strokes]
     return {
-      items: this.editor.items,
+      items: extra.length ? [...this.editor.items, ...extra] : this.editor.items,
       recent,
       selection: unionBounds(this.selectedItems()),
-      aiSource: (groupId) => this.editor.aiSource(groupId),
+      aiSource: (groupId) => this.editor.aiSource(groupId) ?? sources.get(groupId),
     }
   }
 
@@ -174,19 +187,45 @@ export class PageController {
 
   private ghostStart(actions: GhostActions): void {
     if (this.ghost) this.settleGhost('discarded')
-    this.ghost = { blocks: [], start: performance.now(), writing: true, skipped: false, actions }
+    this.ghost = {
+      blocks: [],
+      looks: [],
+      offset: 0,
+      start: performance.now(),
+      writing: true,
+      skipped: false,
+      actions,
+    }
     this.emitGhost()
   }
 
   private ghostAdd(written: Written): void {
     const g = this.ghost
     if (!g) return
-    // A block that arrives after its turn starts now instead of popping in half-written.
-    const last = g.blocks.at(-1)
-    const first = written.strokes[0]?.at ?? 0
-    const elapsed = performance.now() - g.start
-    const offset = Math.max(last?.offset ?? 0, elapsed - first)
-    g.blocks.push({ written, offset })
+    const first = written.at ?? written.strokes[0]?.at ?? 0
+    g.blocks.push({ written, offset: this.ghostOffset(g, first) })
+    this.emitGhost()
+    this.requestWet()
+  }
+
+  /** A block that arrives after its turn starts now instead of popping in half-written. */
+  private ghostOffset(g: Ghost, first: number): number {
+    g.offset = Math.max(g.offset, performance.now() - g.start - first)
+    return g.offset
+  }
+
+  private ghostLook(look: Look): void {
+    const g = this.ghost
+    if (!g) return
+    g.looks.push({ look, offset: this.ghostOffset(g, look.at) })
+    this.requestWet()
+  }
+
+  /** Writey rubs out one of its own preview blocks. */
+  private ghostErase(groupId: string): void {
+    const g = this.ghost
+    if (!g) return
+    g.blocks = g.blocks.filter((b) => b.written.groupId !== groupId)
     this.emitGhost()
     this.requestWet()
   }
@@ -194,7 +233,10 @@ export class PageController {
   private ghostEnd(): void {
     if (!this.ghost) return
     if (!this.ghost.blocks.length) {
-      this.settleGhost('discarded')
+      // Writey only looked here: nothing to accept, and the other pages' preview stays.
+      this.ghost = null
+      this.emitGhost()
+      this.requestWet()
       return
     }
     this.ghost.writing = false
@@ -213,6 +255,7 @@ export class PageController {
     const g = this.ghost
     if (!g?.blocks.length) return false
     const strokes = g.blocks.flatMap((b) => b.written.strokes.map((s) => s.stroke))
+    const pictures = g.blocks.flatMap((b) => b.written.items ?? [])
     const sources = Object.fromEntries(
       g.blocks.map(({ written: w }) => [
         w.groupId,
@@ -223,7 +266,8 @@ export class PageController {
     const now = Date.now()
     for (const s of strokes) this.written.set(s.id, now)
     this.settleGhost('accepted')
-    this.editor.addAi(strokes, sources)
+    // Pictures go under the ink, so names and leader lines sit on top of them.
+    this.editor.addAi([...pictures, ...strokes], sources)
     return true
   }
 
@@ -279,6 +323,18 @@ export class PageController {
     const elapsed = g.skipped ? Number.POSITIVE_INFINITY : performance.now() - g.start
     let animating = false
     ctx.save()
+    // Pasted pictures fade in, under the preview's ink.
+    for (const { written, offset } of g.blocks) {
+      if (!written.items?.length) continue
+      const local = elapsed - ((written.at ?? 0) + offset)
+      if (local < 0) {
+        animating = true
+        continue
+      }
+      if (local < PICTURE_MS) animating = true
+      ctx.globalAlpha = GHOST_ALPHA * Math.min(1, local / PICTURE_MS)
+      drawItems(ctx, written.items, { images: this.image })
+    }
     ctx.globalAlpha = GHOST_ALPHA
     for (const { written, offset } of g.blocks) {
       for (const { stroke, at } of written.strokes) {
@@ -299,8 +355,36 @@ export class PageController {
       }
     }
     ctx.restore()
-    if (!g.skipped) this.drawWriteyPen(ctx, g, elapsed)
+    if (!g.skipped) {
+      for (const { look, offset } of g.looks) {
+        const local = elapsed - (look.at + offset)
+        if (local < 0) animating = true
+        else if (local < look.dur) {
+          animating = true
+          this.drawLook(ctx, look, local)
+        }
+      }
+      this.drawWriteyPen(ctx, g, elapsed)
+    }
     return animating
+  }
+
+  /** A soft outline round what Writey is reading, fading in and out. */
+  private drawLook(ctx: CanvasRenderingContext2D, look: Look, local: number): void {
+    const fade = Math.min(1, local / 180, (look.dur - local) / 240)
+    const r = look.rect
+    const pad = 4
+    ctx.save()
+    ctx.globalAlpha = Math.max(0, fade)
+    ctx.beginPath()
+    ctx.roundRect(r.x - pad, r.y - pad, r.w + pad * 2, r.h + pad * 2, 6)
+    ctx.fillStyle = 'rgba(91, 63, 181, 0.07)'
+    ctx.fill()
+    ctx.setLineDash([5 / this.scale, 4 / this.scale])
+    ctx.strokeStyle = WRITEY_INK
+    ctx.lineWidth = 1.2 / this.scale
+    ctx.stroke()
+    ctx.restore()
   }
 
   /**
@@ -335,13 +419,31 @@ export class PageController {
         if (local < TOUCH_MS) touch = { x: p[0] as number, y: p[1] as number, age: local }
       }
     }
+    let label = 'Writey'
+    if (!tip) {
+      for (const { look, offset } of g.looks) {
+        const start = look.at + offset
+        const end = start + look.dur
+        if (elapsed >= end) {
+          if (!prev || end >= prev.t) prev = { x: look.x, y: look.y, t: end }
+        } else if (elapsed < start) {
+          if (!next || start < next.t) next = { x: look.x, y: look.y, t: start }
+        } else {
+          tip = [look.x, look.y]
+          if (look.note) label = `Writey · ${clip(look.note, 42)}`
+        }
+      }
+    }
     if (!tip) {
       if (prev && next) {
         const u = Math.min(1, Math.max(0, (elapsed - prev.t) / Math.max(1, next.t - prev.t)))
         const e = u * u * (3 - 2 * u)
         tip = [prev.x + (next.x - prev.x) * e, prev.y + (next.y - prev.y) * e]
       } else if (next) tip = [next.x, next.y]
-      else if (prev && g.writing) tip = [prev.x, prev.y]
+      else if (prev && g.writing) {
+        tip = [prev.x, prev.y]
+        label = 'Writey · thinking…'
+      }
     }
     if (!tip) return
     const px = 1 / this.scale
@@ -381,7 +483,6 @@ export class PageController {
     ctx.rotate(-Math.PI / 5)
     // The name tag, like a collaborator's cursor, below and to the right of the tip.
     ctx.font = '600 11px Geist, system-ui, sans-serif'
-    const label = 'Writey'
     const w = ctx.measureText(label).width + 12
     const x = 10
     const y = 8
@@ -1070,3 +1171,5 @@ export class PageController {
     else this.editor.add([item])
   }
 }
+
+const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)

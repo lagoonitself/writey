@@ -1,5 +1,5 @@
 import type { AiSource, Item, Rect } from '@writey/ink-engine'
-import type { Written } from '@writey/inkscript'
+import type { Look, Written } from '@writey/inkscript'
 import type { AssetRow } from '@writey/shared'
 
 export type ToolId = 'pen' | 'highlighter' | 'eraser' | 'lasso' | 'text'
@@ -65,11 +65,15 @@ export type PageHandle = {
   isDirty(): boolean
   /** True once the page's ink has loaded and it can take new ink. */
   isLoaded(): boolean
-  /** What the help engine needs to see this page. */
-  snapshot(): PageSnapshot
+  /** What the help engine needs to see this page; `withGhost` includes the AI preview. */
+  snapshot(withGhost?: boolean): PageSnapshot
   /** AI ink preview (docs §5.7): starts empty, grows block by block while the answer streams. */
   ghostStart(actions: GhostActions): void
   ghostAdd(block: Written): void
+  /** Writey's pen goes to a spot and rests there while it reads it. */
+  ghostLook(look: Look): void
+  /** Writey rubs out one block of its preview. */
+  ghostErase(groupId: string): void
   /** The answer finished streaming; the bar shows Accept / Redo / Discard / Why?. */
   ghostEnd(): void
   /** Accepts or throws away the current preview. Returns false if there is none. */

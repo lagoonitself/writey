@@ -1,3 +1,4 @@
+import { ceToLatex } from './ce'
 // A small LaTeX math parser covering what school and university math and physics use.
 // Unknown commands degrade to their name as text instead of failing (docs §5.5).
 
@@ -39,6 +40,18 @@ export type MathNode =
   | { t: 'array'; rows: MathNode[][]; align: ('l' | 'c' | 'r')[]; left: Delim; right: Delim }
   | { t: 'boxed'; body: MathNode }
   | { t: 'cancel'; body: MathNode }
+  /** A reaction arrow that stretches to fit the conditions written over and under it. */
+  | { t: 'xarrow'; kind: XArrow; above?: MathNode; below?: MathNode }
+
+export type XArrow = '->' | '<-' | '<->' | '<=>' | '='
+
+const XARROWS: Record<string, XArrow> = {
+  xrightarrow: '->',
+  xleftarrow: '<-',
+  xleftrightarrow: '<->',
+  xrightleftharpoons: '<=>',
+  xequals: '=',
+}
 
 const GREEK: Record<string, string> = {
   alpha: 'α',
@@ -118,6 +131,9 @@ const SYMBOLS: Record<string, [string, AtomClass]> = {
   uparrow: ['↑', 'rel'],
   downarrow: ['↓', 'rel'],
   leftrightarrow: ['↔', 'rel'],
+  rightleftharpoons: ['⇌', 'rel'],
+  leftrightarrows: ['⇄', 'rel'],
+  rightleftarrows: ['⇄', 'rel'],
   Rightarrow: ['⇒', 'rel'],
   implies: ['⇒', 'rel'],
   Longrightarrow: ['⇒', 'rel'],
@@ -531,6 +547,8 @@ class Parser {
         return null
       case 'boxed':
         return { t: 'boxed', body: this.arg() }
+      case 'ce':
+        return parseMath(ceToLatex(this.rawArg()))
       case 'cancel':
       case 'bcancel':
       case 'xcancel':
@@ -553,6 +571,16 @@ class Parser {
         const raw = this.rawArg()
         // \mathrm{d}x and \operatorname{sgn}: upright words, drawn as text.
         return { t: 'text', text: raw.replace(/\\,|\\ /g, ' ').replace(/\\([a-zA-Z]+)\s?/g, '$1') }
+      }
+    }
+    if (XARROWS[name]) {
+      const below = this.optArg()
+      const above = this.rawArg()
+      return {
+        t: 'xarrow',
+        kind: XARROWS[name] as XArrow,
+        above: above.trim() ? parseMath(above) : undefined,
+        below: below?.trim() ? parseMath(below) : undefined,
       }
     }
     if (TEXT_CMDS.has(name)) return { t: 'text', text: this.rawArg() }

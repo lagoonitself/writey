@@ -15,6 +15,7 @@
     "vitest": "5.0.5"
   },
   "dependencies": {
-    "@writey/ink-engine": "workspace:*"
+    "@writey/ink-engine": "workspace:*",
+    "smiles-drawer": "2.4.1"
   }
 }

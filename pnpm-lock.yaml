@@ -129,6 +129,9 @@ importers:
       '@writey/ink-engine':
         specifier: workspace:*
         version: link:../ink-engine
+      smiles-drawer:
+        specifier: 2.4.1
+        version: 2.4.1
     devDependencies:
       hersheytext:
         specifier: 2.0.0
@@ -1044,6 +1047,9 @@ packages:
     resolution: {integrity: sha512-8/MzidM6G/TgRelkzDG13y3Y9LxBjCb+8yOEZ9+wwq5gVF2w2pV0wmHvjfT0RvuxGyR7UEuK36r+yYMbT4uKgA==}
     engines: {node: '>= 0.6'}
 
+  chroma-js@2.6.0:
+    resolution: {integrity: sha512-BLHvCB9s8Z1EV4ethr6xnkl/P2YRFOGqfgvuMG/MyCbZPrTA+NeiByY6XvgF0zP4/2deU2CXnWyMa3zu1LqQ3A==}
+
   commander@15.0.0:
     resolution: {integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==}
     engines: {node: '>=22.12.0'}
@@ -1372,6 +1378,9 @@ packages:
     peerDependenciesMeta:
       '@types/node':
         optional: true
+
+  smiles-drawer@2.4.1:
+    resolution: {integrity: sha512-kJeD91Bp8EwLTQouq4az7hn5zUYdIaLQoyFt8XlsqriugPiZOdBFADJMUnfqDYpyu3XK9SFpBgTuDtczpbSUbA==}
 
   source-map-js@1.2.2:
     resolution: {integrity: sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==}
@@ -2115,6 +2124,8 @@ snapshots:
       lodash.reject: 4.6.0
       lodash.some: 4.6.0
 
+  chroma-js@2.6.0: {}
+
   commander@15.0.0: {}
 
   cookie@1.1.1: {}
@@ -2461,6 +2472,10 @@ snapshots:
       '@img/sharp-win32-ia32': 0.35.5
       '@img/sharp-win32-x64': 0.35.5
       '@types/node': 26.6.5
+
+  smiles-drawer@2.4.1:
+    dependencies:
+      chroma-js: 2.6.0
 
   source-map-js@1.2.2: {}
 

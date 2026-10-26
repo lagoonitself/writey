@@ -60,7 +60,8 @@ type Shown = StoredMessage & {
 type Live = { status: string; seen: string | null; text: string; thinking: boolean }
 
 const MODE_LABEL: Record<string, string> = {
-  explain: 'Explained',
+  chat: 'Explained',
+  explain: 'Explained on the page',
   write: 'Written on the page',
   check: 'Checked on the page',
   both: 'Written on the page',
@@ -92,7 +93,7 @@ export default function ChatPanel(p: Props) {
   /** A thread made by sending in this panel already has its messages on screen. */
   const madeHere = useRef<string | null>(null)
   const creating = useRef<Promise<string> | null>(null)
-  /** Pages showing the last answer's preview, which a new question replaces. */
+  /** Pages showing the last answer's preview, which a new question keeps (accepts). */
   const lastGhosts = useRef<PageHandle[]>([])
   const busy = live !== null
 
@@ -154,8 +155,9 @@ export default function ChatPanel(p: Props) {
       if (!utterance || busy || !on) return
       const handle = p.handle(on.id)
       if (!handle) return
-      // A new question replaces a preview that was never accepted.
-      for (const h of lastGhosts.current) h.ghostDiscard()
+      // Asking on keeps the last answer's ink, so the new one goes below it, like a tutor
+      // carrying on down the page. "Scrap that" or Discard still removes it first.
+      for (const h of lastGhosts.current) h.ghostAccept()
       const ghosts = new Map<string, PageHandle>()
       lastGhosts.current = []
       setNotice(null)
@@ -221,6 +223,7 @@ export default function ChatPanel(p: Props) {
           spoken: p.voice.speaks(),
           nextPage: (after) => p.addPageAfter(after.id),
           pageNumber: (pg) => p.pageNumber(pg.id),
+          lookAgain: (pg) => p.handle(pg.id)?.snapshot(true) ?? null,
           onUpdate(u) {
             if (u.type === 'status') state = { ...state, status: u.text }
             else if (u.type === 'seen') state = { ...state, seen: u.image }
@@ -248,6 +251,12 @@ export default function ChatPanel(p: Props) {
               return
             } else if (u.type === 'ink') {
               ghosts.get(u.page.id)?.ghostAdd(u.written)
+              return
+            } else if (u.type === 'look') {
+              ghosts.get(u.page.id)?.ghostLook(u.look)
+              return
+            } else if (u.type === 'erase') {
+              ghosts.get(u.page.id)?.ghostErase(u.groupId)
               return
             } else return
             setLive(state)
@@ -523,7 +532,7 @@ export default function ChatPanel(p: Props) {
                   !busy &&
                   m.role === 'assistant' &&
                   !m.error &&
-                  m.mode === 'explain'
+                  (m.mode === 'chat' || (m.mode === 'explain' && !m.text.includes('ink-copy')))
                     ? () => void send('Write this on the page')
                     : undefined
                 }
@@ -627,8 +636,11 @@ function when(iso: string): string {
 function usageText(u: Usage | null | undefined): string {
   if (!u) return ''
   const tokens = (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0)
-  const t = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k tokens` : `${tokens} tokens`
+  const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)
   if (!tokens) return ''
+  // Cached tokens are re-read from the provider's prompt cache: a fraction of the price.
+  const cached = u.cached_tokens ? ` (${k(u.cached_tokens)} cached)` : ''
+  const t = `${k(tokens)} tokens${cached}`
   return u.cost ? `${t} · $${u.cost < 0.01 ? u.cost.toFixed(4) : u.cost.toFixed(2)}` : t
 }
 

@@ -34,7 +34,49 @@ const FUNCS: Record<string, (a: number, b?: number) => number> = {
   sign: Math.sign,
   min: (a, b = a) => Math.min(a, b),
   max: (a, b = a) => Math.max(a, b),
-  pow: (a, b = 1) => a ** b,
+  pow: (a, b = 1) => pow(a, b),
+  gamma: (a) => gamma(a),
+  fact: (a) => factorial(a),
+  factorial: (a) => factorial(a),
+  nroot: (a, b = 2) => pow(a, 1 / b),
+  root: (a, b = 2) => pow(a, 1 / b),
+  mod: (a, b = 1) => ((a % b) + b) % b,
+}
+
+/** Powers as a student means them: (−8)^(1/3) is −2, not NaN. */
+function pow(a: number, b: number): number {
+  if (a >= 0 || Number.isInteger(b)) return a ** b
+  // A fraction with an odd denominator has a real root of a negative number.
+  for (let q = 3; q <= 15; q += 2) {
+    const p = Math.round(b * q)
+    if (Math.abs(b * q - p) < 1e-9) return (p % 2 ? -1 : 1) * (-a) ** b
+  }
+  return Number.NaN
+}
+
+/** Lanczos approximation, so x! plots between the integers too. */
+function gamma(z: number): number {
+  if (z < 0.5) return Math.PI / (Math.sin(Math.PI * z) * gamma(1 - z))
+  const g = 7
+  const c = [
+    0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
+    -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6,
+    1.5056327351493116e-7,
+  ]
+  const x = z - 1
+  let a = c[0] as number
+  const t = x + g + 0.5
+  for (let k = 1; k < g + 2; k++) a += (c[k] as number) / (x + k)
+  return Math.sqrt(2 * Math.PI) * t ** (x + 0.5) * Math.exp(-t) * a
+}
+
+function factorial(n: number): number {
+  if (Number.isInteger(n) && n >= 0 && n <= 170) {
+    let r = 1
+    for (let k = 2; k <= n; k++) r *= k
+    return r
+  }
+  return gamma(n + 1)
 }
 
 const CONSTS: Record<string, number> = { pi: Math.PI, π: Math.PI, e: Math.E, tau: Math.PI * 2 }
@@ -134,11 +176,16 @@ export function compile(src: string, vars: readonly string[] = ['x']): Fn {
     return power()
   }
   const power = (): Fn => {
-    const base = atom()
+    let base = atom()
+    while (isOp('!')) {
+      i++
+      const a = base
+      base = (v) => factorial(a(v))
+    }
     if (isOp('^')) {
       i++
       const exp = unary()
-      return (v) => base(v) ** exp(v)
+      return (v) => pow(base(v), exp(v))
     }
     return base
   }
@@ -203,4 +250,57 @@ export function compile(src: string, vars: readonly string[] = ['x']): Fn {
   } catch {
     return () => Number.NaN
   }
+}
+
+export type Relation = { f: Fn; op: '<' | '<=' | '>' | '>=' | '=' }
+
+/**
+ * Reads "y < 2x + 1", "x^2 + y^2 = 4" or "0 <= x <= 2" as relations f op 0 (f = left − right).
+ * A chain gives one relation per comparison.
+ */
+export function relations(src: string, vars: readonly string[] = ['x', 'y']): Relation[] {
+  const s = src
+    .replace(/≤|\\le(q)?\b/g, '<=')
+    .replace(/≥|\\ge(q)?\b/g, '>=')
+    .replace(/==/g, '=')
+  const parts: string[] = []
+  const ops: Relation['op'][] = []
+  let depth = 0
+  let cur = ''
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i] as string
+    if (c === '(' || c === '[' || c === '{') depth++
+    else if (c === ')' || c === ']' || c === '}') depth--
+    if (depth === 0 && (c === '<' || c === '>' || c === '=')) {
+      const two = s[i + 1] === '='
+      ops.push((c === '=' ? '=' : two ? `${c}=` : c) as Relation['op'])
+      parts.push(cur)
+      cur = ''
+      if (two && c !== '=') i++
+      continue
+    }
+    cur += c
+  }
+  parts.push(cur)
+  if (!ops.length) return [{ f: compile(src, vars), op: '=' }]
+  const fs = parts.map((p) => compile(p, vars))
+  return ops.map((op, k) => {
+    const a = fs[k] as Fn
+    const b = fs[k + 1] as Fn
+    return { f: (v) => a(v) - b(v), op }
+  })
+}
+
+/** Whether a point satisfies every relation (an equation counts within `tol`). */
+export function holds(rs: readonly Relation[], v: Record<string, number>, tol = 1e-9): boolean {
+  for (const r of rs) {
+    const d = r.f(v)
+    if (!Number.isFinite(d)) return false
+    if (r.op === '<' && !(d < 0)) return false
+    if (r.op === '<=' && !(d <= tol)) return false
+    if (r.op === '>' && !(d > 0)) return false
+    if (r.op === '>=' && !(d >= -tol)) return false
+    if (r.op === '=' && Math.abs(d) > tol) return false
+  }
+  return true
 }
