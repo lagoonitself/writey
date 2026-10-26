@@ -14,7 +14,6 @@ import {
   pageLook,
   parseModels,
   parsePlan,
-  planMessages,
   routeIntent,
   type StreamEvent,
   sseData,
@@ -322,13 +321,12 @@ describe('prompts', () => {
     selection: false,
   }
 
-  it('sends both images and the page text to PLAN', () => {
-    const [system, user] = planMessages('what next', ctx, { mode: 'write', scope: null }, [])
+  it('sends both images and the page text', () => {
+    const [system, user] = agentMessages('what next', ctx, { mode: 'write', scope: null }, [])
     expect(system?.role).toBe('system')
     const parts = user?.content as { type: string }[]
     expect(parts.filter((p) => p.type === 'image_url')).toHaveLength(2)
     expect(JSON.stringify(parts)).toContain('Find the derivative')
-    expect(JSON.stringify(parts)).toContain('mode \\"write\\"')
   })
 
   it('keeps only the last 10 turns of history', () => {

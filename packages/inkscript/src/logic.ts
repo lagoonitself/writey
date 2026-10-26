@@ -107,6 +107,8 @@ export function layoutLogic(o: DiagramItem): LogicLayout | null {
   const colX = (level: number) => x1 + (level - 1) * COL
   const railX = (name: string) => inputs.indexOf(name) * RAIL
   const srcLevel = (s: string) => byId.get(s)?.level ?? 0
+  // Gate names written under the gates need room before the next gate down.
+  const row = o.names === true || gates.some((g) => g.label) ? ROW + 0.7 : ROW
 
   /**
    * Pins whose wire runs across earlier columns must stay clear of the gates there, and no
@@ -130,7 +132,7 @@ export function layoutLogic(o: DiagramItem): LogicLayout | null {
     const col = gates.filter((g) => g.level === level)
     for (const g of col) {
       const ys = g.ins.map((s) => byId.get(s)?.y).filter((y): y is number => y !== undefined)
-      g.y = ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : -col.indexOf(g) * ROW
+      g.y = ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : -col.indexOf(g) * row
       // Sources higher on the page feed the higher pins.
       if (g.ins.every((s) => byId.has(s))) {
         g.ins.sort((a, b) => (byId.get(b)?.y ?? 0) - (byId.get(a)?.y ?? 0))
@@ -142,7 +144,7 @@ export function layoutLogic(o: DiagramItem): LogicLayout | null {
     col.sort((a, b) => b.y - a.y)
     let prev = Number.POSITIVE_INFINITY
     for (const g of col) {
-      g.y = Math.min(g.y, prev - ROW)
+      g.y = Math.min(g.y, prev - row)
       for (let k = 0; k < 40 && blocked(g, g.y); k++) g.y -= 0.2
       prev = g.y
     }

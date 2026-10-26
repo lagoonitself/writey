@@ -517,6 +517,49 @@ describe('physics diagrams', () => {
     expect(microscope[1]?.virtual).toBe(true)
   })
 
+  it('brings a distant object in as parallel rays meeting in the focal plane', () => {
+    const lens = opticsImages(
+      one({ kind: 'lens', type: 'convex', x: 0, f: 10, object: 'infinity' }),
+    )
+    expect(lens[0]?.x).toBeCloseTo(10)
+    expect(lens[0]?.h).toBeLessThan(0)
+    // A telescope in normal adjustment: the objective's image sits at the eyepiece's focus.
+    const telescope = opticsImages(
+      one({
+        kind: 'optics',
+        elements: [
+          { type: 'convex_lens', x: 0, f: 20 },
+          { type: 'convex_lens', x: 24, f: 4 },
+        ],
+        object: { x: -200, h: 10 },
+      }),
+    )
+    expect(telescope).toHaveLength(1)
+    expect(telescope[0]?.x).toBeCloseTo(20)
+  })
+
+  it('keeps circuits at one scale, so a tall column of gates is not squashed', () => {
+    const gates = ['and', 'or', 'nand', 'nor', 'xor', 'xnor'].map((type, i) => ({
+      id: `g${i}`,
+      type,
+      in: ['A', 'B'],
+    }))
+    const logic = {
+      kind: 'logic',
+      inputs: ['A', 'B'],
+      gates,
+      outputs: Object.fromEntries(gates.map((g, i) => [`Y${i}`, g.id])),
+    }
+    const d = drawDiagram({ items: [logic] }, { size: 18, maxW: 480, rng: seeded(1) })
+    const L = layoutLogic(logic) as NonNullable<ReturnType<typeof layoutLogic>>
+    const xs = L.segs.flat().map((p) => p[0])
+    const ys = L.segs.flat().map((p) => p[1])
+    const yr = Math.max(...ys) - Math.min(...ys)
+    const xr = Math.max(...xs) - Math.min(...xs)
+    expect(yr / xr).toBeGreaterThan(1.2)
+    expect(d.h / d.w).toBeGreaterThan((yr / xr) * 0.8)
+  })
+
   it('reads gate and transistor aliases as their type', () => {
     expect(one({ kind: 'nand', at: [0, 0] })).toMatchObject({ kind: 'gate', type: 'nand' })
     expect(one({ kind: 'pnp', at: [0, 0] })).toMatchObject({ kind: 'transistor', type: 'pnp' })

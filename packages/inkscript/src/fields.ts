@@ -258,6 +258,21 @@ function drawCharges(o: DiagramItem, k: Sketch): void {
         drawLine(k, sign > 0 ? line : [...line].reverse())
       }
     }
+    // Lines that come in from far away and end on a negative charge: traced back from it,
+    // kept only when they don't start on a positive charge (those are drawn already).
+    if (pos.length) {
+      for (const s of cs.filter((c) => c.q < 0)) {
+        const n = Math.max(3, Math.round((per * Math.abs(s.q)) / qmax))
+        for (let j = 0; j < n; j++) {
+          const a = Math.PI / n / 2 + (j / n) * Math.PI * 2
+          const start: Pt = [s.at[0] + Math.cos(a) * r0 * 1.05, s.at[1] + Math.sin(a) * r0 * 1.05]
+          const line = trace(cs, start, -1, step, box, (p) => pos.some((c) => dist(p, c.at) < r0))
+          const end = line.at(-1) as Pt
+          if (pos.some((c) => dist(end, c.at) < r0 * 1.5)) continue
+          drawLine(k, [...line].reverse())
+        }
+      }
+    }
   }
   for (const c of cs) {
     const p = k.map(c.at)
@@ -304,6 +319,14 @@ function drawMagnet(o: DiagramItem, k: Sketch): void {
     const n = Math.max(2, Math.min(6, Math.round(num(o.lines, 4))))
     // Lines leave the north pole at spread-out angles and loop round to the south pole.
     const r0 = L * 0.12
+    // A line that runs off the frame comes back into the south pole from the other side:
+    // the field is mirror-symmetric about the magnet's middle, so draw its mirror image too.
+    const fromN = (line: Pt[]) => {
+      drawLine(k, line)
+      const end = line.at(-1) as Pt
+      if (inside(end) || dist(end, S) < r0) return
+      drawLine(k, line.map(([x, y]): Pt => [2 * c[0] - x, y]).reverse())
+    }
     for (let j = 0; j < n; j++) {
       const a = deg(28 + (j * 110) / Math.max(1, n - 1))
       for (const side of [1, -1]) {
@@ -319,12 +342,8 @@ function drawMagnet(o: DiagramItem, k: Sketch): void {
             box,
             (p) => inside(p) || dist(p, S) < r0,
           )
-          drawLine(k, line)
-        } else
-          drawLine(
-            k,
-            trace(poles, start, 1, step, box, (p) => inside(p) || dist(p, S) < r0),
-          )
+          fromN(line)
+        } else fromN(trace(poles, start, 1, step, box, (p) => inside(p) || dist(p, S) < r0))
       }
     }
     // The axis line, straight out of each end.

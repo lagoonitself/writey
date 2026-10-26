@@ -61,21 +61,36 @@ function element(raw: unknown, kind?: string): El | null {
   }
 }
 
-function object(raw: unknown): { x: number; h: number; label: string } | null {
+type Obj = {
+  x: number
+  h: number
+  label: string
+  /** A distant object (stars, telescopes): parallel rays coming in at this slope. */
+  slope?: number
+}
+
+const INF = /^-?\s*(inf|infinity|∞|far|distant)/i
+
+function object(raw: unknown): Obj | null {
+  if (typeof raw === 'string' && INF.test(raw)) return { x: Number.NaN, h: 1, label: '', slope: 0 }
   if (Array.isArray(raw)) {
     const p = pt(raw)
     return p ? { x: p[0], h: p[1], label: '' } : null
   }
   if (!raw || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
+  const label = typeof o.label === 'string' ? o.label : ''
+  const where = o.x ?? o.u ?? o.position ?? o.pos ?? o.at
+  if ((typeof where === 'string' && INF.test(where)) || o.infinity === true)
+    return { x: Number.NaN, h: 1, label, slope: -Math.tan(deg(num(o.angle, 0))) }
   const at = pt(o.at)
   const x = num(o.x ?? o.u ?? o.position ?? o.pos, at ? at[0] : Number.NaN)
   const h = num(o.h ?? o.height, at?.[1] ? at[1] : 1)
-  return Number.isFinite(x) ? { x, h, label: typeof o.label === 'string' ? o.label : '' } : null
+  return Number.isFinite(x) ? { x, h, label } : null
 }
 
 /** The elements and object of a ray diagram, from either form. */
-function setup(o: DiagramItem): { els: El[]; obj: ReturnType<typeof object> } {
+function setup(o: DiagramItem): { els: El[]; obj: Obj | null } {
   let els: El[]
   if (Array.isArray(o.elements)) els = o.elements.map((e) => element(e)).filter((e): e is El => !!e)
   else {
@@ -87,6 +102,19 @@ function setup(o: DiagramItem): { els: El[]; obj: ReturnType<typeof object> } {
   const m = els.findIndex((e) => e.mirror)
   if (m >= 0) els = els.slice(0, m + 1)
   const obj = object(o.object)
+  // An object many focal lengths away sends in (nearly) parallel rays: draw it as textbooks
+  // do, rays coming in at a small angle, instead of a far-off arrow that shrinks everything.
+  const first = els[0]
+  if (obj && first && obj.slope === undefined && first.x - obj.x > 8 * Math.abs(first.f)) {
+    obj.slope = -Math.abs(obj.h) / (first.x - obj.x)
+  }
+  if (obj?.slope !== undefined && first) {
+    // Steep enough to see, never so steep the image runs off the frame.
+    const t = Math.min(0.4, Math.max(0.18, Math.abs(obj.slope)))
+    obj.slope = obj.slope > 0 ? t : -t
+    obj.x = first.x - 1.6 * Math.abs(first.f)
+    return { els, obj }
+  }
   // Real objects are tiny next to focal lengths. Images scale with the object's height and
   // their positions don't depend on it, so a taller object keeps the diagram exact and readable.
   if (obj && els.length) {
@@ -137,13 +165,30 @@ type Stage = {
   ox: number
   oh: number
   img: Img | null
+  /** Parallel rays from a distant object, at this slope. */
+  par?: number
 }
 
-function stages(els: readonly El[], obj: { x: number; h: number }): Stage[] {
+function stages(els: readonly El[], obj: Obj): Stage[] {
   const out: Stage[] = []
   let ox = obj.x
   let oh = obj.h
-  for (const el of els) {
+  let rest = els
+  const [first] = els
+  if (obj.slope !== undefined && first) {
+    // Parallel rays meet in the focal plane, where the ray through the centre crosses it.
+    const img: Img = {
+      x: first.x + first.f,
+      h: obj.slope * first.f,
+      virtual: first.f < 0,
+      far: false,
+    }
+    out.push({ el: first, ox: obj.x, oh: 0, img, par: obj.slope })
+    ox = img.x
+    oh = img.h
+    rest = els.slice(1)
+  }
+  for (const el of rest) {
     const u = ox - el.x
     if (Math.abs(u) < 1e-9) break
     const inv = 1 / el.f + 1 / u
@@ -168,6 +213,11 @@ type Ray = { m: number; ye: number; out: number }
 
 function rays(s: Stage, count: number): Ray[] {
   const { el, ox, oh } = s
+  if (s.par !== undefined) {
+    const m = s.par
+    const d = Math.max(Math.abs(m * el.f), Math.abs(el.f) * 0.2)
+    return [0, d, -d].slice(0, Math.max(1, count)).map((ye) => ({ m, ye, out: m - ye / el.f }))
+  }
   const span = el.x - ox
   const slopes = [0, -oh / span]
   const fx = el.x - el.f
@@ -176,6 +226,13 @@ function rays(s: Stage, count: number): Ray[] {
     const ye = oh + m * span
     return { m, ye, out: m - ye / el.f }
   })
+}
+
+/** Where a stage's incoming ray starts: the object's tip, or far left for parallel rays. */
+function rayStart(s: Stage, r: Ray): Pt {
+  if (s.par === undefined) return [s.ox, s.oh]
+  const L = s.el.x - s.ox
+  return [s.ox, r.ye - r.m * L]
 }
 
 /** Half-height of an element: tall enough for every ray that meets it. */
@@ -245,12 +302,13 @@ export function opticsExtent(o: DiagramItem): Pt[] {
     }
     return out
   }
-  out.push([obj.x, 0], [obj.x, obj.h])
+  if (obj.slope === undefined) out.push([obj.x, 0], [obj.x, obj.h])
   const st = stages(els, obj)
   const n = rayCount(o, st.length)
   st.forEach((s, i) => {
     const half = elementHalf(s, n)
     out.push([s.el.x, half], [s.el.x, -half])
+    for (const r of rays(s, n)) out.push(rayStart(s, r))
     const end = rayEnd(s, i === st.length - 1)
     for (const r of rays(s, n)) out.push(fold(s.el, [end, r.ye + r.out * (end - s.el.x)]))
     if (s.img && !s.img.far) out.push(fold(s.el, [s.img.x, s.img.h]), fold(s.el, [s.img.x, 0]))
@@ -302,14 +360,16 @@ export function drawOptics(o: DiagramItem, k: Sketch): void {
     }
   }
   if (!obj) return
-  arrowUp(k, [obj.x, 0], [obj.x, obj.h], false)
-  if (obj.label) k.label(obj.label, k.map([obj.x, obj.h]), [0, obj.h >= 0 ? -1 : 1], 2)
+  if (obj.slope === undefined) {
+    arrowUp(k, [obj.x, 0], [obj.x, obj.h], false)
+    if (obj.label) k.label(obj.label, k.map([obj.x, obj.h]), [0, obj.h >= 0 ? -1 : 1], 2)
+  }
   st.forEach((s, i) => {
     const last = i === st.length - 1
     const { el } = s
     const end = rayEnd(s, last)
     for (const r of rays(s, n)) {
-      const a = k.map([s.ox, s.oh])
+      const a = k.map(rayStart(s, r))
       const b = k.map([el.x, r.ye])
       pen.line(a, b)
       arrowOn(k, a, b, 0.55)

@@ -683,7 +683,8 @@ function drawMolecule(o: DiagramItem, k: Sketch, refs: ChemRefs): void {
       /\\|\$/.test(name) ? name.replace(/\$/g, '') : `\\text{${name}}`,
       [
         (Math.min(...atoms.map((a) => a.q[0])) + Math.max(...atoms.map((a) => a.q[0]))) / 2,
-        lowest + letter * 1.3,
+        // Below the hydrogens too, when every H is written out.
+        lowest + letter * (full ? 2.2 : 1.3),
       ],
       letter * 0.85,
     )
@@ -1799,22 +1800,24 @@ function drawFischer(o: DiagramItem, k: Sketch): void {
 }
 
 /** Chair cyclohexane: ring carbons 1–6, axial bonds alternating down/up from C1. */
+// A chair seen from a little above (a hexagon with alternating heights, projected): the
+// left tip is the footrest, the right tip the headrest, opposite bonds parallel.
 const CHAIR: Pt[] = [
-  [0, 0],
-  [1, -0.5],
-  [2.2, -0.35],
-  [3, 0.15],
-  [2, 0.65],
-  [0.8, 0.5],
+  [0, -0.24],
+  [0.6, -0.12],
+  [1.8, -0.6],
+  [2.4, 0.24],
+  [1.8, 0.12],
+  [0.6, 0.6],
 ]
 
 function drawChair(o: DiagramItem, k: Sketch): void {
   const at = pt(o.at) ?? [0, 0]
-  const M = (p: Pt) => k.map([at[0] + p[0] - 1.5, at[1] + p[1]])
+  const M = (p: Pt) => k.map([at[0] + p[0] - 1.2, at[1] + p[1]])
   const { letter } = scales(k, o)
   for (let i = 0; i < 6; i++)
     k.pen.line(M(CHAIR[i] as Pt), M(CHAIR[(i + 1) % 6] as Pt), false, true)
-  const c: Pt = [1.5, 0.07]
+  const c: Pt = [1.2, 0]
   const subs = Array.isArray(o.substituents) ? o.substituents : []
   for (const s of subs) {
     if (!s || typeof s !== 'object') continue

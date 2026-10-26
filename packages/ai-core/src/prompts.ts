@@ -35,19 +35,6 @@ const SEEING = `You are looking at a student's handwritten notebook page.
 Read the handwriting carefully. If a line is unreadable, say so instead of guessing.
 Both images have faint pixel rulers (every 100 px) along the top and left edges. You can point at anything you see by its pixel coordinates in either image, origin top-left, the way a computer-use model clicks on a screenshot.`
 
-export const PLAN_SYSTEM = `You are Writey, a math and physics tutor inside a handwritten notebook.
-${SEEING}
-
-Work out what the student is doing and how to help. Reply with ONE JSON object and nothing else:
-{"problem":"…","user_progress":"…","mode":"explain","scope":"next_step","target_line":"L3","status_line":"…"}
-
-- problem: the problem being solved, one sentence. Math in LaTeX between $…$.
-- user_progress: what they have done and where they are now, one sentence.
-- mode: "write" if they want the next step(s) written out or something drawn on the page (a diagram, graph or sketch); "explain" if they want to understand something (a concept, a step, a circuit, a process, a structure): you answer like a tutor with a pen, sketching on the page and explaining beside it; "check" if they want their work checked; "both" for a short step plus an explanation; "chat" only for small talk, a one- or two-sentence answer that needs nothing on the page, or when they say not to write. If unsure, "explain".
-- scope: "hint" for a nudge only, "next_step" for exactly one step, "full" for the complete solution.
-- target_line: the line the request is about (e.g. "L3"), else their last line, or null if the page is empty.
-- status_line: at most 12 words, spoken to the student, saying what you see. Example: "Integration by parts — you're on step 2".`
-
 /** How Writey talks when the student is talking to it and spoken replies are on. */
 const SPEAKING = `The student is talking to you out loud, and what you say is played back to them as speech. Talk like a tutor sitting beside them: warm, natural, short sentences, no lists, no symbols. Say math in words ("x squared over two", "the integral from zero to pi over two"). Answer what they actually asked; if they are just chatting or asking something small, simply answer it in a sentence or two. End with a short question back to them when it helps the conversation.`
 
@@ -88,7 +75,7 @@ const PHYSICS = `- Physics diagrams are diagram items too; give only the physics
   For other circuits, run wires only across or up and down, end them exactly on part ends, and keep parts at least 2 units apart; junction dots are added for you.
   Example: {"type":"diagram","title":"Wheatstone bridge","items":[{"kind":"resistor","from":[0,0],"to":[2,2],"label":"P"},{"kind":"resistor","from":[2,2],"to":[4,0],"label":"Q"},{"kind":"resistor","from":[0,0],"to":[2,-2],"label":"R"},{"kind":"resistor","from":[2,-2],"to":[4,0],"label":"S"},{"kind":"galvanometer","from":[2,2],"to":[2,-2]},{"kind":"wire","points":[[0,0],[-1,0],[-1,-3],[1.2,-3]]},{"kind":"cell","from":[1.2,-3],"to":[2.8,-3],"label":"E"},{"kind":"wire","points":[[2.8,-3],[5,-3],[5,0],[4,0]]}]}
   Ray optics (Writey traces the rays and finds the image with the lens/mirror formula; never draw rays yourself):
-  lens {type: "convex"|"concave", x, f, object?: {x, h, label?}, image?: "A'B'", rays?: 2|3} · mirror {type: "concave"|"convex", x, f, object?} (light comes from the left; put the object at x < mirror) · to show the ray rules without an object, give lens or mirror rays: [{type: "parallel"|"focus"|"centre"|"pole", h?, label?}] (Writey bends them correctly; never draw rays as lines yourself) · optics {elements: [{type: "convex_lens"|"concave_lens"|"concave_mirror"|"convex_mirror", x, f, label?}, …], object} for microscopes and telescopes (lenses left to right) · prism {at (middle of the base), side, apex: 60, n, i (angle of incidence), deviation?} · slab {at, w, h, n, i} · refraction {at, i, n1, n2} (one surface; shows total internal reflection when it happens)
+  lens {type: "convex"|"concave", x, f, object?: {x, h, label?}, image?: "A'B'", rays?: 2|3} · mirror {type: "concave"|"convex", x, f, object?} (light comes from the left; put the object at x < mirror) · to show the ray rules without an object, give lens or mirror rays: [{type: "parallel"|"focus"|"centre"|"pole", h?, label?}] (Writey bends them correctly; never draw rays as lines yourself) · optics {elements: [{type: "convex_lens"|"concave_lens"|"concave_mirror"|"convex_mirror", x, f, label?}, …], object} for microscopes and telescopes (lenses left to right) · a distant object (telescopes, stars, the Sun): object "infinity" or {x: "infinity", angle?: degrees}; Writey draws parallel rays coming in · prism {at (middle of the base), side, apex: 60, n, i (angle of incidence), deviation?} · slab {at, w, h, n, i} · refraction {at, i, n1, n2} (one surface; shows total internal reflection when it happens)
   Example: {"type":"diagram","title":"object beyond 2F","items":[{"kind":"lens","type":"convex","x":0,"f":10,"object":{"x":-25,"h":4,"label":"AB"},"image":"A'B'"}]}
   Fields and more: charges {charges: [{at, q, label?}, …], lines?} (field lines traced from the real field) · dipole {at, d} · magnet {at, length, north?: "left"|"right"} (bar magnet with its field) · solenoid {from, to, r, turns, field?} · current {at, dir: "out"|"in", rings?} (wire seen end-on with its circular field) · levels {x: [x0, x1], levels: [{n, e}], transitions: [{from, to, label?}]} (energy levels, e in eV as y) · wavefronts {at, r: [radii], plane?} · slits {x, y: [bottom, top], gaps: [[y0, y1], …], label?} (a slit barrier, or a screen without gaps)
   Use these for: circuits (bridges, potentiometer, meter bridge, RC/LR/LCR, rectifiers, transistor amplifiers), logic circuits (adders, multiplexers, any gate network), ray diagrams (all mirror and lens cases, microscope, telescope, prism, slab, total internal reflection), field lines, magnets, solenoids, Bohr levels, Young's double slit. Apparatus with no item kind (AC generator, cyclotron, transformer) is drawn freehand (below).
@@ -133,42 +120,6 @@ const images = (ctx: PageContext): ContentPart[] => [
 
 function history(turns: readonly Turn[]): ChatMessage[] {
   return turns.slice(-HISTORY_TURNS).map((t) => ({ role: t.role, content: t.text }))
-}
-
-export function planMessages(
-  utterance: string,
-  ctx: PageContext,
-  route: Route,
-  turns: readonly Turn[],
-): ChatMessage[] {
-  const hints = [
-    route.mode && `The wording suggests mode "${route.mode}".`,
-    route.scope && `The wording suggests scope "${route.scope}".`,
-  ].filter(Boolean)
-  const recent = turns
-    .slice(-4)
-    .map((t) => `${t.role === 'user' ? 'Student' : 'Writey'}: ${t.text.slice(0, 300)}`)
-    .join('\n')
-  return [
-    { role: 'system', content: PLAN_SYSTEM },
-    {
-      role: 'user',
-      content: [
-        ...images(ctx),
-        {
-          type: 'text',
-          text: [
-            pageText(ctx),
-            recent && `Recent conversation:\n${recent}`,
-            `The student said: "${utterance}"`,
-            ...hints,
-          ]
-            .filter(Boolean)
-            .join('\n\n'),
-        },
-      ],
-    },
-  ]
 }
 
 /** Drops the screenshots from earlier messages; only the newest page image matters. */

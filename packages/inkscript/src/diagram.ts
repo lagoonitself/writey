@@ -127,6 +127,21 @@ const KINDS: Record<string, string> = {
 }
 
 const CIRCUIT = new Set(Object.values(CIRCUIT_KINDS))
+/** Kinds that look wrong when x and y are scaled differently. */
+const ROUND = new Set([
+  'circle',
+  'ellipse',
+  'arc',
+  'angle',
+  'pulley',
+  'rect',
+  'polygon',
+  'implicit',
+  'polar',
+  'region',
+  'vector_field',
+  'tangent',
+])
 const OPTICS = new Set(['lens', 'mirror', ...Object.values(OPTICS_KINDS)])
 const FIELDS = new Set(Object.values(FIELD_KINDS))
 const FREEHAND = new Set(Object.values(FREEHAND_KINDS))
@@ -499,6 +514,17 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
   // Reactions and lab set-ups are made of molecules, formulas, arrows and apparatus.
   if (spec.items.some((o) => o.kind === 'reaction' || o.kind === 'setup' || o.kind === 'curly'))
     spec = { ...spec, items: expandChem(spec.items) }
+  // A box plot drawn over its number line sits just above it, not on top of its numbers.
+  if (
+    spec.items.some((o) => o.kind === 'number_line') &&
+    spec.items.some((o) => o.kind === 'boxplot' && o.y === undefined)
+  )
+    spec = {
+      ...spec,
+      items: spec.items.map((o) =>
+        o.kind === 'boxplot' && o.y === undefined ? { ...o, y: 1.2 } : o,
+      ),
+    }
   const logs = logScales(spec)
   const T = (p: Pt): Pt => [logs.x ? log10(p[0]) : p[0], logs.y ? log10(p[1]) : p[1]]
   const world = fitWorld(spec, T, logs)
@@ -511,6 +537,11 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
     (o) => o.kind === 'optics' || o.kind === 'lens' || o.kind === 'mirror',
   )
   const instrument = rayItems.some((o) => Array.isArray(o.elements) && o.elements.length > 1)
+  // Graphs on axes are drawn a little larger, and a flat range (x from -8 to 8, y from -3 to 3)
+  // gets a taller frame, as graph paper would, unless something in it must stay round.
+  const axed = spec.items.some((o) => o.kind === 'axes')
+  const stretchable =
+    axed && !spec.items.some((o) => ROUND.has(o.kind)) && !spec.xscale && !spec.yscale
   // Chemistry is drawn at a fixed scale too: a bond about one and a half letters long.
   const chem = spec.items.some((o) => CHEM_SET.has(o.kind))
   const natural = chem
@@ -523,7 +554,9 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
           ? Math.max(300, size * 14)
           : spec.items.some((o) => FREEHAND.has(o.kind))
             ? opts.maxW
-            : Math.max(230, size * 11)
+            : axed
+              ? Math.max(290, size * 16)
+              : Math.max(230, size * 11)
   // Callout names sit beside the drawing, so the drawing leaves them room.
   const room = calloutRoom(spec.items, { size }, (world.x[0] + world.x[1]) / 2)
   let W = Math.min(
@@ -538,8 +571,13 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
   const rays = spec.items.some(
     (o) => o.kind === 'optics' || o.kind === 'lens' || o.kind === 'mirror',
   )
-  const minH = W * (rays ? 0.62 : 0.4)
-  const natH = picture ? (W * yr) / xr : Math.min(W * 1.15, Math.max(minH, (W * yr) / xr))
+  // Circuits keep one scale too, or gates come out squashed or stretched: a tall circuit
+  // (many gates in a column) gets narrower instead.
+  const sameScale = wired && !rays && !spec.h
+  if (sameScale) W = Math.min(W, (size * 26 * xr) / yr)
+  const minH = W * (rays ? 0.62 : stretchable ? 0.6 : 0.4)
+  const natH =
+    picture || sameScale ? (W * yr) / xr : Math.min(W * 1.15, Math.max(minH, (W * yr) / xr))
   // A ray diagram is never squashed flat, even when asked for a short frame.
   // Chemistry keeps one scale both ways, so rings stay regular.
   const H = chem
@@ -808,6 +846,8 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
         const yl = typeof names[1] === 'string' ? names[1] : 'y'
         const tick = size * 0.18
         const numbers = o.numbers !== false
+        // A bar chart names its bars under the axis, so the x numbers would only clash.
+        const xNumbers = numbers && !spec.items.some((i) => i.kind === 'bars')
         /** Tick positions in logged units, with their labels (null: a minor tick). */
         const ticksFor = (
           lo: number,
@@ -871,14 +911,14 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
         pen.head(xb, xa, headSize)
         pen.line(ya, yb)
         pen.head(yb, ya, headSize)
-        label(xl, xb, [0.4, 1], 3, /\\/.test(xl))
+        label(xl, xb, [1, 0], 3, /\\/.test(xl))
         label(yl, yb, [1, 0.3], 4, /\\/.test(yl))
         if (o.ticks !== false) {
           for (const t of xt) {
             const p = mapT([t.v, oy])
             const k = t.label === null ? tick * 0.55 : tick
             pen.line([p[0], p[1] - k], [p[0], p[1] + k])
-            if (numbers && t.label !== null)
+            if (xNumbers && t.label !== null)
               label(t.label, [p[0], p[1] + tick], [0, 1], 1.5, t.latex)
           }
           for (const t of yt) {
