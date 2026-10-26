@@ -46,17 +46,6 @@ export type PictureSpec = {
 
 export type WriteResult = Written | { noRoom: true } | null
 
-/** Where Writey's pen goes to read something (a `look` block), in page points. */
-export type Look = {
-  x: number
-  y: number
-  rect: Rect
-  note?: string
-  /** When the pen gets there, ms from the first stroke, and how long it stays. */
-  at: number
-  dur: number
-}
-
 /** Writey's highlighter: the yellow from the toolbar. */
 const HIGHLIGHT = '#ffe14a'
 
@@ -77,8 +66,6 @@ function paler(hex: string): string {
   const rgb = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(mix)
   return `#${rgb.map((c) => c.toString(16).padStart(2, '0')).join('')}`
 }
-/** How long the pen rests on what it reads, ms. */
-const LOOK_MS = 1100
 
 /**
  * Writing size that matches the student's, from their line heights. Allure's small letters
@@ -320,22 +307,9 @@ export class InkWriter {
     })
   }
 
-  /** Moves the pen to a line or spot to read it; nothing is written. */
   /** Erased ink: its space is free again. */
   free(rect: Rect): void {
     this.placer.free(rect)
-  }
-
-  look(block: Extract<InkBlock, { type: 'look' }>): Look | null {
-    const rect = this.markRegion(block)
-    if (!rect) return null
-    // On a line the pen rests just under it, like a finger following the text.
-    const y = block.target ? rect.y + rect.h + 2 : rect.y + rect.h / 2
-    const at = this.time
-    // Longer notes stay up long enough to read.
-    const dur = LOOK_MS + Math.min(1200, (block.note?.length ?? 0) * 25)
-    this.time += dur + BLOCK_PAUSE
-    return { x: rect.x + rect.w / 2, y, rect, note: block.note, at, dur }
   }
 
   private textBox(text: string, after: string | undefined): Box {

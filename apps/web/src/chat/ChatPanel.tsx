@@ -252,9 +252,6 @@ export default function ChatPanel(p: Props) {
             } else if (u.type === 'ink') {
               ghosts.get(u.page.id)?.ghostAdd(u.written)
               return
-            } else if (u.type === 'look') {
-              ghosts.get(u.page.id)?.ghostLook(u.look)
-              return
             } else if (u.type === 'erase') {
               ghosts.get(u.page.id)?.ghostErase(u.groupId)
               return

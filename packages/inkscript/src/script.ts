@@ -34,7 +34,6 @@ export type InkBlock =
       size?: number
     }
   /** Writey's pen moves to a line or spot and hovers there while it reads it (no ink). */
-  | { type: 'look'; target?: string; pin?: Pin; note?: string }
   /** Red pen on a line (`target`) or on any spot (`pin`). */
   | { type: 'mark'; kind: MarkKind; target?: string; pin?: Pin; note?: string }
   /** A hand-drawn diagram or graph (docs §5.6). */
@@ -148,19 +147,6 @@ export function toBlock(raw: unknown): InkBlock | null {
         note: str(o.note) || str(o.text) || undefined,
       }
     }
-    case 'look':
-    case 'hover':
-    case 'read': {
-      const target = str(o.target ?? o.line).toUpperCase()
-      const at = pin(o)
-      if (!/^L\d+$/.test(target) && !at) return null
-      return {
-        type: 'look',
-        target: /^L\d+$/.test(target) ? target : undefined,
-        pin: at,
-        note: str(o.note) || str(o.text) || undefined,
-      }
-    }
     case 'diagram':
     case 'graph':
     case 'plot':
@@ -254,7 +240,6 @@ export function toBlock(raw: unknown): InkBlock | null {
 
 /** Writey's pen tools (ai-core WRITEY_TOOLS) and the blocks they make. */
 const TOOL_BLOCKS: Record<string, string> = {
-  point_at: 'look',
   mark: 'mark',
   write_math: 'math',
   write_text: 'text',

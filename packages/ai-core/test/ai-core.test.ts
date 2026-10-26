@@ -344,8 +344,6 @@ describe('prompts', () => {
     const names = WRITEY_TOOLS.map((t) => t.name)
     expect(names).toEqual([
       'look_at_page',
-      'zoom',
-      'point_at',
       'mark',
       'write_math',
       'write_text',

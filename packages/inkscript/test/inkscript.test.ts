@@ -303,37 +303,23 @@ describe('InkWriter', () => {
     expect(plain.write({ type: 'mark', kind: 'circle', pin: { img: 2, at: [1, 1] } })).toBeNull()
   })
 
-  it('turns tool calls into blocks, and looks at a line before it writes', () => {
+  it('turns tool calls into blocks', () => {
     const blocks = [
-      toolBlock('point_at', '{"target":"l1","note":"checking the sign"}'),
       toolBlock('write_math', '{"latex":"\\\\frac{1}{2}","boxed":true,"box":[1,2,3,4]}'),
       toolBlock('write_math', '{"latex":"\\frac{1}{2}"}'),
       toolBlock('look_at_page', '{}'),
       toolBlock('mark', 'not json'),
+      // Pointing without writing is gone (HANDOFF D54).
+      toolBlock('point_at', '{"target":"L1"}'),
     ]
-    expect(blocks[0]).toEqual({
-      type: 'look',
-      target: 'L1',
-      pin: undefined,
-      note: 'checking the sign',
-    })
-    expect(blocks[1]).toMatchObject({
+    expect(blocks[0]).toMatchObject({
       type: 'math',
       latex: '\\frac{1}{2}',
       box: true,
       pin: undefined,
     })
-    expect(blocks[2]).toMatchObject({ latex: '\\frac{1}{2}', box: false })
-    expect(blocks.slice(3)).toEqual([null, null])
-    const w = new InkWriter(env, { size: 20, color: '#53c', markColor: '#d22', seed: 1 })
-    const look = w.look(blocks[0] as Extract<InkBlock, { type: 'look' }>)
-    expect(look).toMatchObject({ x: 160, rect: { x: 60, y: 100 }, at: 0 })
-    expect(look?.y).toBeGreaterThan(124)
-    // The pen reaches the line before it writes there.
-    const out = w.write({ type: 'mark', kind: 'cross', target: 'L1' })
-    if (!out || 'noRoom' in out) throw new Error('expected a mark')
-    expect(out.strokes[0]?.at).toBeGreaterThan((look?.at ?? 0) + (look?.dur ?? 0))
-    expect(w.look({ type: 'look', target: 'L7' })).toBeNull()
+    expect(blocks[1]).toMatchObject({ latex: '\\frac{1}{2}', box: false })
+    expect(blocks.slice(2)).toEqual([null, null, null])
   })
 
   it('matches the student’s writing size', () => {

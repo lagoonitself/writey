@@ -17,7 +17,7 @@ import {
   translateItem,
   unionBounds,
 } from '@writey/ink-engine'
-import { type Look, PICTURE_MS, type Written } from '@writey/inkscript'
+import { PICTURE_MS, type Written } from '@writey/inkscript'
 import type { AssetRow, PageRow } from '@writey/shared'
 import { loadImage } from '../lib/assets'
 import { backupPage, clearBackup, loadPage, savePage } from '../lib/pageStore'
@@ -50,9 +50,7 @@ const TOUCH_MS = 260
 /** AI ink being previewed: blocks arrive while the answer streams and animate in. */
 type Ghost = {
   blocks: { written: Written; offset: number }[]
-  /** Where the pen goes to read before it writes (no ink). */
-  looks: { look: Look; offset: number }[]
-  /** Offset of the latest block or look: later ones never start before it. */
+  /** Offset of the latest block: later ones never start before it. */
   offset: number
   /** performance.now() when writing started. */
   start: number
@@ -148,7 +146,6 @@ export class PageController {
       snapshot: (withGhost) => this.snapshot(withGhost),
       ghostStart: (actions) => this.ghostStart(actions),
       ghostAdd: (block) => this.ghostAdd(block),
-      ghostLook: (look) => this.ghostLook(look),
       ghostErase: (groupId) => this.ghostErase(groupId),
       ghostEnd: () => this.ghostEnd(),
       ghostAccept: () => this.ghostAccept(),
@@ -189,7 +186,6 @@ export class PageController {
     if (this.ghost) this.settleGhost('discarded')
     this.ghost = {
       blocks: [],
-      looks: [],
       offset: 0,
       start: performance.now(),
       writing: true,
@@ -214,13 +210,6 @@ export class PageController {
     return g.offset
   }
 
-  private ghostLook(look: Look): void {
-    const g = this.ghost
-    if (!g) return
-    g.looks.push({ look, offset: this.ghostOffset(g, look.at) })
-    this.requestWet()
-  }
-
   /** Writey rubs out one of its own preview blocks. */
   private ghostErase(groupId: string): void {
     const g = this.ghost
@@ -233,7 +222,7 @@ export class PageController {
   private ghostEnd(): void {
     if (!this.ghost) return
     if (!this.ghost.blocks.length) {
-      // Writey only looked here: nothing to accept, and the other pages' preview stays.
+      // Nothing was written here: nothing to accept, and the other pages' preview stays.
       this.ghost = null
       this.emitGhost()
       this.requestWet()
@@ -356,35 +345,9 @@ export class PageController {
     }
     ctx.restore()
     if (!g.skipped) {
-      for (const { look, offset } of g.looks) {
-        const local = elapsed - (look.at + offset)
-        if (local < 0) animating = true
-        else if (local < look.dur) {
-          animating = true
-          this.drawLook(ctx, look, local)
-        }
-      }
       this.drawWriteyPen(ctx, g, elapsed)
     }
     return animating
-  }
-
-  /** A soft outline round what Writey is reading, fading in and out. */
-  private drawLook(ctx: CanvasRenderingContext2D, look: Look, local: number): void {
-    const fade = Math.min(1, local / 180, (look.dur - local) / 240)
-    const r = look.rect
-    const pad = 4
-    ctx.save()
-    ctx.globalAlpha = Math.max(0, fade)
-    ctx.beginPath()
-    ctx.roundRect(r.x - pad, r.y - pad, r.w + pad * 2, r.h + pad * 2, 6)
-    ctx.fillStyle = 'rgba(91, 63, 181, 0.07)'
-    ctx.fill()
-    ctx.setLineDash([5 / this.scale, 4 / this.scale])
-    ctx.strokeStyle = WRITEY_INK
-    ctx.lineWidth = 1.2 / this.scale
-    ctx.stroke()
-    ctx.restore()
   }
 
   /**
@@ -420,20 +383,6 @@ export class PageController {
       }
     }
     let label = 'Writey'
-    if (!tip) {
-      for (const { look, offset } of g.looks) {
-        const start = look.at + offset
-        const end = start + look.dur
-        if (elapsed >= end) {
-          if (!prev || end >= prev.t) prev = { x: look.x, y: look.y, t: end }
-        } else if (elapsed < start) {
-          if (!next || start < next.t) next = { x: look.x, y: look.y, t: start }
-        } else {
-          tip = [look.x, look.y]
-          if (look.note) label = `Writey · ${clip(look.note, 42)}`
-        }
-      }
-    }
     if (!tip) {
       if (prev && next) {
         const u = Math.min(1, Math.max(0, (elapsed - prev.t) / Math.max(1, next.t - prev.t)))
@@ -1171,5 +1120,3 @@ export class PageController {
     else this.editor.add([item])
   }
 }
-
-const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)

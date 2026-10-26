@@ -27,7 +27,6 @@ import {
   diagramIssues,
   type InkBlock,
   InkWriter,
-  type Look,
   type PlacedPicture,
   repairJson,
   sizeFromLines,
@@ -39,7 +38,7 @@ import { chatRequest } from '../lib/ai'
 import { primeImage, uploadAsset } from '../lib/assets'
 import { chatgptResponses, HelperError } from '../lib/helper'
 import type { PageSnapshot } from '../notebook/tools'
-import { type Capture, capturePage, zoomRegion } from './capture'
+import { type Capture, capturePage } from './capture'
 import {
   contactSheet,
   credit,
@@ -51,7 +50,7 @@ import {
 } from './pictures'
 
 // The help engine (docs §5, HANDOFF D46): Writey is an agent with a pen. The model sees the
-// page and calls tools (point at, mark, write, draw, look at the page again, say), as many
+// page and calls tools (mark, write, draw, look at the page again, say), as many
 // as it decides, in the order it decides; each call happens on the page as it arrives and
 // its result goes back to the model. When it stops calling tools, its reply is the
 // explanation in the margin.
@@ -72,7 +71,6 @@ export type HelpUpdate =
   | { type: 'inkStart'; page: PageRow }
   | { type: 'ink'; page: PageRow; written: Written }
   /** Writey's pen goes to a spot to read it. */
-  | { type: 'look'; page: PageRow; look: Look }
   /** Writey rubs out one of its own blocks. */
   | { type: 'erase'; page: PageRow; groupId: string }
 
@@ -118,7 +116,7 @@ const FAIL_STREAK = 4
  */
 const FINAL_TEXT = 140
 /** Calls whose result the model has to see before it can go on. */
-const OBSERVE = new Set(['look_at_page', 'zoom', 'find_picture', 'place_picture'])
+const OBSERVE = new Set(['look_at_page', 'find_picture', 'place_picture'])
 /** Longest line of words for the page (math in $…$ not counted); longer is an explanation. */
 const PAGE_TEXT = 100
 
@@ -319,8 +317,6 @@ function blockMarkdown(b: InkBlock): string {
       return ''
   }
 }
-
-const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
 const list = (lines: readonly string[]) => lines.map((l, i) => `${i + 1}. ${l}`).join('\n')
 
@@ -652,7 +648,6 @@ class Agent {
   private async run1(c: ToolCall, key: string): Promise<ToolOutcome> {
     const { onUpdate } = this.o
     if (c.name === 'look_at_page') return this.lookAtPage()
-    if (c.name === 'zoom') return this.zoom(JSON.parse(repairJson(c.arguments || '{}')))
     if (c.name === 'find_picture') {
       return this.findPicture(JSON.parse(repairJson(c.arguments || '{}')))
     }
@@ -678,7 +673,7 @@ class Agent {
     if (!b) {
       return {
         result:
-          c.name === 'point_at' || c.name === 'mark'
+          c.name === 'mark'
             ? 'Error: say where: a line tag (target), or a spot (box or at) in image pixels.'
             : `Error: couldn't use those arguments for ${c.name}. Nothing was done.`,
       }
@@ -699,14 +694,6 @@ class Agent {
               result: `Turned to a new blank page (page ${this.o.pageNumber(this.page)}). Write at its top.`,
             }
           : { result: 'Error: could not add a page. Put the rest in your explanation.' }
-      }
-      case 'look': {
-        const look = this.writer.look(b)
-        if (!look) return { result: this.missing(b) }
-        this.open()
-        onUpdate({ type: 'look', page: this.page, look })
-        if (b.note) onUpdate({ type: 'status', text: `${capitalize(b.note)}…` })
-        return { result: 'Your pen is resting on it.' }
       }
       case 'text':
       case 'math':
@@ -799,54 +786,6 @@ class Agent {
         this.capture.ctx,
         yours.map((l) => l.label),
       ),
-    }
-  }
-
-  /** A close-up of part of image 1 or 2, like a computer-use model zooming in. */
-  private async zoom(a: { box?: unknown; img?: unknown }): Promise<ToolOutcome> {
-    if (this.page.id !== this.captured) {
-      return {
-        result: 'Error: this is a new page you have not looked at; call look_at_page first.',
-      }
-    }
-    const box = Array.isArray(a.box) ? a.box.map(Number) : []
-    if (box.length !== 4 || box.some((v) => !Number.isFinite(v))) {
-      return { result: 'Error: box must be [x0, y0, x1, y1] in image pixels.' }
-    }
-    const img = Number(a.img) === 2 ? 2 : 1
-    const f = img === 2 ? this.capture.images.page : this.capture.images.focus
-    const [x0, y0, x1, y1] = box as [number, number, number, number]
-    const pt = (px: number, o: number) => px / f.scale + o
-    // At least a couple of lines' worth, with a little room around it, inside the page.
-    const min = 24
-    let x = pt(Math.min(x0, x1), f.x) - 4
-    let y = pt(Math.min(y0, y1), f.y) - 4
-    let w = Math.abs(x1 - x0) / f.scale + 8
-    let h = Math.abs(y1 - y0) / f.scale + 8
-    if (w < min) [x, w] = [x - (min - w) / 2, min]
-    if (h < min) [y, h] = [y - (min - h) / 2, min]
-    x = Math.max(0, x)
-    y = Math.max(0, y)
-    w = Math.min(w, this.page.width - x)
-    h = Math.min(h, this.page.height - y)
-    if (w <= 0 || h <= 0) return { result: 'Error: that box is outside the page.' }
-    const snap = this.o.lookAgain(this.page)
-    if (!snap) return { result: "Error: the page isn't open right now." }
-    this.o.onUpdate({ type: 'status', text: 'Looking closer…' })
-    const z = await zoomRegion(this.page, snap, { x, y, w, h })
-    const times = Math.round((z.size[0] / (w * f.scale)) * 10) / 10
-    return {
-      result: 'Here is the close-up: see the image in the next message.',
-      zoom: {
-        role: 'user',
-        content: [
-          { type: 'image_url', image_url: { url: z.image } },
-          {
-            type: 'text',
-            text: `Close-up from zoom of [${box.map(Math.round).join(',')}] in image ${img}, shown ${times}× bigger. It is for reading only: keep pointing in image 1 and image 2 pixels.`,
-          },
-        ],
-      },
     }
   }
 
@@ -962,7 +901,7 @@ class Agent {
       look: pageLook(
         this.capture.ctx,
         [],
-        `Image 1 is now the picture you pasted, ${w}×${h} px; image 2 is the whole page. To name its parts, call label_parts with a point on each part in image 1 pixels (zoom first if a part is small).`,
+        `Image 1 is now the picture you pasted, ${w}×${h} px; image 2 is the whole page. To name its parts, call label_parts with a point on each part in image 1 pixels.`,
       ),
     }
   }

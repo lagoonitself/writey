@@ -51,7 +51,6 @@ const line = (label: string, y: number) => ({
 })
 let captures = 0
 vi.mock('./capture', () => ({
-  zoomRegion: async () => ({ image: 'data:image/png;base64,Z', size: [400, 200] }),
   capturePage: async () => {
     captures++
     const lines = captures === 1 ? [line('L1', 100), line('L2', 140)] : [line('L1', 100)]
@@ -89,10 +88,9 @@ describe('askWritey', () => {
     const { askWritey } = await import('./engine')
     replies.push(
       [
-        call(0, 'a', 'point_at', { target: 'L2', note: 'checking the sign' }),
-        call(1, 'b', 'mark', { kind: 'cross', target: 'L2', note: 'sign error' }),
-        call(2, 'c', 'point_at', { target: 'L9', note: 'nothing here' }),
-        call(3, 'd', 'look_at_page', {}),
+        call(0, 'b', 'mark', { kind: 'cross', target: 'L2', note: 'sign error' }),
+        call(1, 'c', 'mark', { kind: 'tick', target: 'L9' }),
+        call(2, 'd', 'look_at_page', {}),
       ],
       [call(0, 'e', 'write_math', { latex: 'x = -2', boxed: true })],
       [text('The sign flips when you divide by $-1$.')],
@@ -114,18 +112,16 @@ describe('askWritey', () => {
     })
     // Three model requests: the model ended the turn itself by replying with text.
     expect(sent).toHaveLength(3)
-    expect(updates.filter((u) => u === 'look' || u === 'ink' || u === 'inkStart')).toEqual([
+    expect(updates.filter((u) => u === 'ink' || u === 'inkStart')).toEqual([
       'inkStart',
-      'look',
       'ink',
       'ink',
     ])
     // Each result went back to the model, and the fresh page came after them.
     const second = sent[1] as ChatMessage[]
     const tools = second.filter((m) => m.role === 'tool').map((m) => m.content)
-    expect(tools[0]).toBe('Your pen is resting on it.')
-    expect(tools[1]).toMatch(/^Done \(W1\), at \[/)
-    expect(tools[2]).toContain('no line L9')
+    expect(tools[0]).toMatch(/^Done \(W1\), at \[/)
+    expect(tools[1]).toContain('no line L9')
     expect(JSON.stringify(second.at(-1))).toContain('base64,2')
     // The history is append-only: the first screenshot stays, so the request before is a
     // prefix of this one and the prompt cache covers it.
@@ -229,17 +225,13 @@ describe('askWritey', () => {
     expect(b?.source).toContain('\\pm 2')
   })
 
-  it('zooms in and keeps the work when a later request fails for good', async () => {
+  it('keeps the work when a later request fails for good', async () => {
     sent.length = 0
     replies.push(
-      [
-        call(0, 'a', 'zoom', { box: [10, 10, 60, 40] }),
-        call(1, 'b', 'write_text', { text: 'Nearly there' }),
-      ],
+      [call(0, 'b', 'write_text', { text: 'Nearly there' })],
       new Response('{"error":{"message":"No credits"}}', { status: 402 }),
     )
     const result = await ask()
-    expect(JSON.stringify(sent[1]?.at(-1))).toContain('base64,Z')
     expect(result.ink).toHaveLength(1)
     expect(result.text).toContain('Writey was cut off')
   })

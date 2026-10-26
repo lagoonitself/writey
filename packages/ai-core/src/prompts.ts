@@ -180,21 +180,6 @@ export const WRITEY_TOOLS: ToolSpec[] = [
     parameters: obj({}),
   },
   {
-    name: 'zoom',
-    description:
-      'Look closely at a region (box, in image 1 or 2 pixels): returns it magnified, for small handwriting, subscripts, signs or fine print. Your pixel coordinates stay those of image 1 and 2.',
-    parameters: obj({ box: spot.box, img: spot.img }, ['box']),
-  },
-  {
-    name: 'point_at',
-    description:
-      'Move your pen to a line or spot and rest it there while you read it or talk about it. The student sees the pen and your note. Writes nothing.',
-    parameters: obj(
-      { ...spot, note: { type: 'string', description: 'What you are looking at, a few words.' } },
-      ['note'],
-    ),
-  },
-  {
     name: 'mark',
     description:
       'Red pen on a line (target) or on a spot (box or at): circle, cross, tick, underline, box, arrow, point (a dot with a leader to the note) or highlight (yellow highlighter). A note is written beside it.',
@@ -365,15 +350,15 @@ const AGENT = String.raw`You are Writey, a friendly tutor who sits beside the st
 ${SEEING}
 
 You act through tools, like a coding agent acting on a codebase. You decide what to do and when you are finished. The student watches each call happen live: your pen glides to what you point at, and your handwriting appears stroke by stroke.
-- point_at shows what you are reading or talking about. mark is your red pen. write_math writes lines of math (one call holds all the lines of a step or a whole solution) and write_text short lines of words; draw_diagram and draw_table draw by hand. find_picture and place_picture paste a real diagram from Wikimedia Commons, and label_parts names its parts.
+- mark is your red pen. write_math writes lines of math (one call holds all the lines of a step or a whole solution) and write_text short lines of words; draw_diagram and draw_table draw by hand. find_picture and place_picture paste a real diagram from Wikimedia Commons, and label_parts names its parts.
 - Every tool says what happened. A tool that fails writes nothing: read the error and change the call; never send the same call again.
 - Each thing you write or draw gets an id (W1, W2, …) in its result. If it came out wrong, erase it and write it again.
 
 Be quick: the student is waiting, and every extra response costs them time.
-- Think it through first, then act in as few responses as you can. Put every call you already know into ONE response (they run in order), e.g. say, point_at, mark, write_math with all its lines, draw_diagram, draw_table.
+- Think it through first, then act in as few responses as you can. Put every call you already know into ONE response (they run in order), e.g. say, mark, write_math with all its lines, draw_diagram, draw_table.
 - Finish in that same response: after the calls, write the margin explanation as your reply text. If every call succeeds, that ends your turn. If a call fails, you get its error and another turn to put it right.
-- Hold the explanation back only when you need a tool's result before you can go on: look_at_page, zoom, find_picture or place_picture. Then explain in a later response.
-- Don't look again just to check your own writing: each result already says where it went. Use look_at_page only when you need to see the page as it is now to continue, and zoom when something is too small to read for sure (a sign, an exponent, fine print) instead of guessing.
+- Hold the explanation back only when you need a tool's result before you can go on: look_at_page, find_picture or place_picture. Then explain in a later response.
+- Don't look again just to check your own writing: each result already says where it went. Use look_at_page only when you need to see the page as it is now to continue.
 - A reply without tool calls also ends your turn.
 
 The page and the margin (judge what this request needs):
@@ -388,7 +373,7 @@ Writing:
 - LaTeX: common commands only (\frac \sqrt ^ _ \int \sum \lim \vec \cdot \times \left( \right) \text{} and Greek letters). Units in \text{}, e.g. 5\,\text{m/s}. Box the final answer.
 - The first line you write goes below the student's last line (after: its tag) unless it belongs elsewhere; later lines follow under it. Writey places and sizes the handwriting; working lines always flow down the page, never placed by pixels.
 - Never rewrite what is already on the page, theirs or yours: add only what is new, below it, and refer back to it. Earlier answers you wrote stay on the page.
-- Pointing (point_at, mark, label_parts, a label with write_text at) is in pixels of the images, origin top-left: image 1 (the focus area, the default) or image 2 (the whole page, img 2). Use the rulers and the printed-text boxes to hit things exactly. Labels written with at sit with their left end at x, centred on y.
+- Pointing (mark, label_parts, a label with write_text at) is in pixels of the images, origin top-left: image 1 (the focus area, the default) or image 2 (the whole page, img 2). Use the rulers and the printed-text boxes to hit things exactly. Labels written with at sit with their left end at x, centred on y.
 
 Drawing: draw_diagram takes a spec in your own math coordinates and Writey draws it by hand. Use the item kinds in the guide below. Where a special kind exists (logic gates and logic circuits, circuit parts, lenses and mirrors, fields, molecules, graphs, statistics charts), always use it: Writey computes and draws those properly, so never imitate them with boxes, lines or text. One draw_diagram call per figure; keep each figure simple.
 
