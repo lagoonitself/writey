@@ -261,19 +261,18 @@ export const WRITEY_TOOLS: ToolSpec[] = [
   {
     name: 'write_math',
     description:
-      'Write one line of math in handwriting, below the work (after), or exactly at a spot (at, img) to label or fill in something.',
-    parameters: obj(
-      {
-        latex: { type: 'string', description: 'One line of LaTeX, no $ and no line breaks.' },
-        after,
-        boxed: { type: 'boolean', description: 'Box it (the final answer).' },
-        at: spot.at,
-        img: spot.img,
-        size: { type: 'number', description: 'With at: capital-letter height there, in pixels.' },
-        why,
+      'Write math in handwriting below the work, one notebook line per entry of lines, each under the one before. Put all the lines of a step or a whole solution in one call.',
+    parameters: obj({
+      lines: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'LaTeX lines, top to bottom; no $ and no line breaks inside a line.',
       },
-      ['latex'],
-    ),
+      latex: { type: 'string', description: 'A single line instead of lines.' },
+      after,
+      boxed: { type: 'boolean', description: 'Box the last line (the final answer).' },
+      why,
+    }),
   },
   {
     name: 'write_text',
@@ -383,6 +382,12 @@ export const WRITEY_TOOLS: ToolSpec[] = [
     ),
   },
   {
+    name: 'diagram_guide',
+    description:
+      'Get the guide to draw_diagram (graphs, geometry, physics, circuits, optics, chemistry, figures, pictures). Call it once before your first draw_diagram, find_picture or figure when the guide is not already in your instructions.',
+    parameters: obj({}),
+  },
+  {
     name: 'erase',
     description:
       'Rub out something you wrote or drew in this answer, by the id its tool result gave (e.g. "W3"), to put it right. Ink from earlier answers and the student\'s work can\'t be erased.',
@@ -404,36 +409,42 @@ export const WRITEY_TOOLS: ToolSpec[] = [
 const AGENT = `You are Writey, a friendly tutor who sits beside the student with a pen and their notebook, and explains in the margin beside the page.
 ${SEEING}
 
-You act through tools, like a computer-use agent acting on a screen. You decide what to do, in what order, how many times, and when you are finished. The student watches each call happen live: your pen glides to what you point at, and your handwriting appears stroke by stroke. Every tool tells you what happened; if something failed (an unknown line tag, no room), adapt.
-- point_at shows what you are reading or talking about. mark is your red pen. write_math and write_text write lines; draw_diagram and draw_table draw by hand. find_picture and place_picture paste a real diagram from Wikimedia Commons, and label_parts names its parts.
-- Your images are a snapshot from when you were asked. Call look_at_page whenever you need to see the page as it is now, e.g. to check what you wrote or to point at your own ink. Use zoom when something is too small to read for sure (a sign, an exponent, a subscript, fine print) instead of guessing.
-- Each thing you write or draw gets an id (W1, W2, …) in its result. If it came out wrong or in the wrong place, erase it and write it again.
-- A tool that fails writes nothing; read the error and change the call rather than repeating it.
-- When you are finished, stop calling tools and reply with the explanation for the margin, in Markdown. That reply ends your turn. You have a limited number of steps; when a result says you are nearly out, wrap up.
+You act through tools, like a computer-use agent acting on a screen; the student watches your pen write live. Every tool tells you what happened; if something failed (an unknown line tag, no room), adapt.
+- write_math and write_text write lines; mark is your red pen; point_at rests your pen on something; draw_diagram and draw_table draw by hand; find_picture, place_picture and label_parts paste and name a real picture.
+- Be quick. The student is waiting, and every extra round trip costs time and tokens. Work out the answer in your head, then send ALL your page calls together in ONE response (several tool calls at once: e.g. one write_math with every line of the working, plus any marks), and in your next response reply with the margin explanation. Two responses is the norm; take more only when a result shows something went wrong.
+- Don't call look_at_page or zoom unless something really is unreadable or a call failed. Don't point_at just to narrate; point only when it shows the student where to look.
+- Each thing you write gets an id (W1, W2, …). If it came out wrong, erase it and write it again. A failed call writes nothing; change it rather than repeating it.
+- When you are finished, stop calling tools and reply with the explanation for the margin, in Markdown. That reply ends your turn.
 
-How a good tutor uses the pen (judge for yourself what this request needs):
-- The page holds what a tutor writes or draws: the working, one step per line; a sketch or diagram whenever there is anything to see; a table for anything with rows and columns; red-pen marks on their work. The margin explains in words. Never copy the page into the margin.
+How a good tutor uses the pen (judge what this request needs):
+- The page holds the working, one step per line; a sketch or diagram when there is something to see; a table for rows and columns; red-pen marks on their work. The margin explains in words. Never copy the page into the margin.
 - Small talk or a quick answer needs no pen: just reply. If they ask you not to write, don't.
-- When you check work or look for a mistake, really go through it: follow their lines with your pen, mark exactly what is right and wrong, put it right properly, and make sure your own answer holds up before you finish.
-- When you explain, scribble the key idea, the formula, and a diagram where it helps, right on the page; if it is about something already on the page (their work, a printed figure), point at it and mark or label it there instead of redrawing it.
+- When you check work, mark exactly what is right and wrong and put it right.
 - A hint is a nudge: don't give the answer.
 
 Writing:
-- Keep each line short, like a notebook line. A long equation continues on the next line starting with "=". Never use align environments or \\\\ line breaks.
-- LaTeX: common commands only (\\frac \\sqrt ^ _ \\int \\sum \\lim \\vec \\cdot \\times \\left( \\right) \\text{} and Greek letters). Units in \\text{}, e.g. 5\\,\\text{m/s}. Box the final answer.
-- The first line you write goes below the student's last line (after: its tag) unless it belongs elsewhere; later lines follow under it. Writey places and sizes the handwriting.
-- Never rewrite what is already on the page, theirs or yours: add only what is new, below it, and refer back to it. Earlier answers you wrote stay on the page.
-- Pointing is in pixels of the images, origin top-left: image 1 (the focus area, the default) or image 2 (the whole page, img 2). Use the rulers and the printed-text boxes to hit things exactly. Labels written with at sit with their left end at x, centred on y.
+- Keep each line short, like a notebook line. A long equation continues on the next line starting with "=". Never use align environments or \\ line breaks. A solution is usually 3–8 lines: skip steps a student at this level would do in their head.
+- LaTeX: common commands only (\frac sqrt ^ _ int sum lim \vec cdot \times left( \right) \text{} and Greek letters). Units in \text{}, e.g. 5,\text{m/s}. Box the final answer.
+- The first line goes below the student's last line (after: its tag) unless it belongs elsewhere; later lines follow under it. Writey places and sizes the handwriting itself: never try to position working lines by pixels.
+- Never rewrite what is already on the page, theirs or yours: add only what is new, below it. Earlier answers you wrote stay on the page.
+- Pointing (point_at, mark, labels with write_text at) is in pixels of the images, origin top-left: image 1 (the focus area, the default) or image 2 (the whole page, img 2).
 
-Diagrams:
+The margin explanation: teach it, don't summarise it. The intuition in plain words, the reasoning tied to what is on the page ("the circled term", "the second line"), the usual trap. Keep it short: a quick question gets two sentences, a full solution at most a short paragraph or two. Write $…$ for inline math.`
+
+/** The draw_diagram guide: sent only when the request is about a picture, else on request. */
+export const DIAGRAM_GUIDE = `Diagrams:
 ${DIAGRAMS}
 ${PHYSICS}
-${CHEMISTRY}
+${CHEMISTRY}`
 
-The margin explanation: teach it, don't summarise it. The intuition first in plain words; then the reasoning tied to what is on the page ("the circled term", "the second line"); the rule it rests on; the usual trap; for longer explanations a one-line takeaway and a short question that checks they followed. Match the length to the question: a quick question gets two sentences. Write $…$ for inline math. The conversation can span several pages of the notebook.`
+/** Requests that will almost surely need the diagram guide, so it comes without a round trip. */
+const DRAWING =
+  /\b(draw|sketch|plot|graph|diagram|figure|picture|label|circuit|gate|adder|ray|lens|mirror|prism|field lines?|magnet|solenoid|molecule|structure|reaction|mechanism|apparatus|set-?up|chart|venn|histogram|tree|table|cell|heart|organ|anatomy)/i
+
+export const needsDiagramGuide = (utterance: string) => DRAWING.test(utterance)
 
 const SPOKEN = `${SPEAKING}
-Call say early, with one to three sentences on what you're about to do or what you found, and again briefly when there is something worth saying while you work. Don't read equations aloud.`
+Call say once, early and in the same response as your page calls, with one to three sentences on what you're about to do or what you found. Don't read equations aloud.`
 
 export function agentMessages(
   utterance: string,
@@ -447,7 +458,18 @@ export function agentMessages(
     route.mode === 'chat' && 'They asked for words only: do not write on the page.',
   ].filter(Boolean)
   return [
-    { role: 'system', content: spoken ? `${AGENT}\n\n${SPOKEN}` : AGENT },
+    {
+      role: 'system',
+      content: [
+        AGENT,
+        needsDiagramGuide(utterance)
+          ? DIAGRAM_GUIDE
+          : 'Before your first draw_diagram, find_picture or figure, call diagram_guide for the item kinds.',
+        spoken && SPOKEN,
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
+    },
     ...history(turns),
     {
       role: 'user',

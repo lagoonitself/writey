@@ -172,6 +172,12 @@ export class Placer {
     this.prevs.push(r)
   }
 
+  /** Whether `r` would land on handwriting or on Writey's ink from this answer. */
+  clash(r: Rect): boolean {
+    const mine = this.taken.slice(this.env.obstacles.length)
+    return [...mine, ...this.env.lines.map((l) => l.rect)].some((t) => hits(r, t))
+  }
+
   /** A free w × h spot next to `r` (right, left, below, above), for a note on a marked spot. */
   near(r: Rect, w: number, h: number): { x: number; y: number } | null {
     const { page } = this.env

@@ -199,12 +199,32 @@ describe('askWritey', () => {
     const result = await ask((u) => updates.push(u.type))
     const r = toolResults(1)
     expect(r[1]).toMatch(/^Already done/)
-    expect(r[2]).toContain('write_math needs latex')
+    expect(r[2]).toContain('write_math needs lines')
     expect(r[3]).toContain('no tool "draw_pictures"')
     expect(r[4]).toBe('Erased W1.')
     expect(r[5]).toContain('Yours: none')
     expect(updates).toContain('erase')
     expect(result.ink).toBeUndefined()
+  })
+
+  it('writes every line of one write_math call, each under the one before', async () => {
+    sent.length = 0
+    replies.push(
+      [
+        call(0, 'a', 'write_math', {
+          lines: ['x^2 = 4', 'x = \\pm 2'],
+          after: 'L2',
+          boxed: true,
+        }),
+      ],
+      [text('Two roots.')],
+    )
+    const result = await ask()
+    expect(sent).toHaveLength(2)
+    expect(toolResults(1)[0]).toMatch(/^Line 1: Done \(W1\).*\nLine 2: Done \(W2\)/s)
+    const [a, b] = result.ink ?? []
+    expect(a && b && b.rect.y >= a.rect.y + a.rect.h).toBe(true)
+    expect(b?.source).toContain('\\pm 2')
   })
 
   it('zooms in and keeps the work when a later request fails for good', async () => {

@@ -4,6 +4,7 @@ import {
   type ChatMessage,
   chatBody,
   chatEvents,
+  DIAGRAM_GUIDE,
   decide,
   describeChatgptError,
   describeError,
@@ -99,7 +100,7 @@ export class HelpFailure extends Error {
  * A safety stop on model requests in one answer, not a plan: the model ends its turn
  * itself by replying without tool calls. The last request offers no tools.
  */
-const MAX_STEPS = 40
+const MAX_STEPS = 12
 /** Tries of one request that failed before anything came back. */
 const MAX_RETRIES = 2
 /** From this many steps left, each result reminds the model to wrap up. */
@@ -237,8 +238,8 @@ export async function askWritey(opts: {
     route.scope === 'hint'
       ? 'low'
       : route.mode === 'check' || route.scope === 'full'
-        ? 'high'
-        : 'medium'
+        ? 'medium'
+        : 'low'
 
   const agent = new Agent(transport, capture, opts)
   const out = await agent.run(
@@ -614,6 +615,8 @@ class Agent {
     if (c.name === 'place_picture') {
       return this.placePicture(JSON.parse(repairJson(c.arguments || '{}')), key)
     }
+    if (c.name === 'diagram_guide') return { result: DIAGRAM_GUIDE }
+    if (c.name === 'write_math') return { result: await this.writeMath(c.arguments, key) }
     if (c.name === 'erase') {
       const a = JSON.parse(repairJson(c.arguments || '{}')) as { id?: unknown }
       return { result: this.erase(String(a.id ?? '')) }
@@ -662,6 +665,33 @@ class Agent {
       default:
         return { result: 'Nothing to do.' }
     }
+  }
+
+  /** write_math: every line of `lines` (or the one `latex`), each under the one before. */
+  private async writeMath(args: string, key: string): Promise<string> {
+    const a = JSON.parse(repairJson(args || '{}')) as Record<string, unknown>
+    const lines = (Array.isArray(a.lines) ? a.lines : [a.latex])
+      .map((l) => (typeof l === 'string' ? l.trim() : ''))
+      .filter(Boolean)
+    if (!lines.length) return 'Error: write_math needs lines (or latex). Nothing was done.'
+    const out: string[] = []
+    for (const [i, latex] of lines.entries()) {
+      const last = i === lines.length - 1
+      const b = toolBlock(
+        'write_math',
+        JSON.stringify({
+          latex,
+          after: i === 0 ? a.after : 'prev',
+          boxed: last && a.boxed === true,
+          why: i === 0 ? a.why : undefined,
+        }),
+      )
+      if (!b) continue
+      const r = await this.ink(b, lines.length > 1 ? `${key} ${i}` : key)
+      out.push(r)
+      if (r.startsWith('Error')) break
+    }
+    return out.length > 1 ? out.map((r, i) => `Line ${i + 1}: ${r}`).join('\n') : (out[0] ?? '')
   }
 
   private missing(b: { target?: string }): string {

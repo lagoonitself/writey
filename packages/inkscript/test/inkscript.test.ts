@@ -277,6 +277,19 @@ describe('InkWriter', () => {
     expect(label.rect.x).toBeCloseTo(100)
     expect(label.rect.y + label.rect.h / 2).toBeCloseTo(150)
 
+    // Pinned on top of that label, and asked for tiny letters: written readably in the flow instead.
+    const clash = w.write({
+      type: 'math',
+      latex: 'x = 1',
+      pin: { img: 2, at: [202, 300] },
+      size: 2,
+    })
+    if (!clash || 'noRoom' in clash) throw new Error('expected a line')
+    const over = (a: typeof label.rect, b: typeof label.rect) =>
+      a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+    expect(over(clash.rect, label.rect)).toBe(false)
+    expect(clash.rect.h).toBeGreaterThan(10)
+
     // A page without images (a new page) can't take pinned ink.
     const plain = new InkWriter(env, { size: 20, color: '#53c', markColor: '#d22', seed: 1 })
     expect(plain.write({ type: 'mark', kind: 'circle', pin: { img: 2, at: [1, 1] } })).toBeNull()
@@ -318,7 +331,7 @@ describe('InkWriter', () => {
   it('matches the student’s writing size', () => {
     expect(sizeFromLines([])).toBe(22)
     expect(sizeFromLines([20, 22, 24])).toBeCloseTo(22 * 1.15)
-    expect(sizeFromLines([200])).toBe(34)
+    expect(sizeFromLines([200])).toBe(40)
   })
 })
 

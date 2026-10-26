@@ -353,16 +353,21 @@ describe('prompts', () => {
       'find_picture',
       'place_picture',
       'label_parts',
+      'diagram_guide',
       'erase',
       'new_page',
       'say',
     ])
     const [system] = agentMessages('find my mistake', ctx, { mode: 'check', scope: null }, [])
-    expect(String(system?.content)).toContain('You decide what to do')
-    expect(String(system?.content)).toContain('"kind":"logic"')
-    expect(String(system?.content)).not.toContain('Call say early')
+    expect(String(system?.content)).toContain('ONE response')
+    // The diagram guide only comes with requests about pictures; otherwise it's a tool away.
+    expect(String(system?.content)).not.toContain('"kind":"logic"')
+    expect(String(system?.content)).toContain('call diagram_guide')
+    expect(String(system?.content)).not.toContain('Call say once')
+    const [drawing] = agentMessages('draw a full adder', ctx, { mode: 'write', scope: null }, [])
+    expect(String(drawing?.content)).toContain('"kind":"logic"')
     const [spoken] = agentMessages('hi', ctx, { mode: null, scope: null }, [], true)
-    expect(String(spoken?.content)).toContain('Call say early')
+    expect(String(spoken?.content)).toContain('Call say once')
   })
 
   it('hands back only the newest picture of the page', () => {

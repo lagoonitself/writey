@@ -88,7 +88,7 @@ export function sizeFromLines(heights: readonly number[], fallback = 22): number
   if (!heights.length) return fallback
   const sorted = [...heights].sort((a, b) => a - b)
   const median = sorted[Math.floor(sorted.length / 2)] as number
-  return Math.min(34, Math.max(15, median * 1.15))
+  return Math.min(40, Math.max(16, median * 1.15))
 }
 
 export class InkWriter {
@@ -117,7 +117,10 @@ export class InkWriter {
           if (!at) return null
           const width = Math.max(4, this.placer.room(at.x) / at.size)
           const box = stackLines(layoutParagraph(block.text, width, this.rng))
-          return this.writeAt(box, at, block.text, block.why)
+          return (
+            this.writeAt(box, at, block.text, block.why) ??
+            this.writeBox(this.textBox(block.text, 'prev'), 'prev', block.text, block.why)
+          )
         }
         return this.writeBox(
           this.textBox(block.text, block.after),
@@ -131,7 +134,11 @@ export class InkWriter {
         if (block.pin?.at) {
           const at = this.pinned(block.pin, block.size)
           if (!at) return null
-          return this.writeAt(layoutMath(latex, this.rng), at, `$$${block.latex}$$`, block.why)
+          const box = layoutMath(latex, this.rng)
+          return (
+            this.writeAt(box, at, `$$${block.latex}$$`, block.why) ??
+            this.writeBox(box, 'prev', `$$${block.latex}$$`, block.why)
+          )
         }
         return this.writeBox(
           layoutMath(latex, this.rng),
@@ -365,13 +372,17 @@ export class InkWriter {
     const p = this.placer.toPage(pin.img, pin.at[0], pin.at[1])
     if (!p) return null
     // `size` is the height of capital letters in the image; Allure's capitals are ~0.7 em.
+    // Never much smaller than Writey's own lines, so it stays readable.
     const size = letters
-      ? Math.min(40, Math.max(8, (letters * this.placer.pixel(pin.img)) / 0.7))
+      ? Math.min(40, Math.max(this.opts.size * 0.55, (letters * this.placer.pixel(pin.img)) / 0.7))
       : this.opts.size
     return { x: p[0], y: p[1], size }
   }
 
-  /** Writes a box with its left end at `at` and its middle on `at.y`. */
+  /**
+   * Writes a box with its left end at `at` and its middle on `at.y`. Null when it would
+   * land on other writing; the caller then writes it in the flow below instead.
+   */
   private writeAt(
     box: Box,
     at: { x: number; y: number; size: number },
@@ -387,6 +398,7 @@ export class InkWriter {
       p.map((n, i) => (i % 2 === 0 ? at.x + n * k : baseline + n * k)),
     )
     const rect = { x: at.x, y: top, w: box.w * k, h }
+    if (this.placer.clash(rect)) return null
     this.placer.pin(rect)
     return this.pen(paths, this.opts.color, source, why, rect, {
       width: Math.min(this.penWidth, Math.max(0.8, k * 0.075)),
