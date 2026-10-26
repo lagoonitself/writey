@@ -277,6 +277,63 @@ describe('askWritey', () => {
     expect(result.ink).toHaveLength(2)
   })
 
+  it('ends in one request when the pen calls and the explanation come together', async () => {
+    sent.length = 0
+    const explanation =
+      'A NAND gate is an AND gate followed by NOT, so its output is 1 except when both inputs are 1. Check each row of the table against that rule.'
+    replies.push([
+      text(explanation),
+      call(0, 'a', 'draw_diagram', {
+        items: [
+          {
+            kind: 'logic',
+            inputs: ['A', 'B'],
+            gates: [{ id: 'g', type: 'nand', in: ['A', 'B'] }],
+            outputs: { Y: 'g' },
+          },
+        ],
+      }),
+      call(1, 'b', 'draw_table', { header: ['A', 'B', 'Y'], rows: [['0', '0', '1']] }),
+    ])
+    const result = await ask()
+    expect(sent).toHaveLength(1)
+    expect(result.ink).toHaveLength(2)
+    expect(result.text).toContain('AND gate followed by NOT')
+  })
+
+  it('carries on when a call in that response failed, so the model can fix it', async () => {
+    sent.length = 0
+    replies.push(
+      [
+        text(
+          'Here is the gate and how it works: the output is low only when both inputs are high, which is why the table has a single 0 in it.',
+        ),
+        // Gates drawn as labelled boxes are refused: the model must use the logic item.
+        call(0, 'a', 'draw_diagram', {
+          items: [
+            { kind: 'rect', at: [0, 0], w: 2, h: 1, label: 'NAND' },
+            { kind: 'line', from: [-1, 0.5], to: [0, 0.5] },
+          ],
+        }),
+        call(1, 'b', 'write_text', {
+          text: 'I could not draw the circuit, so here is what each part of the circuit does and why the output behaves this way.',
+        }),
+        call(2, 'c', 'draw_diagram', {
+          items: [{ kind: 'lens', type: 'convex', x: 0 }, { kind: 'microscope_tube' }],
+        }),
+      ],
+      [text('Fixed.')],
+    )
+    const result = await ask()
+    expect(sent).toHaveLength(2)
+    const r = toolResults(1)
+    expect(r[0]).toMatch(/^Error: these are logic gates drawn as labelled boxes/)
+    expect(r[1]).toMatch(/^Error: that is \d+ characters, too long/)
+    expect(r[2]).toContain('item 1 (lens) needs f')
+    expect(r[2]).toContain('there is no kind "microscope_tube"')
+    expect(result.ink).toBeUndefined()
+  })
+
   it('asks for a search before a paste', async () => {
     sent.length = 0
     replies.push([call(0, 'a', 'place_picture', { choice: 1 })], [text('ok')])

@@ -60,7 +60,34 @@ export const CIRCUIT_KINDS: Record<string, string> = {
   nand: 'gate',
   nor: 'gate',
   xor: 'gate',
+  xnor: 'gate',
+  buffer: 'gate',
+  buf: 'gate',
+  inverter: 'gate',
 }
+
+/** Gate names as models write them, to the ones Writey draws. */
+const GATE_ALIASES: Record<string, string> = {
+  inverter: 'not',
+  inv: 'not',
+  buffer: 'buf',
+  exor: 'xor',
+  eor: 'xor',
+  exnor: 'xnor',
+  enor: 'xnor',
+}
+
+/** A gate type Writey draws (and, or, not, nand, nor, xor, xnor, buf), from a model's name. */
+export const gateName = (raw: string): string => {
+  const t = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]*gate$/, '')
+  return GATE_ALIASES[t] ?? t
+}
+
+/** Gates with a single input. */
+export const oneInput = (type: string) => type === 'not' || type === 'buf'
 
 /** Body length of each two-terminal part, in em. */
 const BODY: Record<string, number> = {
@@ -361,14 +388,14 @@ function transistor(o: DiagramItem, k: Sketch): void {
 
 /** Input offsets (in gate sizes) for a gate with n inputs, top first. */
 export function inputOffsets(type: string, n: number): number[] {
-  if (type === 'not' || n <= 1) return [0]
+  if (oneInput(type) || n <= 1) return [0]
   if (n === 2) return [0.25, -0.25]
   return Array.from({ length: n }, (_, i) => 0.32 - (0.64 * i) / (n - 1))
 }
 
-const gateType = (o: DiagramItem) => (text(o, 'type') || 'and').toLowerCase()
+const gateType = (o: DiagramItem) => gateName(text(o, 'type') || 'and')
 const gateInputs = (o: DiagramItem) =>
-  gateType(o) === 'not' ? 1 : Math.max(2, Math.min(4, Math.round(num(o.inputs, 2))))
+  oneInput(gateType(o)) ? 1 : Math.max(2, Math.min(4, Math.round(num(o.inputs, 2))))
 
 /** Where a gate's or transistor's wires attach, in world units. */
 export function circuitTerminals(items: readonly DiagramItem[]): Pt[] {
@@ -475,12 +502,12 @@ function gate(o: DiagramItem, k: Sketch): void {
   const offsets = inputOffsets(type, gateInputs(o))
   const w = (x: number, y: number): Pt => k.map([c[0] + x * s, c[1] + y * s])
   const pen = k.pen
-  const bubble = type === 'nand' || type === 'nor' || type === 'not'
+  const bubble = type === 'nand' || type === 'nor' || type === 'not' || type === 'xnor'
   const br = 0.08
   // Taller bodies for more inputs.
   const hh = Math.max(0.4, Math.abs(offsets[0] ?? 0) + 0.12)
   let tip = 0.45
-  if (type === 'not') {
+  if (oneInput(type)) {
     pen.poly([w(-0.45, 0.35), w(-0.45, -0.35), w(0.3, 0)], true)
     pen.line(w(-1, 0), w(-0.45, 0), false, true)
     tip = 0.3
@@ -501,11 +528,12 @@ function gate(o: DiagramItem, k: Sketch): void {
       ...quad(w(-0.55, hh), w(0.15, hh), w(0.45, 0)),
       ...quad(w(0.45, 0), w(0.15, -hh), w(-0.55, -hh)).slice(1),
     ])
-    if (type === 'xor') pen.poly(back(-0.12))
+    const ex = type === 'xor' || type === 'xnor'
+    if (ex) pen.poly(back(-0.12))
     for (const y of offsets) {
       // The back curve is further right in the middle.
       const back0 = -0.55 + 0.2 * (1 - (y / hh) ** 2) * 0.5 + 0.02
-      pen.line(w(-1, y), w(back0 - (type === 'xor' ? 0.12 : 0), y), false, true)
+      pen.line(w(-1, y), w(back0 - (ex ? 0.12 : 0), y), false, true)
     }
   }
   if (bubble) {

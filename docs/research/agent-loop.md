@@ -51,3 +51,12 @@ Writey's loop was already agentic (D46). What made one integral cost 128k tokens
 - **A todo or plan tool** like Claude Code's TodoWrite. It's useful for long multi-part tasks, but a page answer is short. Revisit if the model loses track on long solutions.
 - **Compaction.** One answer stays far below the context limit.
 - **Running read-only tools in parallel.** Writey's tools are fast and on-page order matters.
+
+## What changed again (HANDOFF D52)
+
+Real answers stored in `ai_messages` showed what the cache alone didn't fix: 30k–126k prompt tokens per answer with only a small part cached, because each answer took several requests (a spoken preamble, a guide load, a look to check the writing, the reply). Coding agents also try to finish a turn in as few model calls as possible, so:
+
+- **The whole diagram guide is back in the system prompt.** It never changes, so it is cached; loading it on demand cost a request and, when the model skipped it, logic gates came out as labelled boxes.
+- **Calls and the explanation in one response.** When every call in a response works and the response also carries the margin explanation (140+ characters), the answer ends there. The model still looks, zooms or searches first when it needs a result.
+- **Errors that say what to fix**: unknown diagram kinds with the nearest real ones, missing fields, gates drawn as boxes, sentences too long for the page.
+- The safety cap is 16 requests.

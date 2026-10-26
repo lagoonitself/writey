@@ -167,6 +167,40 @@ const SYMBOLS: Record<string, [string, AtomClass]> = {
   dots: ['…', 'ord'],
   cdots: ['⋯', 'ord'],
   therefore: ['∴', 'rel'],
+  because: ['∵', 'rel'],
+  oplus: ['⊕', 'bin'],
+  bigoplus: ['⊕', 'bin'],
+  otimes: ['⊗', 'bin'],
+  odot: ['⊙', 'bin'],
+  ominus: ['⊖', 'bin'],
+  land: ['∧', 'bin'],
+  wedge: ['∧', 'bin'],
+  lor: ['∨', 'bin'],
+  vee: ['∨', 'bin'],
+  neg: ['¬', 'ord'],
+  lnot: ['¬', 'ord'],
+  top: ['⊤', 'ord'],
+  bot: ['⊥', 'ord'],
+  ll: ['≪', 'rel'],
+  gg: ['≫', 'rel'],
+  lesssim: ['≲', 'rel'],
+  gtrsim: ['≳', 'rel'],
+  star: ['⋆', 'bin'],
+  bullet: ['•', 'bin'],
+  dagger: ['†', 'ord'],
+  triangle: ['△', 'ord'],
+  square: ['□', 'ord'],
+  Box: ['□', 'ord'],
+  checkmark: ['✓', 'ord'],
+  vdots: ['⋮', 'ord'],
+  ddots: ['⋱', 'ord'],
+  textdegree: ['°', 'ord'],
+  nearrow: ['↗', 'rel'],
+  searrow: ['↘', 'rel'],
+  updownarrow: ['↕', 'rel'],
+  longleftarrow: ['←', 'rel'],
+  hookrightarrow: ['→', 'rel'],
+  leftrightharpoons: ['⇌', 'rel'],
   '%': ['%', 'ord'],
   $: ['$', 'ord'],
   '#': ['#', 'ord'],
@@ -183,6 +217,7 @@ const BIG_OPS: Record<string, [string, boolean]> = {
   int: ['∫', false],
   oint: ['∮', false],
   iint: ['∬', false],
+  iiint: ['∭', false],
 }
 
 /** Operators written as a word. `true`: scripts go above and below (lim x→0). */
@@ -194,6 +229,7 @@ const NAMED_OPS: Record<string, boolean> = {
   inf: true,
   det: true,
   gcd: true,
+  mod: false,
   sin: false,
   cos: false,
   tan: false,
@@ -258,6 +294,9 @@ const ACCENTS: Record<string, AccentKind> = {
   tilde: 'tilde',
   widetilde: 'tilde',
   underline: 'underline',
+  // Braces are drawn as a plain line over or under the term; the label follows as a script.
+  underbrace: 'underline',
+  overbrace: 'bar',
 }
 
 const SPACES: Record<string, number> = {
@@ -547,6 +586,22 @@ class Parser {
         return null
       case 'boxed':
         return { t: 'boxed', body: this.arg() }
+      case 'bmod':
+        return { t: 'op', name: 'mod', limits: false }
+      case 'pmod':
+        return {
+          t: 'leftright',
+          left: '(',
+          right: ')',
+          body: [{ t: 'op', name: 'mod', limits: false }, { t: 'space', em: 0.3 }, this.arg()],
+        }
+      case 'phantom':
+      case 'hphantom':
+      case 'vphantom':
+      case 'hspace':
+      case 'vspace':
+        this.rawArg()
+        return { t: 'space', em: name === 'hspace' ? 0.5 : 0 }
       case 'ce':
         return parseMath(ceToLatex(this.rawArg()))
       case 'cancel':

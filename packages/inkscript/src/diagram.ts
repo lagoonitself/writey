@@ -163,6 +163,104 @@ export function diagramItems(raw: unknown): DiagramItem[] {
   return out
 }
 
+/** Fields an item can't be drawn without: one of each group. */
+const NEEDS: Record<string, string[][]> = {
+  line: [['from'], ['to']],
+  arrow: [['from', 'at'], ['to']],
+  polyline: [['points']],
+  polygon: [['points']],
+  curve: [['points']],
+  circle: [
+    ['center', 'at', 'c'],
+    ['r', 'radius'],
+  ],
+  plot: [['expr', 'fn', 'y', 'f']],
+  lens: [['f', 'focal', 'focal_length']],
+  mirror: [['f', 'focal', 'focal_length']],
+  optics: [['elements']],
+  logic: [['gates']],
+  molecule: [['smiles']],
+  svg: [['d', 'paths']],
+  callouts: [['labels']],
+}
+
+/** A gate's name written as a box's label: the model drew the gate itself. */
+const GATE_WORD = /^\s*(n?and|x?n?or|not|buffer|inverter)(\s+gate)?\s*$/i
+
+const editDistance = (a: string, b: string): number => {
+  const d = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    let prev = d[0] as number
+    d[0] = i
+    for (let j = 1; j <= b.length; j++) {
+      const keep = d[j] as number
+      d[j] = Math.min(keep + 1, (d[j - 1] as number) + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1))
+      prev = keep
+    }
+  }
+  return d[b.length] as number
+}
+
+/**
+ * What would go wrong drawing these items, said so a model can fix its call: kinds Writey
+ * doesn't know (with the nearest it does), items missing what they need, and logic gates
+ * drawn as labelled boxes instead of a logic item.
+ */
+export function diagramIssues(raw: unknown): { problems: string[]; gateBoxes: boolean } {
+  const problems: string[] = []
+  if (!Array.isArray(raw) || !raw.length) {
+    return { problems: ['items must be a list of objects, each with a "kind"'], gateBoxes: false }
+  }
+  let gateBoxes = false
+  let gates = false
+  raw.forEach((r, i) => {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) {
+      problems.push(`item ${i + 1} is not an object`)
+      return
+    }
+    const [item] = diagramItems([r])
+    if (!item) {
+      const o = r as Record<string, unknown>
+      const name = [o.kind, o.type, o.shape].find((v) => typeof v === 'string') as
+        | string
+        | undefined
+      if (!name) {
+        problems.push(`item ${i + 1} has no "kind"`)
+        return
+      }
+      const near = Object.keys(KINDS)
+        .map((k) => [k, editDistance(name.toLowerCase(), k)] as const)
+        .sort((a, b) => a[1] - b[1])
+        .slice(0, 3)
+        .map(([k]) => k)
+      problems.push(`item ${i + 1}: there is no kind "${name}" (nearest: ${near.join(', ')})`)
+      return
+    }
+    if (item.kind === 'gate' || item.kind === 'logic') gates = true
+    if (
+      (item.kind === 'rect' || item.kind === 'circle' || item.kind === 'label') &&
+      GATE_WORD.test(String(item.label ?? item.text ?? ''))
+    )
+      gateBoxes = true
+    const missing = (NEEDS[item.kind] ?? []).filter((group) =>
+      group.every((k) => item[k] === undefined || item[k] === null || item[k] === ''),
+    )
+    if (missing.length) {
+      problems.push(
+        `item ${i + 1} (${item.kind}) needs ${missing.map((g) => g.join(' or ')).join(' and ')}`,
+      )
+    }
+    if (item.kind === 'optics' && Array.isArray(item.elements)) {
+      item.elements.forEach((e, j) => {
+        const el = (e ?? {}) as Record<string, unknown>
+        if (![el.f, el.focal, el.focal_length].some((v) => Number(v)))
+          problems.push(`item ${i + 1} (optics) element ${j + 1} needs a focal length f`)
+      })
+    }
+  })
+  return { problems, gateBoxes: gateBoxes && !gates }
+}
+
 // ---------------------------------------------------------------------------
 // Reading the spec
 // ---------------------------------------------------------------------------

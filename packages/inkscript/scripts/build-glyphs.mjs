@@ -311,6 +311,90 @@ out['↔'] = compose(arrowR.w, arrowR.s, arrowL.s)
   }
 }
 
+{
+  // Logic, relations and odds and ends for school maths, drawn on the math axis (y = -250).
+  const circle = (cx, cy, r, n = 20) =>
+    Array.from({ length: n + 1 }, (_, k) => [
+      em(cx + r * Math.cos((k / n) * 2 * Math.PI)),
+      em(cy + r * Math.sin((k / n) * 2 * Math.PI)),
+    ]).flat()
+  const cy = -250
+  const cx = 260
+  const r = 190
+  const ring = circle(cx, cy, r)
+  const d = em(r * Math.SQRT1_2)
+  out['⊕'] = { w: 520, s: [ring, [cx - r, cy, cx + r, cy], [cx, cy - r, cx, cy + r]] }
+  out['⊗'] = {
+    w: 520,
+    s: [ring, [cx - d, cy - d, cx + d, cy + d], [cx - d, cy + d, cx + d, cy - d]],
+  }
+  out['⊙'] = { w: 520, s: [ring, circle(cx, cy, 32, 8)] }
+  out['⊖'] = { w: 520, s: [ring, [cx - r, cy, cx + r, cy]] }
+  out['∧'] = { w: 520, s: [[70, -20, 260, -500, 450, -20]] }
+  out['∨'] = { w: 520, s: [[70, -500, 260, -20, 450, -500]] }
+  out['¬'] = { w: 520, s: [[70, -320, 450, -320, 450, -170]] }
+  out['⊤'] = {
+    w: 520,
+    s: [
+      [60, -560, 460, -560],
+      [260, -560, 260, 0],
+    ],
+  }
+  out['≪'] = {
+    w: 700,
+    s: [
+      [330, -450, 90, -250, 330, -50],
+      [600, -450, 360, -250, 600, -50],
+    ],
+  }
+  out['≫'] = {
+    w: 700,
+    s: [
+      [100, -450, 340, -250, 100, -50],
+      [370, -450, 610, -250, 370, -50],
+    ],
+  }
+  const tildeLow = shift(tilde, 0, -40 - (tb.y0 + tb.y1) / 2)
+  out['≲'] = compose(Math.max(tilde.w, 560), [[480, -620, 100, -470, 480, -320]], tildeLow)
+  out['≳'] = compose(Math.max(tilde.w, 560), [[100, -620, 480, -470, 100, -320]], tildeLow)
+  const dot = (x, y) => circle(x, y, 18, 6)
+  out['∵'] = { w: 520, s: [dot(100, -420), dot(420, -420), dot(260, -60)] }
+  out['⋮'] = { w: 300, s: [dot(150, -560), dot(150, -320), dot(150, -80)] }
+  out['⋱'] = { w: 600, s: [dot(100, -560), dot(300, -320), dot(500, -80)] }
+  out['•'] = { w: 300, s: [circle(150, cy, 50, 10), circle(150, cy, 25, 6)] }
+  out['△'] = { w: 600, s: [[60, 0, 300, -600, 540, 0, 60, 0]] }
+  out['□'] = { w: 600, s: [[80, 0, 80, -520, 520, -520, 520, 0, 80, 0]] }
+  out['✓'] = { w: 600, s: [[60, -300, 220, -40, 560, -620]] }
+  out['†'] = {
+    w: 400,
+    s: [
+      [200, -700, 200, 180],
+      [60, -470, 340, -470],
+    ],
+  }
+  const star = Array.from({ length: 11 }, (_, k) => {
+    const a = -Math.PI / 2 + (k * Math.PI) / 5
+    const rr = k % 2 ? 70 : 175
+    return [em(200 + rr * Math.cos(a)), em(cy + rr * Math.sin(a))]
+  }).flat()
+  out['⋆'] = { w: 400, s: [star] }
+  // Slanted and two-way arrows: a shaft and a two-stroke head.
+  const arrow = (x0, y0, x1, y1) => {
+    const a = Math.atan2(y1 - y0, x1 - x0)
+    const h = 120
+    const p = (t) => [em(x1 - h * Math.cos(a + t)), em(y1 - h * Math.sin(a + t))]
+    return [
+      [em(x0), em(y0), em(x1), em(y1)],
+      [...p(0.45), em(x1), em(y1), ...p(-0.45)],
+    ]
+  }
+  out['↗'] = { w: 560, s: arrow(80, -40, 480, -520) }
+  out['↘'] = { w: 560, s: arrow(80, -520, 480, -40) }
+  out['↕'] = { w: 360, s: [...arrow(180, 60, 180, -640), arrow(180, -640, 180, 60)[1]] }
+  const int = out['∫']
+  out['∭'] = compose(int.w + 360, int.s, shift(int, 180, 0), shift(int, 360, 0))
+}
+
 const keys = Object.keys(out).sort()
 const body = keys
   .map((k) => `${JSON.stringify(k)}:[${out[k].w},${JSON.stringify(out[k].s)}]`)

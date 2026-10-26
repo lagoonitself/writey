@@ -7,7 +7,6 @@ import {
   chatEvents,
   decide,
   describeError,
-  diagramGuide,
   focusRegion,
   groupLines,
   messageText,
@@ -270,7 +269,7 @@ describe('streaming', () => {
     expect(body.messages).toEqual([
       {
         role: 'assistant',
-        content: '',
+        content: null,
         tool_calls: [
           { id: 'c1', type: 'function', function: { name: 'say', arguments: '{"text":"hi"}' } },
         ],
@@ -357,26 +356,27 @@ describe('prompts', () => {
       'find_picture',
       'place_picture',
       'label_parts',
-      'diagram_guide',
       'erase',
       'new_page',
       'say',
     ])
     const [system] = agentMessages('find my mistake', ctx, { mode: 'check', scope: null }, [])
     expect(String(system?.content)).toContain('You decide what to do')
-    // The system prompt is the same for every request (prompt cache); guides load on demand.
+    // The system prompt is the same for every request (prompt cache) and holds the whole
+    // diagram guide, so drawing never waits for a guide to load.
     const [drawing] = agentMessages('draw a full adder', ctx, { mode: 'write', scope: null }, [])
     const [spoken] = agentMessages('hi', ctx, { mode: null, scope: null }, [], true)
     expect(drawing?.content).toBe(system?.content)
     expect(spoken?.content).toBe(system?.content)
-    expect(String(system?.content)).not.toContain('"kind":"logic"')
-    expect(diagramGuide(['physics'])).toContain('"kind":"logic"')
-    expect(diagramGuide(['physics'])).toContain('"kind":"axes"')
-    expect(diagramGuide(['graphs'])).not.toContain('smiles')
-    expect(diagramGuide(['chemistry'])).toContain('smiles')
-    expect(diagramGuide(['pictures'])).toContain('find_picture')
+    const prompt = String(system?.content)
+    for (const kind of ['"kind":"logic"', '"kind":"axes"', 'smiles', 'find_picture'])
+      expect(prompt).toContain(kind)
+    expect(prompt).not.toContain('boxes and lines,')
+    // LaTeX reaches the model as written, not as escape characters.
+    expect(prompt).toContain('\\frac')
+    expect(prompt).not.toMatch(/[\f\v\t\r]/)
     const spokenAsk = agentMessages('hi', ctx, { mode: null, scope: null }, [], true).at(-1)
-    expect(JSON.stringify(spokenAsk?.content)).toContain('Call say early')
+    expect(JSON.stringify(spokenAsk?.content)).toContain('Call say once')
   })
 
   it('hands back only the newest picture of the page', () => {

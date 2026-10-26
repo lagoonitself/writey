@@ -3,6 +3,7 @@ import {
   circuitTerminals,
   compile,
   type DiagramItem,
+  diagramIssues,
   diagramItems,
   drawDiagram,
   drawTable,
@@ -48,7 +49,7 @@ const allFinite = (paths: number[][]) => paths.every((p) => p.every(Number.isFin
 
 describe('glyphs', () => {
   it('cover letters, digits, Greek and math symbols', () => {
-    for (const ch of 'aZ09+=()αθπωΔΣ∫∑∞∂∇≤≥≠≈→⇒±×') expect(glyph(ch), ch).not.toBeNull()
+    for (const ch of 'aZ09+=()αθπωΔΣ∫∑∞∂∇≤≥≠≈→⇒±×⊕⊗∧∨¬≪≫∵△✓∭') expect(glyph(ch), ch).not.toBeNull()
   })
 })
 
@@ -65,6 +66,13 @@ describe('LaTeX', () => {
     expect(parseMath(String.raw`\foo x`)).toMatchObject({
       body: [{ t: 'text', text: 'foo' }, { t: 'sym' }],
     })
+  })
+
+  it('knows the symbols of logic, sets and school maths', () => {
+    const unknown = (tex: string) =>
+      JSON.stringify(parseMath(tex)).match(/"t":"text","text":"[a-z]+"/gi) ?? []
+    const tex = String.raw`A \oplus B \otimes C \land \lor \neg \wedge \vee a \ll b \gg c \because \triangle \checkmark \iiint \vdots \pmod{5} \bmod`
+    expect(unknown(tex)).toEqual([])
   })
 
   it('survives unbalanced input', () => {
@@ -671,6 +679,70 @@ describe('logic circuits', () => {
     expect(d.w).toBeGreaterThan(350)
     expect(d.w).toBeLessThanOrEqual(520)
     expect(allFinite(d.paths)).toBe(true)
+  })
+
+  it('keeps two different wires from running side by side', () => {
+    // a1's output and the wire from x1 to a2 used to run 0.05 units apart.
+    const adder = {
+      kind: 'logic',
+      inputs: ['A', 'B', 'Cin'],
+      gates: [
+        { id: 'x1', type: 'xor', in: ['A', 'B'] },
+        { id: 'x2', type: 'xor', in: ['x1', 'Cin'] },
+        { id: 'a1', type: 'and', in: ['A', 'B'] },
+        { id: 'a2', type: 'and', in: ['x1', 'Cin'] },
+        { id: 'o1', type: 'or', in: ['a1', 'a2'] },
+      ],
+      outputs: { Sum: 'x2', Cout: 'o1' },
+    }
+    const l = layoutLogic(adder as DiagramItem)
+    if (!l) throw new Error('expected a layout')
+    const flat = l.segs.filter(([a, b]) => Math.abs(a[1] - b[1]) < 1e-9)
+    for (const [a, b] of flat)
+      for (const [c, d] of flat) {
+        const dy = Math.abs(a[1] - c[1])
+        const overlap =
+          Math.min(Math.max(a[0], b[0]), Math.max(c[0], d[0])) -
+          Math.max(Math.min(a[0], b[0]), Math.min(c[0], d[0]))
+        expect(dy > 1e-9 && dy < 0.3 && overlap > 0.05, `${a} ${c}`).toBe(false)
+      }
+  })
+
+  it('draws xnor, buffer and inverter gates, by any common name', () => {
+    const l = layoutLogic({
+      kind: 'logic',
+      inputs: ['A', 'B'],
+      gates: [
+        { id: 'g1', type: 'XNOR gate', in: ['A', 'B'] },
+        { id: 'g2', type: 'buffer', in: ['A', 'B'] },
+        { id: 'g3', type: 'inverter', in: ['B'] },
+      ],
+      outputs: { X: 'g1', Y: 'g2', Z: 'g3' },
+    } as DiagramItem)
+    expect(l?.gates.map((g) => g.type)).toEqual(['xnor', 'buf', 'not'])
+    expect(l?.gates.map((g) => g.inputs)).toEqual([2, 1, 1])
+  })
+
+  it('says what is wrong with a diagram, and spots gates drawn as boxes', () => {
+    const { problems, gateBoxes } = diagramIssues([
+      { kind: 'rect', at: [0, 0], w: 2, h: 1, label: 'AND' },
+      { kind: 'lense', x: 0 },
+      { kind: 'lens', type: 'convex', x: 0 },
+      { kind: 'optics', elements: [{ type: 'convex_lens', x: 0 }] },
+    ])
+    expect(gateBoxes).toBe(true)
+    expect(problems[0]).toMatch(/^item 2: there is no kind "lense" \(nearest: lens/)
+    expect(problems.slice(1)).toEqual([
+      'item 3 (lens) needs f or focal or focal_length',
+      'item 4 (optics) element 1 needs a focal length f',
+    ])
+    // Real gates next to a labelled box are fine.
+    expect(
+      diagramIssues([
+        { kind: 'and', at: [0, 0] },
+        { kind: 'rect', at: [3, 0], label: 'OR' },
+      ]).gateBoxes,
+    ).toBe(false)
   })
 
   it('snaps wire ends to pins and turns slanted runs into corners', () => {

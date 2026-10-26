@@ -45,9 +45,9 @@ function element(raw: unknown, kind?: string): El | null {
   const type =
     `${kind ?? ''} ${typeof o.type === 'string' ? o.type : ''} ${typeof o.kind === 'string' ? o.kind : ''}`.toLowerCase()
   const mirror = type.includes('mirror')
-  const f0 = Math.abs(num(o.f ?? o.focal ?? o.focal_length, 0))
+  const fSigned = num(o.f ?? o.focal ?? o.focal_length ?? o.focalLength, 0)
+  const f0 = Math.abs(fSigned)
   if (!f0) return null
-  const fSigned = num(o.f ?? o.focal ?? o.focal_length, 0)
   // Convex lenses and concave mirrors converge; concave lenses and convex mirrors diverge.
   const converging = /converg/.test(type) || (mirror ? /concave/ : /convex/).test(type)
   const diverging = /diverg/.test(type) || (mirror ? /convex/ : /concave/).test(type)
@@ -56,7 +56,7 @@ function element(raw: unknown, kind?: string): El | null {
   return {
     mirror,
     f,
-    x: num(o.x, at ? at[0] : 0),
+    x: num(o.x ?? o.position ?? o.pos, at ? at[0] : 0),
     label: typeof o.label === 'string' ? o.label : '',
   }
 }
@@ -69,7 +69,7 @@ function object(raw: unknown): { x: number; h: number; label: string } | null {
   if (!raw || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
   const at = pt(o.at)
-  const x = num(o.x ?? o.u, at ? at[0] : Number.NaN)
+  const x = num(o.x ?? o.u ?? o.position ?? o.pos, at ? at[0] : Number.NaN)
   const h = num(o.h ?? o.height, at?.[1] ? at[1] : 1)
   return Number.isFinite(x) ? { x, h, label: typeof o.label === 'string' ? o.label : '' } : null
 }

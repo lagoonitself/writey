@@ -69,7 +69,8 @@ function wireMessages(messages: readonly ChatMessage[]): unknown[] {
     if (m.role === 'assistant' && (m.toolCalls?.length || m.reasoning?.length)) {
       return {
         role: 'assistant',
-        content: typeof m.content === 'string' ? m.content : m.content,
+        // No text alongside tool calls is null: some providers reject an empty string.
+        content: m.content || null,
         ...(m.toolCalls?.length && {
           tool_calls: m.toolCalls.map((c) => ({
             id: c.id,

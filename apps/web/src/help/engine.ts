@@ -7,7 +7,6 @@ import {
   decide,
   describeChatgptError,
   describeError,
-  diagramGuide,
   type Effort,
   type HelpError,
   type Mode,
@@ -25,6 +24,7 @@ import {
   withoutImages,
 } from '@writey/ai-core'
 import {
+  diagramIssues,
   type InkBlock,
   InkWriter,
   type Look,
@@ -98,9 +98,9 @@ export class HelpFailure extends Error {
 
 /**
  * A safety stop on model requests in one answer, not a plan: the model ends its turn
- * itself by replying without tool calls. The last request offers no tools.
+ * itself, usually in its first or second response. The last request offers no tools.
  */
-const MAX_STEPS = 40
+const MAX_STEPS = 16
 /** Tries of one request that failed before anything came back. */
 const MAX_RETRIES = 2
 /** From this many steps left, each result reminds the model to wrap up. */
@@ -112,6 +112,15 @@ const WRAP_UP = 3
 const KEEP_IMAGES = 3
 /** Failed tool calls in a row before Writey suggests looking again or finishing. */
 const FAIL_STREAK = 4
+/**
+ * Reply text this long, sent with pen calls that all worked, is the margin explanation:
+ * the answer ends there instead of costing another request (HANDOFF D52).
+ */
+const FINAL_TEXT = 140
+/** Calls whose result the model has to see before it can go on. */
+const OBSERVE = new Set(['look_at_page', 'zoom', 'find_picture', 'place_picture'])
+/** Longest line of words for the page (math in $…$ not counted); longer is an explanation. */
+const PAGE_TEXT = 100
 
 const retryable = (status: number) => status === 408 || status === 429 || status >= 500
 
@@ -320,6 +329,8 @@ const pagesLabel = (numbers: readonly number[]) =>
 
 type ToolOutcome = {
   result: string
+  /** The call didn't do all it was asked (an error, or part of a drawing skipped). */
+  trouble?: boolean
   /** A fresh picture of the page: every older picture is dropped. */
   look?: ChatMessage
   /** A close-up or a contact sheet of pictures: only older ones are dropped. */
@@ -335,6 +346,8 @@ type Step = {
   look?: ChatMessage
   zooms: ChatMessage[]
   failure?: HelpFailure
+  /** Some call failed or was only partly done. */
+  trouble: boolean
 }
 
 const REQUIRED = new Map(
@@ -517,6 +530,14 @@ class Agent {
         if (!s.failure.retry || !s.calls.length) return this.finish(s.failure)
       }
       if (!s.calls.length) break
+      // Pen calls and the explanation in one response, all done: the answer is finished.
+      if (
+        !s.failure &&
+        !s.trouble &&
+        s.text.trim().length >= FINAL_TEXT &&
+        s.calls.every((c) => !OBSERVE.has(c.name))
+      )
+        break
       retries = 0
       const left = MAX_STEPS - 2 - step
       const notes = [
@@ -570,7 +591,7 @@ class Agent {
 
   /** One model request, with its tool calls run on the page as they arrive. */
   private async step(messages: ChatMessage[], effort: Effort, final: boolean): Promise<Step> {
-    const s: Step = { text: '', calls: [], results: [], thoughts: [], zooms: [] }
+    const s: Step = { text: '', calls: [], results: [], thoughts: [], zooms: [], trouble: false }
     try {
       for await (const ev of this.transport.stream(messages, effort, final)) {
         if (ev.type === 'text') {
@@ -582,7 +603,9 @@ class Agent {
           if (final) continue
           s.calls.push(ev.call)
           const out = await this.call(ev.call)
-          this.failedInARow = out.result.startsWith('Error') ? this.failedInARow + 1 : 0
+          const failed = out.result.startsWith('Error')
+          this.failedInARow = failed ? this.failedInARow + 1 : 0
+          if (failed || out.trouble) s.trouble = true
           s.results.push({ role: 'tool', toolCallId: ev.call.id, content: out.result })
           if (out.look) s.look = out.look
           if (out.zoom) {
@@ -636,11 +659,17 @@ class Agent {
     if (c.name === 'place_picture') {
       return this.placePicture(JSON.parse(repairJson(c.arguments || '{}')), key)
     }
-    if (c.name === 'diagram_guide') {
-      const a = JSON.parse(repairJson(c.arguments || '{}')) as { topics?: unknown }
-      return { result: diagramGuide(Array.isArray(a.topics) ? a.topics.map(String) : []) }
-    }
     if (c.name === 'write_math') return { result: await this.writeMath(c.arguments, key) }
+    if (c.name === 'draw_diagram') return this.drawDiagram(c.arguments, key)
+    if (c.name === 'write_text') {
+      const a = JSON.parse(repairJson(c.arguments || '{}')) as { text?: unknown }
+      const words = String(a.text ?? '').replace(/\$[^$]*\$/g, 'x')
+      if (words.length > PAGE_TEXT) {
+        return {
+          result: `Error: that is ${words.length} characters, too long for a line on the page. Page text is a heading, a label or a key fact in a few words; explanations go in your reply. Nothing was written.`,
+        }
+      }
+    }
     if (c.name === 'erase') {
       const a = JSON.parse(repairJson(c.arguments || '{}')) as { id?: unknown }
       return { result: this.erase(String(a.id ?? '')) }
@@ -688,6 +717,32 @@ class Agent {
         return { result: await this.ink(b, key) }
       default:
         return { result: 'Nothing to do.' }
+    }
+  }
+
+  /** draw_diagram, with what was wrong in the spec said plainly so the model can fix it. */
+  private async drawDiagram(args: string, key: string): Promise<ToolOutcome> {
+    const a = JSON.parse(repairJson(args || '{}')) as { items?: unknown }
+    const { problems, gateBoxes } = diagramIssues(a.items)
+    if (gateBoxes) {
+      return {
+        result:
+          'Error: these are logic gates drawn as labelled boxes. Draw gates with one logic item instead, e.g. {"kind":"logic","inputs":["A","B"],"gates":[{"id":"g1","type":"nand","in":["A","B"]}],"outputs":{"Y":"g1"}}; Writey draws the real gate symbols and the wires. Nothing was drawn.',
+      }
+    }
+    const b = toolBlock('draw_diagram', args)
+    const why = problems.length ? `: ${problems.join('; ')}` : ''
+    if (!b) return { result: `Error: couldn't read that diagram${why}. Nothing was drawn.` }
+    const r = await this.ink(b, key)
+    if (!problems.length) return { result: r }
+    if (r.startsWith('Error: nothing was drawn')) {
+      return { result: `Error: nothing was drawn${why}.` }
+    }
+    if (r.startsWith('Error')) return { result: r }
+    const id = /\((W\d+)\)/.exec(r)?.[1] ?? 'it'
+    return {
+      result: `${r} Part of it was skipped${why}. Erase ${id} and draw it again with that fixed.`,
+      trouble: true,
     }
   }
 

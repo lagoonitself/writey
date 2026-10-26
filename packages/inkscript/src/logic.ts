@@ -1,4 +1,4 @@
-import { drawCircuit, inputOffsets, junctionDots } from './circuit'
+import { drawCircuit, gateName, inputOffsets, junctionDots, oneInput } from './circuit'
 import type { DiagramItem, Pt, Sketch } from './sketch'
 
 // Logic circuits laid out by Writey. The model gives a netlist (inputs, gates and what feeds
@@ -17,6 +17,8 @@ const RAIL = 0.9
 const COL = 4.4
 const ROW = 2.4
 const CLEAR = 0.2
+/** Closest two different wires may run side by side. */
+const SEP = 0.32
 
 type Gate = {
   id: string
@@ -46,14 +48,14 @@ function parse(o: DiagramItem): { inputs: string[]; gates: Gate[]; outputs: [str
     if (!g || typeof g !== 'object') continue
     const r = g as Record<string, unknown>
     const id = str(r.id) || str(r.name) || str(r.out) || `g${gates.length + 1}`
-    const type = (str(r.type) || str(r.kind) || 'and').toLowerCase()
+    const type = gateName(str(r.type) || str(r.kind) || str(r.gate) || 'and')
     const raw = r.in ?? r.inputs ?? r.from
     const ins = (Array.isArray(raw) ? raw : [raw]).map(str).filter(Boolean)
     if (!ins.length) continue
     gates.push({
       id,
       type,
-      ins: type === 'not' ? ins.slice(0, 1) : ins.slice(0, 4),
+      ins: oneInput(type) ? ins.slice(0, 1) : ins.slice(0, 4),
       label: str(r.label),
       level: 1,
       x: 0,
@@ -106,15 +108,21 @@ export function layoutLogic(o: DiagramItem): LogicLayout | null {
   const railX = (name: string) => inputs.indexOf(name) * RAIL
   const srcLevel = (s: string) => byId.get(s)?.level ?? 0
 
-  /** Pins whose wire runs across earlier columns must stay clear of the gates there. */
+  /**
+   * Pins whose wire runs across earlier columns must stay clear of the gates there, and no
+   * pin's wire may run along another gate's output wire (two nets drawn on top of each other).
+   */
   const blocked = (g: Gate, y: number): boolean =>
     g.ins.some((s, i) => {
       const from = srcLevel(s)
-      if (from >= g.level - 1 && from > 0) return false
       const off = inputOffsets(g.type, g.ins.length)[i] ?? 0
       const py = y + off
       return gates.some(
-        (h) => h.level > from && h.level < g.level && Math.abs(py - h.y) < h.hh + CLEAR,
+        (h) =>
+          h.id !== s &&
+          h.level < g.level &&
+          ((h.level > from && Math.abs(py - h.y) < h.hh + CLEAR) ||
+            (h.level >= Math.max(1, from) && Math.abs(py - h.y) < SEP)),
       )
     })
 
@@ -230,6 +238,25 @@ export function drawLogic(o: DiagramItem, k: Sketch): void {
   for (const g of l.gates) drawCircuit(g as DiagramItem, k)
   for (const [a, b] of l.segs) k.pen.line(k.map(a), k.map(b), false, true)
   for (const p of junctionDots(l.segs)) k.pen.dot(k.map(p), Math.max(1.4, k.size * 0.09))
-  for (const t of l.labels) k.label(t.text, k.map(t.at), t.dir, 3)
+  // Input names that would run into each other (a wide circuit drawn small) take turns
+  // sitting higher, with their rails drawn up to them.
+  const wide = (t: string) => t.length * k.size * 0.62 * 0.55
+  let last: { x: number; w: number; up: boolean } | null = null
+  for (const t of l.labels) {
+    let at = k.map(t.at)
+    if (t.dir[1] < 0) {
+      const w = wide(t.text)
+      const up: boolean = Boolean(
+        last && !last.up && at[0] - last.x < (w + last.w) / 2 + k.size * 0.2,
+      )
+      if (up) {
+        const high: Pt = [at[0], at[1] - k.size * 0.75]
+        k.pen.line(at, high, false, true)
+        at = high
+      }
+      last = { x: at[0], w, up }
+    }
+    k.label(t.text, at, t.dir, 3)
+  }
   k.itemLabel(o, k.map([0, Math.min(...l.gates.map((g) => (g.at as Pt)[1])) - 1]), [1, 1], 3)
 }
