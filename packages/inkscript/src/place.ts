@@ -91,6 +91,11 @@ export class Placer {
     return this.env.page.width - MARGIN.right - x
   }
 
+  /** The tallest block an empty page can hold. */
+  fullHeight(): number {
+    return this.env.page.height - MARGIN.bottom - MARGIN.top * 0.5
+  }
+
   /** First free band at or below `y` for a w × h block at `x`, or null if the page is full. */
   private freeY(x: number, y: number, w: number, h: number): number | null {
     const limit = this.env.page.height - MARGIN.bottom

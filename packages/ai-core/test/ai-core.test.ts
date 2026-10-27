@@ -348,6 +348,8 @@ describe('prompts', () => {
       'write_math',
       'write_text',
       'draw_diagram',
+      'draw_ray_diagram',
+      'draw_logic_circuit',
       'draw_table',
       'find_picture',
       'place_picture',
@@ -365,7 +367,13 @@ describe('prompts', () => {
     expect(drawing?.content).toBe(system?.content)
     expect(spoken?.content).toBe(system?.content)
     const prompt = String(system?.content)
-    for (const kind of ['"kind":"logic"', '"kind":"axes"', 'smiles', 'find_picture'])
+    for (const kind of [
+      'draw_logic_circuit',
+      'draw_ray_diagram',
+      '"kind":"axes"',
+      'smiles',
+      'find_picture',
+    ])
       expect(prompt).toContain(kind)
     expect(prompt).not.toContain('boxes and lines,')
     // LaTeX reaches the model as written, not as escape characters.

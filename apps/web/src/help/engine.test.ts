@@ -326,6 +326,42 @@ describe('askWritey', () => {
     expect(result.ink).toBeUndefined()
   })
 
+  it('draws with the ray and logic tools and refuses rays drawn by hand', async () => {
+    sent.length = 0
+    replies.push(
+      [
+        text('Here are the rays.'),
+        call(0, 'a', 'draw_diagram', {
+          title: 'Parallel rays at a concave mirror',
+          items: [
+            { kind: 'arc', center: [3, 0], r: 3, from: 60, to: -60 },
+            { kind: 'arrow', from: [-4, 4], to: [1.5, 4] },
+            { kind: 'line', from: [1.5, 4], to: [3, 0] },
+          ],
+        }),
+      ],
+      [
+        text(
+          'Parallel rays reflect through the focus, halfway between the pole and the centre of curvature. The NAND circuit below builds the same logic from one kind of gate.',
+        ),
+        call(0, 'b', 'draw_ray_diagram', {
+          elements: [{ type: 'concave_mirror', x: 0, f: 5 }],
+          rays: [{ type: 'parallel', h: 2 }],
+        }),
+        call(1, 'c', 'draw_logic_circuit', {
+          inputs: ['A', 'B'],
+          gates: [{ id: 'g', type: 'nand', in: ['A', 'B'] }],
+          outputs: { Y: 'g' },
+        }),
+      ],
+    )
+    const result = await ask()
+    expect(toolResults(1)[0]).toMatch(/^Error: this is a ray diagram drawn by hand/)
+    // Both drawings worked, so the answer ended with that response.
+    expect(sent).toHaveLength(2)
+    expect(result.ink).toHaveLength(2)
+  })
+
   it('asks for a search before a paste', async () => {
     sent.length = 0
     replies.push([call(0, 'a', 'place_picture', { choice: 1 })], [text('ok')])

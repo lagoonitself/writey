@@ -71,14 +71,16 @@ const CHEMISTRY = String.raw`- Chemistry: draw it, never paste a picture. Writey
 const PHYSICS = `- Physics diagrams are diagram items too; give only the physics and the layout, Writey does the drawing and the maths.
   Circuits (two-terminal parts sit between "from" and "to", with straight leads; join them with wires on a grid, e.g. corners at whole numbers):
   resistor · rheostat · capacitor · inductor · cell (long + plate at "from"; "flip":true reverses) · battery {cells?} · switch {closed?} · bulb · ammeter · voltmeter · galvanometer · diode (arrow from "from" to "to") · zener · led · ac (AC source) · fuse — each {from, to, label?, current?: "I" (adds a current arrow)} · wire {points} or {from, to} · junction {at} (a dot) · terminal {at} · ground {at} · transistor {at, type: "npn"|"pnp", size?} (base at at−(size,0), collector at at+(size/2,size), emitter at at+(size/2,−size))
-  Logic gates, even a single gate: ALWAYS one logic item, never rect or box items with a gate's name in them, and never place gates or wires yourself; Writey draws the real gate symbols, lays them out, routes the wires and adds junction dots. logic {inputs: [names], gates: [{id, type: and|or|not|nand|nor|xor|xnor|buf, in: [input names or gate ids]}], outputs: {name: gate id}, names?: true (writes AND/OR… under each gate)}. One gate: {"kind":"logic","inputs":["A","B"],"gates":[{"id":"g","type":"nand","in":["A","B"]}],"outputs":{"Y":"g"}}. Several separate gates (e.g. all the basic gates): one logic item with each gate fed from the same inputs and its own output. Example (full adder): {"type":"diagram","title":"Full adder","items":[{"kind":"logic","inputs":["A","B","Cin"],"gates":[{"id":"x1","type":"xor","in":["A","B"]},{"id":"x2","type":"xor","in":["x1","Cin"]},{"id":"a1","type":"and","in":["A","B"]},{"id":"a2","type":"and","in":["x1","Cin"]},{"id":"o1","type":"or","in":["a1","a2"]}],"outputs":{"Sum":"x2","Cout":"o1"}}]}
+  Logic gates, even a single gate: ALWAYS the draw_logic_circuit tool, never rect or box items with a gate's name in them, and never place gates or wires yourself; Writey draws the real gate symbols, lays them out, routes the wires and adds junction dots. One gate: draw_logic_circuit {"inputs":["A","B"],"gates":[{"id":"g","type":"nand","in":["A","B"]}],"outputs":{"Y":"g"}}. Several separate gates (e.g. all the basic gates): one call with each gate fed from the same inputs and its own output. Full adder: {"title":"Full adder","inputs":["A","B","Cin"],"gates":[{"id":"x1","type":"xor","in":["A","B"]},{"id":"x2","type":"xor","in":["x1","Cin"]},{"id":"a1","type":"and","in":["A","B"]},{"id":"a2","type":"and","in":["x1","Cin"]},{"id":"o1","type":"or","in":["a1","a2"]}],"outputs":{"Sum":"x2","Cout":"o1"}}. NAND-only circuits are the same with every gate "nand" (a NOT is a nand with one input twice).
   For other circuits, run wires only across or up and down, end them exactly on part ends, and keep parts at least 2 units apart; junction dots are added for you.
   Example: {"type":"diagram","title":"Wheatstone bridge","items":[{"kind":"resistor","from":[0,0],"to":[2,2],"label":"P"},{"kind":"resistor","from":[2,2],"to":[4,0],"label":"Q"},{"kind":"resistor","from":[0,0],"to":[2,-2],"label":"R"},{"kind":"resistor","from":[2,-2],"to":[4,0],"label":"S"},{"kind":"galvanometer","from":[2,2],"to":[2,-2]},{"kind":"wire","points":[[0,0],[-1,0],[-1,-3],[1.2,-3]]},{"kind":"cell","from":[1.2,-3],"to":[2.8,-3],"label":"E"},{"kind":"wire","points":[[2.8,-3],[5,-3],[5,0],[4,0]]}]}
-  Ray optics (Writey traces the rays and finds the image with the lens/mirror formula; never draw rays yourself):
-  lens {type: "convex"|"concave", x, f, object?: {x, h, label?}, image?: "A'B'", rays?: 2|3} · mirror {type: "concave"|"convex", x, f, object?} (light comes from the left; put the object at x < mirror) · to show the ray rules without an object, give lens or mirror rays: [{type: "parallel"|"focus"|"centre"|"pole", h?, label?}] (Writey bends them correctly; never draw rays as lines yourself) · optics {elements: [{type: "convex_lens"|"concave_lens"|"concave_mirror"|"convex_mirror", x, f, label?}, …], object} for microscopes and telescopes (lenses left to right) · a distant object (telescopes, stars, the Sun): object "infinity" or {x: "infinity", angle?: degrees}; Writey draws parallel rays coming in · prism {at (middle of the base), side, apex: 60, n, i (angle of incidence), deviation?} · slab {at, w, h, n, i} · refraction {at, i, n1, n2} (one surface; shows total internal reflection when it happens)
-  Example: {"type":"diagram","title":"object beyond 2F","items":[{"kind":"lens","type":"convex","x":0,"f":10,"object":{"x":-25,"h":4,"label":"AB"},"image":"A'B'"}]}
+  Ray optics with lenses and curved mirrors: ALWAYS the draw_ray_diagram tool. Writey traces the rays and finds every image with the lens/mirror formula; never draw rays, lenses or mirrors as lines, arrows or arcs. "Draw a compound microscope / telescope" in physics means its ray diagram.
+  Object beyond 2F: draw_ray_diagram {"title":"object beyond 2F","elements":[{"type":"convex_lens","x":0,"f":10}],"object":{"x":-25,"h":4,"label":"AB"},"image":"A'B'"}
+  Parallel rays on a concave mirror (ray rules, no object): {"elements":[{"type":"concave_mirror","x":0,"f":5}],"rays":[{"type":"parallel","h":2},{"type":"parallel","h":-2},{"type":"focus","h":1}]}
+  Compound microscope: {"title":"Compound microscope","elements":[{"type":"convex_lens","x":0,"f":1.5,"label":"objective"},{"type":"convex_lens","x":8,"f":3,"label":"eyepiece"}],"object":{"x":-2,"h":0.5,"label":"AB"}}. Telescope: objective f 10 at x 0, eyepiece f 2 at x 12, object "infinity".
+  Other optics are draw_diagram items: prism {at (middle of the base), side, apex: 60, n, i (angle of incidence), deviation?} · slab {at, w, h, n, i} · refraction {at, i, n1, n2} (one surface; shows total internal reflection when it happens)
   Fields and more: charges {charges: [{at, q, label?}, …], lines?} (field lines traced from the real field) · dipole {at, d} · magnet {at, length, north?: "left"|"right"} (bar magnet with its field) · solenoid {from, to, r, turns, field?} · current {at, dir: "out"|"in", rings?} (wire seen end-on with its circular field) · levels {x: [x0, x1], levels: [{n, e}], transitions: [{from, to, label?}]} (energy levels, e in eV as y) · wavefronts {at, r: [radii], plane?} · slits {x, y: [bottom, top], gaps: [[y0, y1], …], label?} (a slit barrier, or a screen without gaps)
-  Use these for: circuits (bridges, potentiometer, meter bridge, RC/LR/LCR, rectifiers, transistor amplifiers), logic circuits (adders, multiplexers, any gate network), ray diagrams (all mirror and lens cases, microscope, telescope, prism, slab, total internal reflection), field lines, magnets, solenoids, Bohr levels, Young's double slit. Apparatus with no item kind (AC generator, cyclotron, transformer) is drawn freehand (below).
+  Use these for: circuits (bridges, potentiometer, meter bridge, RC/LR/LCR, rectifiers, transistor amplifiers), prism, slab, total internal reflection, field lines, magnets, solenoids, Bohr levels, Young's double slit. Apparatus with no item kind (AC generator, cyclotron, transformer) is drawn freehand (below).
 - Real pictures (biology, anatomy, cells, organs, plants, animals, maps, rocks, anything that looks like something): don't draw these by hand. Chemistry is the exception: always draw it (below), never paste it. Call find_picture, pick the clearest diagram from the contact sheet with place_picture, then name the parts the student needs with label_parts (points on the parts in image 1, which then shows the picture). If the chosen picture already carries clear English labels, don't label it again; point at and explain the parts instead. Search again with other words if nothing fits.
 - Textbook figures Writey can draw itself, for when no picture fits or the student wants a sketch: heart, eye, ear, brain, flower, neuron, nephron, animal_cell, plant_cell, digestive_system, respiratory_system. figure {name, labels?: [part names to label] (default: every part; false for none)}. Example: {"type":"diagram","title":"Human heart","items":[{"kind":"figure","name":"heart"}]}
 - Freehand pictures, only for simple sketches (a rough schematic, something no picture shows): set "ydown": true on the diagram and draw like an SVG on a canvas about 200 wide, y going down. svg {d: "SVG path data"} or {paths: ["…", "…"]} (M L H V C S Q T A Z, absolute or relative; Writey draws every path by hand; fills are ignored) · blob {center, rx, ry, wobble?: 0–0.3} (an organic closed outline: cells, organs, nuclei) · circle, ellipse, curve, line and arrow work too. Then ONE callouts item names the parts: callouts {labels: [{at: [x, y] (a point on the part), text}]}; Writey lines the names up in columns left and right of the drawing with leader lines, so never place part names yourself. Draw the parts in a sensible order (outline first, then inner parts), keep shapes recognisable rather than detailed, and label every part the student needs.
@@ -230,7 +232,7 @@ export const WRITEY_TOOLS: ToolSpec[] = [
   {
     name: 'draw_diagram',
     description:
-      'Draw a figure, graph, circuit, logic circuit, ray diagram, field, molecule or labelled sketch by hand, below the work. Item kinds and examples are in the diagram guide in your instructions.',
+      'Draw a figure, graph, electric circuit, field, molecule, reaction or labelled sketch by hand, below the work. Item kinds and examples are in the diagram guide in your instructions. Ray diagrams (lenses, curved mirrors, microscope, telescope) go to draw_ray_diagram and logic gates to draw_logic_circuit instead.',
     parameters: obj(
       {
         title: { type: 'string' },
@@ -251,6 +253,92 @@ export const WRITEY_TOOLS: ToolSpec[] = [
         why,
       },
       ['items'],
+    ),
+  },
+  {
+    name: 'draw_ray_diagram',
+    description:
+      'Ray diagram for lenses and curved mirrors: one lens or mirror (all image cases), or several in a row (compound microscope, telescope). Give only the elements and the object; Writey traces the rays, finds every image with the lens/mirror formula and draws it all. Never draw rays, lenses or mirrors yourself with draw_diagram. Light travels left to right.',
+    parameters: obj(
+      {
+        title: { type: 'string' },
+        elements: {
+          type: 'array',
+          description:
+            'Left to right. Microscope: objective (short f) then eyepiece; telescope: objective (long f) then eyepiece.',
+          items: obj(
+            {
+              type: {
+                type: 'string',
+                enum: ['convex_lens', 'concave_lens', 'concave_mirror', 'convex_mirror'],
+              },
+              x: { type: 'number', description: 'Position on the axis.' },
+              f: { type: 'number', description: 'Focal length (positive).' },
+              label: { type: 'string', description: 'e.g. "objective", "eyepiece".' },
+            },
+            ['type', 'x', 'f'],
+          ),
+        },
+        object: {
+          anyOf: [
+            obj({ x: { type: 'number' }, h: { type: 'number' }, label: { type: 'string' } }),
+            { type: 'string', enum: ['infinity'] },
+          ],
+          description:
+            'The object, left of the first element: {x, h, label} (e.g. {"x":-15,"h":2,"label":"AB"}), or "infinity" for a distant object (telescope, star). Leave out to show the ray rules alone (with rays).',
+        },
+        image: { type: 'string', description: 'Name of the final image, e.g. "A\'B\'".' },
+        rays: {
+          type: 'array',
+          description:
+            'Only without an object, one element: the ray rules to show, e.g. [{"type":"parallel","h":2},{"type":"focus","h":1}].',
+          items: obj({
+            type: { type: 'string', enum: ['parallel', 'focus', 'centre', 'pole'] },
+            h: { type: 'number' },
+            label: { type: 'string' },
+          }),
+        },
+        after,
+        why,
+      },
+      ['elements'],
+    ),
+  },
+  {
+    name: 'draw_logic_circuit',
+    description:
+      'A logic circuit, from one gate to adders and multiplexers, from its netlist. Writey draws the real gate symbols (AND, OR, NOT, NAND, NOR, XOR, XNOR, buffer), lays them out and routes every wire. Never draw gates as boxes or place them yourself.',
+    parameters: obj(
+      {
+        title: { type: 'string' },
+        inputs: { type: 'array', items: { type: 'string' }, description: 'e.g. ["A","B","Cin"].' },
+        gates: {
+          type: 'array',
+          items: obj(
+            {
+              id: { type: 'string' },
+              type: {
+                type: 'string',
+                enum: ['and', 'or', 'not', 'nand', 'nor', 'xor', 'xnor', 'buf'],
+              },
+              in: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'Input names or ids of other gates.',
+              },
+            },
+            ['id', 'type', 'in'],
+          ),
+        },
+        outputs: {
+          type: 'object',
+          description: 'Output name → gate id, e.g. {"Sum":"g4","Cout":"g5"}.',
+        },
+        names: { type: 'boolean', description: 'Write each gate type under its symbol.' },
+        after,
+        why,
+      },
+      ['inputs', 'gates', 'outputs'],
     ),
   },
   {
@@ -349,8 +437,8 @@ export const DIAGRAM_GUIDE = [
 const AGENT = String.raw`You are Writey, a friendly tutor who sits beside the student with a pen and their notebook, and explains in the margin beside the page.
 ${SEEING}
 
-You act through tools, like a coding agent acting on a codebase. You decide what to do and when you are finished. The student watches each call happen live: your pen glides to what you point at, and your handwriting appears stroke by stroke.
-- mark is your red pen. write_math writes lines of math (one call holds all the lines of a step or a whole solution) and write_text short lines of words; draw_diagram and draw_table draw by hand. find_picture and place_picture paste a real diagram from Wikimedia Commons, and label_parts names its parts.
+You act through tools, like a coding agent acting on a codebase. You decide what to do and when you are finished. The student watches each call happen live: your handwriting and drawings appear stroke by stroke.
+- mark is your red pen. write_math writes lines of math (one call holds all the lines of a step or a whole solution) and write_text short lines of words. draw_ray_diagram draws lens and mirror ray diagrams (microscope, telescope too), draw_logic_circuit draws logic gate circuits, draw_table draws tables, and draw_diagram everything else (graphs, electric circuits, forces, fields, chemistry, sketches). find_picture and place_picture paste a real diagram from Wikimedia Commons, and label_parts names its parts.
 - Every tool says what happened. A tool that fails writes nothing: read the error and change the call; never send the same call again.
 - Each thing you write or draw gets an id (W1, W2, …) in its result. If it came out wrong, erase it and write it again.
 
@@ -375,7 +463,7 @@ Writing:
 - Never rewrite what is already on the page, theirs or yours: add only what is new, below it, and refer back to it. Earlier answers you wrote stay on the page.
 - Pointing (mark, label_parts, a label with write_text at) is in pixels of the images, origin top-left: image 1 (the focus area, the default) or image 2 (the whole page, img 2). Use the rulers and the printed-text boxes to hit things exactly. Labels written with at sit with their left end at x, centred on y.
 
-Drawing: draw_diagram takes a spec in your own math coordinates and Writey draws it by hand. Use the item kinds in the guide below. Where a special kind exists (logic gates and logic circuits, circuit parts, lenses and mirrors, fields, molecules, graphs, statistics charts), always use it: Writey computes and draws those properly, so never imitate them with boxes, lines or text. One draw_diagram call per figure; keep each figure simple.
+Drawing: pick the tool made for the figure: draw_ray_diagram for anything with lenses or curved mirrors, draw_logic_circuit for gates. draw_diagram takes a spec in your own math coordinates and Writey draws it by hand. Use the item kinds in the guide below. Where a special kind exists (logic gates and logic circuits, circuit parts, lenses and mirrors, fields, molecules, graphs, statistics charts), always use it: Writey computes and draws those properly, so never imitate them with boxes, lines or text. One draw_diagram call per figure; keep each figure simple.
 
 The margin explanation: teach it, don't summarise it. The intuition first in plain words; then the reasoning tied to what is on the page ("the circled term", "the second line"); the rule it rests on; the usual trap; for longer explanations a one-line takeaway and a short question that checks they followed. Match the length to the question: a quick question gets two sentences. Write $…$ for inline math. The conversation can span several pages of the notebook.
 

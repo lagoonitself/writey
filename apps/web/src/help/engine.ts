@@ -31,6 +31,7 @@ import {
   repairJson,
   sizeFromLines,
   toolBlock,
+  toolDiagram,
   type Written,
 } from '@writey/inkscript'
 import type { AiSettings, KeyProvider, PageRow } from '@writey/shared'
@@ -356,6 +357,8 @@ const ONCE = new Set([
   'write_math',
   'write_text',
   'draw_diagram',
+  'draw_ray_diagram',
+  'draw_logic_circuit',
   'draw_table',
   'label_parts',
   'place_picture',
@@ -656,6 +659,8 @@ class Agent {
     }
     if (c.name === 'write_math') return { result: await this.writeMath(c.arguments, key) }
     if (c.name === 'draw_diagram') return this.drawDiagram(c.arguments, key)
+    const special = toolDiagram(c.name, JSON.parse(repairJson(c.arguments || '{}')))
+    if (special) return this.drawDiagram(JSON.stringify(special), key)
     if (c.name === 'write_text') {
       const a = JSON.parse(repairJson(c.arguments || '{}')) as { text?: unknown }
       const words = String(a.text ?? '').replace(/\$[^$]*\$/g, 'x')
@@ -709,12 +714,18 @@ class Agent {
 
   /** draw_diagram, with what was wrong in the spec said plainly so the model can fix it. */
   private async drawDiagram(args: string, key: string): Promise<ToolOutcome> {
-    const a = JSON.parse(repairJson(args || '{}')) as { items?: unknown }
-    const { problems, gateBoxes } = diagramIssues(a.items)
+    const a = JSON.parse(repairJson(args || '{}')) as { items?: unknown; title?: unknown }
+    const { problems, gateBoxes, handRays } = diagramIssues(a.items, String(a.title ?? ''))
+    if (handRays) {
+      return {
+        result:
+          'Error: this is a ray diagram drawn by hand with lines and arrows, so its rays would be guesses. Use draw_ray_diagram instead: give the lenses or mirrors (type, x, f) and the object, e.g. {"elements":[{"type":"convex_lens","x":0,"f":1.5,"label":"objective"},{"type":"convex_lens","x":8,"f":3,"label":"eyepiece"}],"object":{"x":-2,"h":0.5,"label":"AB"}}; Writey traces the rays and finds the images. If the student wants a picture of the instrument itself (tube, stage, knobs), use find_picture. Nothing was drawn.',
+      }
+    }
     if (gateBoxes) {
       return {
         result:
-          'Error: these are logic gates drawn as labelled boxes. Draw gates with one logic item instead, e.g. {"kind":"logic","inputs":["A","B"],"gates":[{"id":"g1","type":"nand","in":["A","B"]}],"outputs":{"Y":"g1"}}; Writey draws the real gate symbols and the wires. Nothing was drawn.',
+          'Error: these are logic gates drawn as labelled boxes. Use draw_logic_circuit instead, e.g. {"inputs":["A","B"],"gates":[{"id":"g1","type":"nand","in":["A","B"]}],"outputs":{"Y":"g1"}}; Writey draws the real gate symbols and the wires. Nothing was drawn.',
       }
     }
     const b = toolBlock('draw_diagram', args)
@@ -931,7 +942,9 @@ class Agent {
 
   // The page filled up: carry on at the top of a fresh page after it.
   private async turnPage(asked = false): Promise<boolean> {
-    if ((!this.onThisPage && !asked) || this.pages.length > MAX_NEW_PAGES) return false
+    // A block that doesn't fit a fresh blank page won't fit the next one either.
+    const blank = this.page !== this.o.page && !this.onThisPage
+    if ((blank && !asked) || this.pages.length > MAX_NEW_PAGES) return false
     this.o.onUpdate({
       type: 'status',
       text: asked ? 'Starting a new page…' : 'Page full, turning to a new page…',

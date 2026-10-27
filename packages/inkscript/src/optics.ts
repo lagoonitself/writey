@@ -115,6 +115,11 @@ function setup(o: DiagramItem): { els: El[]; obj: Obj | null } {
     obj.x = first.x - 1.6 * Math.abs(first.f)
     return { els, obj }
   }
+  // In an instrument the object sits just beyond the objective's focus (a model often puts
+  // it at F, which sends the image to infinity and ends the trace at the first lens).
+  if (obj && first && els.length > 1 && first.f > 0 && first.x - obj.x < first.f * 1.1) {
+    obj.x = first.x - first.f * 1.2
+  }
   // Real objects are tiny next to focal lengths. Images scale with the object's height and
   // their positions don't depend on it, so a taller object keeps the diagram exact and readable.
   if (obj && els.length) {

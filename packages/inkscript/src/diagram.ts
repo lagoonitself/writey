@@ -199,6 +199,22 @@ const NEEDS: Record<string, string[][]> = {
   callouts: [['labels']],
 }
 
+/** Words of a ray diagram (lenses, curved mirrors, instruments) in a title or label. */
+const RAY_WORD = /\b(lens|lenses|concave|convex|microscope|telescope|eyepiece|objective)\b/i
+/** Kinds that trace rays themselves. */
+const RAY_KINDS = new Set(['optics', 'lens', 'mirror', 'prism', 'slab', 'refraction'])
+/** Kinds a hand-drawn ray diagram is made of. */
+const PEN_KINDS = new Set([
+  'line',
+  'arrow',
+  'polyline',
+  'arc',
+  'curve',
+  'label',
+  'point',
+  'ellipse',
+])
+
 /** A gate's name written as a box's label: the model drew the gate itself. */
 const GATE_WORD = /^\s*(n?and|x?n?or|not|buffer|inverter)(\s+gate)?\s*$/i
 
@@ -221,11 +237,26 @@ const editDistance = (a: string, b: string): number => {
  * doesn't know (with the nearest it does), items missing what they need, and logic gates
  * drawn as labelled boxes instead of a logic item.
  */
-export function diagramIssues(raw: unknown): { problems: string[]; gateBoxes: boolean } {
+export function diagramIssues(
+  raw: unknown,
+  title = '',
+): { problems: string[]; gateBoxes: boolean; handRays: boolean } {
   const problems: string[] = []
   if (!Array.isArray(raw) || !raw.length) {
-    return { problems: ['items must be a list of objects, each with a "kind"'], gateBoxes: false }
+    return {
+      problems: ['items must be a list of objects, each with a "kind"'],
+      gateBoxes: false,
+      handRays: false,
+    }
   }
+  // Lenses, curved mirrors and instruments drawn from lines and arrows: the rays are
+  // guesses. Writey traces them itself when given the elements.
+  const items = diagramItems(raw)
+  const words = [title, ...items.map((o) => String(o.label ?? o.text ?? ''))].join(' ')
+  const handRays =
+    RAY_WORD.test(words) &&
+    !items.some((o) => RAY_KINDS.has(o.kind)) &&
+    items.every((o) => PEN_KINDS.has(o.kind) || o.kind === 'rect' || o.kind === 'circle')
   let gateBoxes = false
   let gates = false
   raw.forEach((r, i) => {
@@ -273,7 +304,7 @@ export function diagramIssues(raw: unknown): { problems: string[]; gateBoxes: bo
       })
     }
   })
-  return { problems, gateBoxes: gateBoxes && !gates }
+  return { problems, gateBoxes: gateBoxes && !gates, handRays }
 }
 
 // ---------------------------------------------------------------------------
@@ -525,6 +556,27 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
         o.kind === 'boxplot' && o.y === undefined ? { ...o, y: 1.2 } : o,
       ),
     }
+  // Several lenses or mirrors with one object are one instrument (a microscope given as two
+  // lens items): trace them as a chain, or each would bend its own rays from nothing.
+  const singles = spec.items.filter((o) => o.kind === 'lens' || o.kind === 'mirror')
+  if (singles.length > 1 && !spec.items.some((o) => o.kind === 'optics')) {
+    const object = singles.find((o) => o.object !== undefined)?.object
+    if (object !== undefined)
+      spec = {
+        ...spec,
+        items: [
+          {
+            kind: 'optics',
+            object,
+            elements: singles.map((o) => ({
+              ...o,
+              type: `${String(o.type ?? '')} ${o.kind}`,
+            })),
+          },
+          ...spec.items.filter((o) => o.kind !== 'lens' && o.kind !== 'mirror'),
+        ],
+      }
+  }
   const logs = logScales(spec)
   const T = (p: Pt): Pt => [logs.x ? log10(p[0]) : p[0], logs.y ? log10(p[1]) : p[1]]
   const world = fitWorld(spec, T, logs)
@@ -1106,4 +1158,41 @@ export function drawDiagram(spec: DiagramSpec, opts: DiagramOptions): DrawnDiagr
     paths: pen.paths.map(shift),
     light: pen.light.length ? pen.light.map(shift) : undefined,
   }
+}
+
+/**
+ * draw_diagram arguments for the dedicated drawing tools (HANDOFF D55): a ray diagram from
+ * its lenses and mirrors, a logic circuit from its netlist. Null for any other tool.
+ */
+export function toolDiagram(
+  name: string,
+  a: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const { title, after, why } = a
+  const frame = { title, after, why }
+  if (name === 'draw_logic_circuit') {
+    const { inputs, gates, outputs, names } = a
+    return { ...frame, items: [{ kind: 'logic', inputs, gates, outputs, names }] }
+  }
+  if (name !== 'draw_ray_diagram') return null
+  const els = Array.isArray(a.elements) ? (a.elements as Record<string, unknown>[]) : []
+  const object = a.object ?? undefined
+  if (els.length === 1) {
+    const e = els[0] as Record<string, unknown>
+    const type = String(e.type ?? '')
+    return {
+      ...frame,
+      items: [
+        {
+          ...e,
+          kind: type.includes('mirror') ? 'mirror' : 'lens',
+          type: /concave|diverg/.test(type) ? 'concave' : 'convex',
+          object,
+          rays: a.rays,
+          image: a.image,
+        },
+      ],
+    }
+  }
+  return { ...frame, items: [{ kind: 'optics', elements: els, object, image: a.image }] }
 }

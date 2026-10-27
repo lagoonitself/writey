@@ -388,8 +388,12 @@ export class InkWriter {
       rng: this.rng,
     })
     if (!drawn.paths.length) return null
-    const spot = this.placer.place(drawn.w, drawn.h, block.after, size * 0.6)
-    if (!spot) return { noRoom: true }
+    // A drawing always fits a page: one that comes out wider or taller is drawn smaller, so a
+    // big circuit never ends as "no room" even on a blank page.
+    const fit = Math.min(1, this.placer.room(x) / drawn.w, this.placer.fullHeight() / drawn.h)
+    const placed = this.placer.place(drawn.w * fit, drawn.h * fit, block.after, size * 0.6)
+    if (!placed) return { noRoom: true }
+    const spot = { ...placed, scale: placed.scale * fit }
     const paths = drawn.paths.map((p) =>
       p.map((n, i) => (i % 2 === 0 ? spot.x : spot.y) + n * spot.scale),
     )
@@ -416,7 +420,7 @@ export class InkWriter {
     if (!t.paths.length) return null
     // Wide tables write smaller rather than spill off the page.
     const room = this.placer.room(this.placer.startX(block.after))
-    const k = Math.max(this.opts.size * 0.6, Math.min(this.opts.size, room / t.w))
+    const k = Math.min(this.opts.size, room / t.w, this.placer.fullHeight() / t.h)
     const spot = this.placer.place(t.w * k, t.h * k, block.after, this.opts.size * 0.5)
     if (!spot) return { noRoom: true }
     const s = k * spot.scale
