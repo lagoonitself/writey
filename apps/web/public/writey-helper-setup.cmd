@@ -22,8 +22,20 @@ if not errorlevel 1 (
   set "SPEC=writey-helper[gpu]"
 )
 echo onnxruntime> "%TEMP%\writey-helper-excludes.txt"
+rem onnxruntime-gpu and the CUDA wheels are hundreds of MB; uv's 30 s default times out on slow links.
+set "UV_HTTP_TIMEOUT=600"
+set "UV_CONCURRENT_DOWNLOADS=2"
+set "ATTEMPT=1"
+:install
 uv tool install --force --python 3.12 --excludes "%TEMP%\writey-helper-excludes.txt" "%SPEC% @ git+https://github.com/lagoonitself/writey#subdirectory=apps/helper"
-if errorlevel 1 goto failed
+if not errorlevel 1 goto installed
+if %ATTEMPT% geq 3 goto failed
+set /a ATTEMPT+=1
+echo.
+echo   Download interrupted. Trying again (%ATTEMPT% of 3)...
+echo.
+goto install
+:installed
 
 for /f "delims=" %%i in ('uv tool dir --bin') do set "BIN=%%i"
 "%BIN%\writey-helper.exe" install
