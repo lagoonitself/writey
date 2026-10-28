@@ -11,6 +11,7 @@ import {
 import { ApiRequestError } from '../lib/api'
 import { chatgptUsed, chatgptWelcomed } from '../lib/helper'
 import { ChevronIcon, CloseIcon } from '../notebook/icons'
+import { VOICE_ENABLED } from '../voice/useVoice'
 import { ChatgptPanel, WelcomeNotice } from './ChatgptCard'
 import { ModelPicker } from './ModelPicker'
 import { ProviderMark } from './ProviderMark'
@@ -28,8 +29,8 @@ type Props = {
 
 const TABS: { id: SettingsTab; label: string; sub: string }[] = [
   { id: 'ai', label: 'AI', sub: 'Account and model' },
-  { id: 'voice', label: 'Voice', sub: 'Talk to Writey' },
-  { id: 'privacy', label: 'Privacy', sub: 'Keys and audio' },
+  ...(VOICE_ENABLED ? [{ id: 'voice' as const, label: 'Voice', sub: 'Talk to Writey' }] : []),
+  { id: 'privacy', label: 'Privacy', sub: VOICE_ENABLED ? 'Keys and audio' : 'Keys and images' },
 ]
 
 /** ChatGPT first: it needs no key, just the plan you already pay for. */
@@ -52,7 +53,9 @@ const shortDate = (iso: string) =>
 
 export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: Props) {
   const ref = useRef<HTMLDialogElement>(null)
-  const [tab, setTab] = useState<SettingsTab>(chatgptReturn ? 'ai' : firstTab)
+  const [tab, setTab] = useState<SettingsTab>(
+    chatgptReturn || (firstTab === 'voice' && !VOICE_ENABLED) ? 'ai' : firstTab,
+  )
   const [open, setOpen] = useState<AiProvider | null>(() =>
     chatgptReturn ? 'chatgpt' : usable(ai, ai.settings.provider) ? null : 'chatgpt',
   )
@@ -138,7 +141,11 @@ export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: 
                     >
                       {p === 'chatgpt' ? (
                         <>
-                          <ChatgptPanel ai={ai} onChange={onChange} />
+                          <ChatgptPanel
+                            ai={ai}
+                            onChange={onChange}
+                            onInstead={() => setOpen('openrouter')}
+                          />
                           {usable(ai, p) && ai.settings.provider !== p && (
                             <button type="button" className="primary" onClick={() => use(p)}>
                               Use ChatGPT for Writey
@@ -155,7 +162,7 @@ export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: 
               <ModelSection ai={ai} choose={choose} saved={saved} />
             </>
           )}
-          {tab === 'voice' && <VoiceSection />}
+          {VOICE_ENABLED && tab === 'voice' && <VoiceSection />}
           {tab === 'privacy' && (
             <section className="settings-section">
               <h3 className="settings-title">Privacy</h3>
@@ -168,10 +175,12 @@ export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: 
                   <strong>Your ChatGPT sign-in</strong> never leaves this computer: Writey Helper
                   keeps it.
                 </li>
-                <li>
-                  <strong>Your voice</strong> is turned into text on this computer. No audio is
-                  uploaded or stored.
-                </li>
+                {VOICE_ENABLED && (
+                  <li>
+                    <strong>Your voice</strong> is turned into text on this computer. No audio is
+                    uploaded or stored.
+                  </li>
+                )}
                 <li>
                   <strong>What Writey sees</strong> is an image of the part of the page you’re
                   working on, sent to the AI you chose when you ask. Every answer has a “What Writey

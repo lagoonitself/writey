@@ -2,6 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { VoiceClient, type VoicePrefs, type VoiceState } from './client'
 import type { VoiceCommand } from './trigger'
 
+/**
+ * Voice ("Hey …", push-to-talk, spoken replies) is off for now: the Helper no longer runs
+ * speech models (HANDOFF D56). The code stays so it can come back; flip this to turn it on.
+ */
+export const VOICE_ENABLED = false
+
 const PREFS_KEY = 'writey.voice'
 /** Writey talks back by default (HANDOFF D9, changed 2026-10-25). */
 const DEFAULT_PREFS: VoicePrefs = { replies: true, voice: 'af_heart' }
@@ -50,10 +56,12 @@ export type Voice = {
 const isTyping = (t: EventTarget | null) =>
   t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))
 
-export function useVoice(handlers: {
+type VoiceHandlers = {
   request(text: string): void
   command(c: VoiceCommand): void
-}): Voice {
+}
+
+function useLiveVoice(handlers: VoiceHandlers): Voice {
   const [state, setState] = useState<VoiceState>({ kind: 'off' })
   const [speaking, setSpeaking] = useState(false)
   const [heard, setHeard] = useState<string | null>(null)
@@ -137,3 +145,31 @@ export function useVoice(handlers: {
     transcript: useCallback(() => c.transcript(), [c]),
   }
 }
+
+const noop = () => {}
+
+const NO_VOICE: Omit<Voice, 'ask'> = {
+  state: { kind: 'off' },
+  speaking: false,
+  heard: null,
+  speechIssue: null,
+  replying: false,
+  speaks: () => false,
+  answered: noop,
+  toggle: noop,
+  start: noop,
+  dismissSpeechIssue: noop,
+  say: noop,
+  stopSpeaking: noop,
+  transcript: () => '',
+}
+
+/** Voice switched off: nothing listens or speaks, and no mic or Helper is touched. */
+function useNoVoice(handlers: VoiceHandlers): Voice {
+  const latest = useRef(handlers)
+  latest.current = handlers
+  const ask = useCallback((text: string) => latest.current.request(text), [])
+  return { ...NO_VOICE, ask }
+}
+
+export const useVoice = VOICE_ENABLED ? useLiveVoice : useNoVoice

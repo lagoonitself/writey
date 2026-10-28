@@ -1,4 +1,4 @@
-import { PTT_LABEL } from './useVoice'
+import { PTT_LABEL, VOICE_ENABLED } from './useVoice'
 
 const GROUPS: { title: string; where: string; say: string[] }[] = [
   {
@@ -20,6 +20,9 @@ const GROUPS: { title: string; where: string; say: string[] }[] = [
 
 const AFTER = ['Keep it', 'Scrap that', 'Redo', 'Stop']
 
+/** "Hey, what's next?" as it's typed: "What's next?" */
+const typed = (s: string) => s.replace(/^Hey, (.)/, (_, c: string) => c.toUpperCase())
+
 /** How to talk to Writey: what to say, and what happens. */
 export function VoiceGuide({
   onTry,
@@ -36,28 +39,31 @@ export function VoiceGuide({
           <h4>{g.title}</h4>
           <p>{g.where}</p>
           <div className="voice-guide-says">
-            {g.say.map((s) =>
-              onTry ? (
-                <button type="button" key={s} onClick={() => onTry(s.replace(/^Hey, /, ''))}>
+            {g.say.map((said) => {
+              const s = VOICE_ENABLED ? said : typed(said)
+              return onTry ? (
+                <button type="button" key={s} onClick={() => onTry(typed(said))}>
                   “{s}”
                 </button>
               ) : (
                 <span key={s}>“{s}”</span>
-              ),
-            )}
+              )
+            })}
           </div>
         </section>
       ))}
-      <section>
-        <h4>Then</h4>
-        <p>While Writey’s ink is shown in violet:</p>
-        <div className="voice-guide-says">
-          {AFTER.map((s) => (
-            <span key={s}>“{s}”</span>
-          ))}
-        </div>
-      </section>
-      {!compact && (
+      {VOICE_ENABLED && (
+        <section>
+          <h4>Then</h4>
+          <p>While Writey’s ink is shown in violet:</p>
+          <div className="voice-guide-says">
+            {AFTER.map((s) => (
+              <span key={s}>“{s}”</span>
+            ))}
+          </div>
+        </section>
+      )}
+      {VOICE_ENABLED && !compact && (
         <ul className="voice-guide-tips">
           <li>After Writey answers, just reply. You don’t need to say “Hey” again.</li>
           <li>

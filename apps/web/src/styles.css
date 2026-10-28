@@ -2727,6 +2727,24 @@ dialog.settings::backdrop {
   width: fit-content;
   margin-top: 0.6rem;
 }
+.setup-why,
+.setup-instead {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--ink-soft);
+}
+.setup-instead {
+  color: var(--muted);
+}
+.setup li > span > .setup-note {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+.setup li > span > .command-row {
+  margin-top: 0.5rem;
+}
 .waiting {
   display: inline-flex;
   align-items: center;

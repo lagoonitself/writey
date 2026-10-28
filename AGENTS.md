@@ -12,7 +12,7 @@ If these disagree, `HANDOFF.md` wins (it's the newest record). Fix the other fil
 
 These are decided. Don't propose alternatives unless the owner asks:
 
-- **No Gemini Live, no cloud voice, no browser-run voice models.** STT (Parakeet TDT 0.6B v2) and TTS (Fish OpenAudio S1-mini) run locally in the Python Writey Helper. The browser owns mic, VAD, playback and the transcript (HANDOFF D21).
+- **No Gemini Live, no cloud voice, no browser-run voice models.** STT (Parakeet TDT 0.6B v2) and TTS (Fish OpenAudio S1-mini) run locally in the Python Writey Helper. The browser owns mic, VAD, playback and the transcript (HANDOFF D21). **Voice is switched off for now (D56):** the Helper is ChatGPT-only; the browser voice code stays behind `VOICE_ENABLED`.
 - English only for speech.
 - Thinking providers are **only** OpenRouter, OpenCode Zen and ChatGPT (Sign in with ChatGPT via the Helper). "OpenCode" means OpenCode Zen.
 - Default model: DeepSeek V4.1 Flash via OpenRouter.
@@ -31,16 +31,16 @@ These are decided. Don't propose alternatives unless the owner asks:
 
 ## Repo map
 
-| Path                  | What                                                                                  |
-| --------------------- | ------------------------------------------------------------------------------------- |
-| `apps/web`            | React + Vite app (notebook UI, toolbar, library)                                      |
-| `apps/worker`         | Cloudflare Worker (Hono): `/api/*` + hosts `web/dist`                                 |
-| `packages/ink-engine` | Page model, editor/undo, geometry, render, serialize                                  |
-| `packages/shared`     | Types shared by web and worker                                                        |
-| `supabase/migrations` | SQL schema + RLS                                                                      |
-| `packages/ai-core`    | Prompts, intent rules, focus region + line labels, SSE parsing, error messages        |
-| `apps/helper`         | Writey Helper (Python, uv): Sign in with ChatGPT + Responses proxy; Parakeet + Kokoro |
-| `packages/inkscript`  | AI handwriting: InkScript parser, LaTeX layout, glyphs, placement, pen timing         |
+| Path                  | What                                                                                    |
+| --------------------- | --------------------------------------------------------------------------------------- |
+| `apps/web`            | React + Vite app (notebook UI, toolbar, library)                                        |
+| `apps/worker`         | Cloudflare Worker (Hono): `/api/*` + hosts `web/dist`                                   |
+| `packages/ink-engine` | Page model, editor/undo, geometry, render, serialize                                    |
+| `packages/shared`     | Types shared by web and worker                                                          |
+| `supabase/migrations` | SQL schema + RLS                                                                        |
+| `packages/ai-core`    | Prompts, intent rules, focus region + line labels, SSE parsing, error messages          |
+| `apps/helper`         | Writey Helper (Python, uv): Sign in with ChatGPT + Responses proxy (voice removed, D56) |
+| `packages/inkscript`  | AI handwriting: InkScript parser, LaTeX layout, glyphs, placement, pen timing           |
 
 `ink-engine`, `inkscript` and `ai-core` stay plain TypeScript with no React, so they're testable and reusable on iPad later.
 

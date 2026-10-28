@@ -1,8 +1,9 @@
 """
-Writey Helper: a small local server on 127.0.0.1 for things the website can't do itself:
-Sign in with ChatGPT, and local speech models for talking to Writey (docs/ARCHITECTURE.md §7.3).
+Writey Helper: a small local server on 127.0.0.1 for the one thing the website can't do
+itself: Sign in with ChatGPT (docs/ARCHITECTURE.md §7.3).
 """
 
+import shutil
 import sys
 from contextlib import asynccontextmanager
 from typing import Any
@@ -15,7 +16,6 @@ from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
-    Response,
     StreamingResponse,
 )
 from starlette.background import BackgroundTask
@@ -24,7 +24,6 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from . import API, __version__
 from .chatgpt import ChatGPT, ChatGPTError, callback_page
 from .config import HOST, ORIGINS, PORT, data_dir
-from .speech import Speech, SpeechError
 from .store import Store
 
 
@@ -91,12 +90,10 @@ def create_app(
     http: httpx.AsyncClient | None = None,
     origins: frozenset[str] = ORIGINS,
     port: int = PORT,
-    speech: Speech | None = None,
 ) -> FastAPI:
     store = store or Store(data_dir())
     client = http or httpx.AsyncClient(timeout=30)
     chatgpt = ChatGPT(store, client)
-    voice = speech or Speech(data_dir())
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -106,11 +103,6 @@ def create_app(
 
     app = FastAPI(title="Writey Helper", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.chatgpt = chatgpt
-    app.state.speech = voice
-
-    @app.exception_handler(SpeechError)
-    async def speech_error(_: Request, e: SpeechError) -> JSONResponse:
-        return JSONResponse({"error": e.code, "message": e.message}, status_code=e.status)
 
     @app.exception_handler(ChatGPTError)
     async def chatgpt_error(_: Request, e: ChatGPTError) -> JSONResponse:
@@ -175,35 +167,6 @@ def create_app(
             background=BackgroundTask(upstream.aclose),
         )
 
-    @app.get("/voice/status", dependencies=[Depends(writey)])
-    async def voice_status() -> dict[str, Any]:
-        return voice.status()
-
-    @app.post("/voice/prepare", dependencies=[Depends(writey)])
-    async def voice_prepare(request: Request) -> dict[str, Any]:
-        """Downloads (the first time) and loads the speech models in the background."""
-        has_body = request.headers.get("content-length") not in (None, "0")
-        body = await request.json() if has_body else {}
-        for which in ("stt", "tts"):
-            if body.get(which, True):
-                voice.prepare(which)
-        return voice.status()
-
-    @app.post("/stt", dependencies=[Depends(writey)])
-    async def stt(request: Request) -> dict[str, str]:
-        """One speech segment as 16 kHz mono 16-bit PCM in, its text out."""
-        return {"text": await voice.transcribe(await request.body())}
-
-    @app.post("/tts", dependencies=[Depends(writey)])
-    async def tts(request: Request) -> Response:
-        body = await request.json()
-        audio = await voice.speak(
-            str(body.get("text", "")),
-            str(body.get("voice") or ""),
-            float(body.get("speed") or 1.0),
-        )
-        return Response(audio, media_type="audio/wav", headers={"Cache-Control": "no-store"})
-
     guarded = Guard(app, origins, port)
     guarded.state = app.state  # type: ignore[attr-defined]
     return guarded  # type: ignore[return-value]
@@ -234,11 +197,17 @@ def serve() -> None:
         autostart._stop_old_helper()
     print(
         f"\n  Writey Helper {__version__} is running on http://{HOST}:{PORT}\n"
-        "  In Writey, open Settings to connect ChatGPT or turn on voice.\n"
+        "  In Writey, open Settings to connect ChatGPT.\n"
         "  Leave this running while you use Writey. Ctrl+C to stop.\n",
         flush=True,
     )
+    _remove_speech_models()
     uvicorn.run(create_app(), host=HOST, port=PORT, log_level="warning")
+
+
+def _remove_speech_models() -> None:
+    # Helpers before 0.5 downloaded voice models (up to ~2 GB); voice is gone for now.
+    shutil.rmtree(data_dir() / "models", ignore_errors=True)
 
 
 def main() -> None:

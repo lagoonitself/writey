@@ -17,7 +17,7 @@ See [HANDOFF.md](HANDOFF.md) for decisions and current state, and [docs/ARCHITEC
 | `packages/ink-engine` | Page model, hit-testing, undo, ink rendering |
 | `packages/ai-core`    | Prompts, intent rules, focus region, streams |
 | `packages/inkscript`  | Writey's handwriting: LaTeX layout, glyphs   |
-| `apps/helper`         | Writey Helper: ChatGPT sign-in, local voice  |
+| `apps/helper`         | Writey Helper: ChatGPT sign-in               |
 | `packages/shared`     | Types shared by web and worker               |
 | `supabase/migrations` | Database schema and row-level security       |
 

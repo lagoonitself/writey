@@ -3,7 +3,7 @@ rem Writey Helper setup for Windows. Installs uv (if needed) and the Helper, the
 rem After this the Helper starts hidden whenever you sign in to Windows.
 title Writey Helper setup
 echo.
-echo   Setting up Writey Helper. This takes about a minute the first time.
+echo   Setting up Writey Helper. This takes under a minute.
 echo.
 
 where uv >nul 2>nul
@@ -13,21 +13,9 @@ if errorlevel 1 (
   set "PATH=%USERPROFILE%\.local\bin;%PATH%"
 )
 
-rem With an NVIDIA GPU, speech runs on it: add CUDA (about 1 GB more). kokoro-onnx asks for the
-rem CPU onnxruntime, which would overwrite the GPU one, so it's excluded.
-set "SPEC=writey-helper"
-where nvidia-smi >nul 2>nul
-if not errorlevel 1 (
-  echo   NVIDIA GPU found: speech will run on it.
-  set "SPEC=writey-helper[gpu]"
-)
-echo onnxruntime> "%TEMP%\writey-helper-excludes.txt"
-rem onnxruntime-gpu and the CUDA wheels are hundreds of MB; uv's 30 s default times out on slow links.
-set "UV_HTTP_TIMEOUT=600"
-set "UV_CONCURRENT_DOWNLOADS=2"
 set "ATTEMPT=1"
 :install
-uv tool install --force --python 3.12 --excludes "%TEMP%\writey-helper-excludes.txt" "%SPEC% @ git+https://github.com/lagoonitself/writey#subdirectory=apps/helper"
+uv tool install --force --python 3.12 "writey-helper @ git+https://github.com/lagoonitself/writey#subdirectory=apps/helper"
 if not errorlevel 1 goto installed
 if %ATTEMPT% geq 3 goto failed
 set /a ATTEMPT+=1
@@ -42,7 +30,7 @@ for /f "delims=" %%i in ('uv tool dir --bin') do set "BIN=%%i"
 if errorlevel 1 goto failed
 
 echo.
-echo   Done. Go back to Writey: Continue with ChatGPT, or turn on Voice.
+echo   Done. Go back to Writey and Continue with ChatGPT.
 echo.
 timeout /t 8 >nul
 exit /b 0

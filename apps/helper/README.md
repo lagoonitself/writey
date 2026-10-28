@@ -1,17 +1,11 @@
 # Writey Helper
 
-A small local server that does what the Writey website can't do by itself: **Sign in with
-ChatGPT**, so Writey can use your ChatGPT Plus or Pro plan, and **local voice**: Parakeet
-speech-to-text and Kokoro text-to-speech, running on your computer (docs/ARCHITECTURE.md §7).
+A small local server that does the one thing the Writey website can't do by itself: **Sign in
+with ChatGPT**, so Writey can use your ChatGPT Plus or Pro plan. OpenAI only allows that sign-in
+from apps on your own computer (a `127.0.0.1` callback), so it can't live on the website.
 
-## Voice
-
-Writey's page owns the microphone and voice detection; it sends each spoken sentence to
-`POST /stt` (16 kHz mono 16-bit PCM) and gets text back, and asks `POST /tts` for spoken
-replies (WAV). The models download on first use (about 780 MB) into the Helper's data
-folder: Parakeet TDT 0.6B v2 (int8 ONNX) and Kokoro-82M (int8 ONNX), both on the CPU.
-`GET /voice/status` and `POST /voice/prepare` report and start the download. No audio is
-stored.
+Voice (local speech models) was removed in 0.5.0; on start the Helper deletes the speech models
+older versions downloaded. The browser's voice code stays in `apps/web/src/voice`, switched off.
 
 It listens on `127.0.0.1:47823` only, answers just Writey's own sites, and keeps your ChatGPT
 tokens in your user folder (`%APPDATA%\Writey\helper` on Windows). They never go to Writey's

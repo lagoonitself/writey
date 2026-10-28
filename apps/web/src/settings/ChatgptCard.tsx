@@ -13,6 +13,7 @@ import { type AiState, chatgptReturn, probeHelper } from './useAiState'
 
 const POLL_MS = 2000
 const isWindows = /Windows/i.test(navigator.userAgent)
+const UV_COMMAND = 'curl -LsSf https://astral.sh/uv/install.sh | sh'
 
 let returnErrorShown = false
 
@@ -30,7 +31,16 @@ function takeReturnError(): string | null {
  * Writey Helper to OpenAI and back. OpenAI only allows that sign-in from apps on your own
  * computer (a 127.0.0.1 callback), so the first time, the Helper gets installed.
  */
-export function ChatgptPanel({ ai, onChange }: { ai: AiState; onChange(next: AiState): void }) {
+export function ChatgptPanel({
+  ai,
+  onChange,
+  onInstead,
+}: {
+  ai: AiState
+  onChange(next: AiState): void
+  /** Opens a provider that needs nothing installed. */
+  onInstead?(): void
+}) {
   const ready = ai.helper === 'ok'
   const outdated = ai.helper === 'outdated'
   const [setup, setSetup] = useState(ai.helper === 'offline' || outdated)
@@ -136,6 +146,7 @@ export function ChatgptPanel({ ai, onChange }: { ai: AiState; onChange(next: AiS
     )
   }
 
+  const found = ready ? 'done' : ''
   return (
     <>
       <p>
@@ -147,56 +158,99 @@ export function ChatgptPanel({ ai, onChange }: { ai: AiState; onChange(next: AiS
         <div className="setup">
           <span className="setup-title">
             {ready
-              ? 'Ready.'
+              ? 'Writey Helper is running. Last step:'
               : outdated
                 ? 'Update Writey Helper'
-                : 'One-time setup on this computer'}
+                : 'One-time setup: Writey Helper'}
           </span>
+          {!ready && (
+            <p className="setup-why">
+              {outdated
+                ? 'The Writey Helper on this computer is an older version. Run the setup again to update it; your sign-in is kept.'
+                : 'OpenAI lets ChatGPT sign in only to apps on your own computer, not to websites. Writey Helper is that app: small, free and open source. It only handles the sign-in and keeps your ChatGPT login on this computer.'}
+            </p>
+          )}
           <ol>
-            <li className={ready ? 'done' : ''}>
-              <span>
-                {outdated
-                  ? 'The Writey Helper on this computer is an older version. Download the setup again to update it.'
-                  : 'OpenAI only allows ChatGPT sign-in from apps on your own computer, so Writey uses a small free helper app. It starts with Windows and stays out of the way.'}
-                {!ready && isWindows && (
-                  <a
-                    className="btn primary"
-                    href={HELPER_SETUP_FILE}
-                    download="writey-helper-setup.cmd"
-                  >
-                    <DownloadIcon size={16} />
-                    Download Writey Helper
-                  </a>
-                )}
-              </span>
-            </li>
-            {isWindows && (
-              <li className={ready ? 'done' : ''}>
-                <span>
-                  Open the downloaded file. If Windows asks, choose <em>More info → Run anyway</em>.
-                  It takes about a minute.
-                </span>
-              </li>
+            {isWindows ? (
+              <>
+                <li className={found}>
+                  <span>
+                    Download the setup file.
+                    {!ready && (
+                      <a
+                        className="btn primary"
+                        href={HELPER_SETUP_FILE}
+                        download="writey-helper-setup.cmd"
+                      >
+                        <DownloadIcon size={16} />
+                        Download Writey Helper
+                      </a>
+                    )}
+                    {!ready && (
+                      <small className="setup-note">
+                        If Chrome says it isn’t commonly downloaded, choose <em>Keep</em>.
+                      </small>
+                    )}
+                  </span>
+                </li>
+                <li className={found}>
+                  <span>
+                    Open the downloaded file. If Windows says it protected your PC, click{' '}
+                    <em>More info → Run anyway</em>. It installs in under a minute, then starts by
+                    itself whenever you sign in to Windows.
+                  </span>
+                </li>
+              </>
+            ) : (
+              <>
+                <li className={found}>
+                  <span>
+                    Open Terminal and install uv, the Python tool manager (once):
+                    {!ready && <CommandRow command={UV_COMMAND} />}
+                  </span>
+                </li>
+                <li className={found}>
+                  <span>
+                    Start Writey Helper and leave that window open while you use Writey:
+                    {!ready && <CommandRow command={HELPER_COMMAND} />}
+                  </span>
+                </li>
+              </>
             )}
-            <li>
+            <li className={found}>
               <span>
-                Continue with ChatGPT, pick your account, and you’re back here.
-                {ready ? (
-                  <ContinueButton onClick={() => go()} busy={checking} />
-                ) : (
+                Come back to this tab. If Chrome asks to let Writey look for devices on your local
+                network, choose <em>Allow</em>: that’s how Writey finds the Helper.
+                {!ready && (
                   <span className="waiting">
                     <span className="spinner" aria-hidden="true" />
-                    Waiting for Writey Helper…
+                    Looking for Writey Helper…
                   </span>
                 )}
               </span>
             </li>
+            <li>
+              <span>
+                Continue with ChatGPT, pick your account and allow “Use your ChatGPT plan”. You come
+                back here signed in.
+                {ready && <ContinueButton onClick={() => go()} busy={checking} />}
+              </span>
+            </li>
           </ol>
-          {!ready && (
-            <details className="other-os" open={!isWindows}>
-              <summary>{isWindows ? 'Prefer a terminal?' : 'On macOS or Linux'}</summary>
-              <CommandRow />
+          {!ready && isWindows && (
+            <details className="other-os">
+              <summary>Prefer a terminal?</summary>
+              <CommandRow command={HELPER_COMMAND} />
             </details>
+          )}
+          {!ready && onInstead && (
+            <p className="setup-instead">
+              Rather not install anything?{' '}
+              <button type="button" className="link-btn" onClick={onInstead}>
+                Use an OpenRouter key instead
+              </button>
+              : it works right away in the browser.
+            </p>
           )}
         </div>
       )}
@@ -214,15 +268,15 @@ function ContinueButton({ onClick, busy }: { onClick(): void; busy: boolean }) {
   )
 }
 
-function CommandRow() {
+function CommandRow({ command }: { command: string }) {
   const [copied, setCopied] = useState(false)
   return (
     <div className="command-row">
-      <code className="command">{HELPER_COMMAND}</code>
+      <code className="command">{command}</code>
       <button
         type="button"
         onClick={() => {
-          void navigator.clipboard.writeText(HELPER_COMMAND)
+          void navigator.clipboard.writeText(command)
           setCopied(true)
         }}
       >

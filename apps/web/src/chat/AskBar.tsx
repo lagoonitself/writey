@@ -1,7 +1,7 @@
 import { CHATGPT_USAGE_URL } from '@writey/ai-core'
 import { useEffect, useState } from 'react'
 import { CloseIcon, MicIcon, MicOffIcon, NewChatIcon, SendIcon, StopIcon } from '../notebook/icons'
-import { PTT_LABEL, type Voice } from '../voice/useVoice'
+import { PTT_LABEL, VOICE_ENABLED, type Voice } from '../voice/useVoice'
 import { VoiceGuide } from '../voice/VoiceGuide'
 
 const GUIDE_SEEN = 'writey.voiceGuideSeen'
@@ -166,33 +166,35 @@ export function AskBar(p: Props) {
           p.onSend(p.input)
         }}
       >
-        <button
-          type="button"
-          className="askbar-mic"
-          onClick={() => {
-            if (voice.speaking) voice.stopSpeaking()
-            else {
-              setShowError(true)
-              voice.toggle()
+        {VOICE_ENABLED && (
+          <button
+            type="button"
+            className="askbar-mic"
+            onClick={() => {
+              if (voice.speaking) voice.stopSpeaking()
+              else {
+                setShowError(true)
+                voice.toggle()
+              }
+            }}
+            title={
+              voice.speaking
+                ? 'Stop speaking'
+                : listening
+                  ? 'Stop listening'
+                  : `Talk to Writey (or hold ${PTT_LABEL})`
             }
-          }}
-          title={
-            voice.speaking
-              ? 'Stop speaking'
-              : listening
-                ? 'Stop listening'
-                : `Talk to Writey (or hold ${PTT_LABEL})`
-          }
-          aria-pressed={listening}
-          aria-label={listening ? 'Stop listening' : 'Start listening'}
-        >
-          {listening || voice.speaking ? <MicIcon size={18} /> : <MicOffIcon size={18} />}
-          <span className="askbar-wave" aria-hidden="true">
-            <i />
-            <i />
-            <i />
-          </span>
-        </button>
+            aria-pressed={listening}
+            aria-label={listening ? 'Stop listening' : 'Start listening'}
+          >
+            {listening || voice.speaking ? <MicIcon size={18} /> : <MicOffIcon size={18} />}
+            <span className="askbar-wave" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+          </button>
+        )}
         <textarea
           ref={p.inputRef}
           value={p.input}
@@ -222,7 +224,7 @@ export function AskBar(p: Props) {
           }}
           aria-label="Ask Writey"
         />
-        {!p.input && !p.busy && (
+        {VOICE_ENABLED && !p.input && !p.busy && (
           <button
             type="button"
             className="askbar-help"
@@ -275,7 +277,7 @@ export function AskBar(p: Props) {
           </>
         ) : (
           <span className="faint">
-            Ctrl K to type · click the mic to talk
+            {VOICE_ENABLED ? 'Ctrl K to type · click the mic to talk' : 'Ctrl K to type'}
             {p.chatgpt && (
               <>
                 {' · '}Using ChatGPT plan ·{' '}

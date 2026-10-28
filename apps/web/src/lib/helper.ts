@@ -129,7 +129,8 @@ export const chatgptResponses = (body: string, signal: AbortSignal) =>
   call('/chatgpt/responses', { method: 'POST', body, signal })
 
 // ---------------------------------------------------------------------------
-// Voice: local speech models in the Helper (docs §7)
+// Voice: local speech models in the Helper (docs §7). Helper 0.5 dropped these endpoints and
+// voice is switched off (VOICE_ENABLED, HANDOFF D56); kept for when voice comes back.
 // ---------------------------------------------------------------------------
 
 /** The Helper API level voice needs (3: /stt, /tts, /voice/*; 4: models on the GPU). */
