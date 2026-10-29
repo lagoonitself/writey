@@ -44,10 +44,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - name: Re-fetch sherpa-onnx if the cache dropped its download
+      - name: Fresh sherpa-onnx download (the Rust cache keeps the folder, not the files)
         shell: bash
         working-directory: apps/desktop
-        run: "[ -d target/sherpa-onnx-prebuilt ] || cargo clean --release -p sherpa-onnx-sys"
+        run: rm -rf target/sherpa-onnx-prebuilt && cargo clean --release -p sherpa-onnx-sys
       - name: Unit tests
         working-directory: apps/desktop
         run: cargo test --release --lib
@@ -119,10 +119,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @writey/web build
-      - name: Re-fetch sherpa-onnx if the cache dropped its download
+      - name: Fresh sherpa-onnx download (the Rust cache keeps the folder, not the files)
         shell: bash
         working-directory: apps/desktop
-        run: "[ -d target/sherpa-onnx-prebuilt ] || cargo clean --release -p sherpa-onnx-sys"
+        run: rm -rf target/sherpa-onnx-prebuilt && cargo clean --release -p sherpa-onnx-sys
       - name: Download addresses are live
         if: runner.os == 'Linux'
         working-directory: apps/desktop
