@@ -1,22 +1,27 @@
-import type { Session } from '@supabase/supabase-js'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { supabase } from '../lib/web/supabase'
 import { GoogleIcon } from '../notebook/icons'
 import { Wordmark } from '../notebook/Library'
 import { Scribble } from '../Scribble'
-import { exportEverything } from './exporter'
-import { supabase, supabaseConfigured } from './supabase'
 
 const RELEASES = 'https://github.com/lagoonitself/writey/releases/latest'
 const WINDOWS = `${RELEASES}/download/Writey-Windows-Setup.exe`
 const MAC = `${RELEASES}/download/Writey-macOS-AppleSilicon.dmg`
 
-const isMacVisitor = /Mac/i.test(navigator.platform)
-
 /**
- * The website (HANDOFF D57): Writey is a desktop app now. This page offers the download and,
- * for anyone who used the web version, a one-time export of their notebooks.
+ * The website's sign-in page (HANDOFF D57): use Writey right here with Google, or download the
+ * desktop app; both show the same notebooks once signed in to the same account.
  */
 export function Site() {
+  const [error, setError] = useState<string | null>(null)
+  const signIn = async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      // Must match the Supabase redirect allow list, which holds origins only.
+      options: { redirectTo: window.location.origin },
+    })
+    if (error) setError(error.message)
+  }
   return (
     <main className="signin">
       <Scribble />
@@ -30,21 +35,26 @@ export function Site() {
           the page and writes the next step under your own, or sketches and explains it like a tutor
           with a pen. Voice runs on your own GPU.
         </p>
+        <button type="button" className="google" onClick={signIn}>
+          <GoogleIcon />
+          Continue with Google
+        </button>
+        {error && <p className="error">{error}</p>}
+        <p className="signin-fine">Or get the app, with voice on your GPU and offline notebooks:</p>
         <div className="download-row">
-          <a className={`btn${isMacVisitor ? '' : ' primary'}`} href={WINDOWS}>
+          <a className="btn" href={WINDOWS}>
             Download for Windows
           </a>
-          <a className={`btn${isMacVisitor ? ' primary' : ''}`} href={MAC}>
+          <a className="btn" href={MAC}>
             Download for Mac (Apple Silicon)
           </a>
         </div>
         <p className="signin-fine">
           Free and open source. Writey uses <strong>your own AI</strong>: your ChatGPT plan,
-          OpenRouter or OpenCode Zen. Notebooks stay on your computer.{' '}
-          <a href={RELEASES}>All downloads and notes</a>
+          OpenRouter or OpenCode Zen. Sign in with the same Google account on the website and in the
+          app and your notebooks stay in sync. <a href={RELEASES}>All downloads and notes</a>
         </p>
         <FirstOpen />
-        {supabaseConfigured && <ExportOld />}
       </section>
       <DemoSheet />
     </main>
@@ -65,76 +75,6 @@ function FirstOpen() {
         Security).
       </p>
     </details>
-  )
-}
-
-/** For people who used the web version: everything they had, as one .writey file. */
-function ExportOld() {
-  const [session, setSession] = useState<Session | null>(null)
-  const [status, setStatus] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => setSession(data.session))
-    const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s))
-    return () => data.subscription.unsubscribe()
-  }, [])
-
-  const signIn = async () => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      // Must match the Supabase redirect allow list, which holds origins only.
-      options: { redirectTo: window.location.origin },
-    })
-    if (error) setStatus(error.message)
-  }
-
-  const download = async () => {
-    setBusy(true)
-    try {
-      const blob = await exportEverything(setStatus)
-      const a = document.createElement('a')
-      a.href = URL.createObjectURL(blob)
-      a.download = `Writey notebooks ${new Date().toISOString().slice(0, 10)}.writey`
-      a.click()
-      setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
-      setStatus('Downloaded. In the Writey app: Settings → Notebooks → Import a .writey file.')
-    } catch (e) {
-      setStatus((e as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <section className="export-old" id="export">
-      <h2>Used Writey on the web?</h2>
-      {session ? (
-        <>
-          <p>
-            Signed in as <strong>{session.user.email}</strong>. Download every notebook, page, PDF
-            and conversation as one file, then import it in the app.
-          </p>
-          <div className="download-row">
-            <button type="button" className="primary" onClick={download} disabled={busy}>
-              {busy ? 'Exporting…' : 'Export my notebooks'}
-            </button>
-            <button type="button" className="link-btn" onClick={() => supabase.auth.signOut()}>
-              Sign out
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <p>Sign in once more to take your notebooks with you.</p>
-          <button type="button" className="google" onClick={signIn}>
-            <GoogleIcon />
-            Continue with Google
-          </button>
-        </>
-      )}
-      {status && <p className="note">{status}</p>}
-    </section>
   )
 }
 

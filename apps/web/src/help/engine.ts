@@ -38,6 +38,7 @@ import type { AiSettings, KeyProvider, PageRow } from '@writey/shared'
 import { chatRequest } from '../lib/ai'
 import { primeImage, uploadAsset } from '../lib/assets'
 import { chatgptResponses } from '../lib/chatgpt'
+import { NativeError } from '../lib/native'
 import type { PageSnapshot } from '../notebook/tools'
 import { type Capture, capturePage } from './capture'
 import {
@@ -204,6 +205,7 @@ function chatgptPlan(model: string, signal: AbortSignal, cacheKey: string): Tran
         )
       } catch (e) {
         if (signal.aborted) throw e
+        if (e instanceof NativeError) throw new HelpFailure(describeChatgptError(0, '', e.code))
         throw new HelpFailure(
           {
             message: `${(e as Error).message || "Couldn't reach ChatGPT"}. Check your connection.`,

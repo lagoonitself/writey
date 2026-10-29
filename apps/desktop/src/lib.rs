@@ -6,6 +6,7 @@
 pub mod ai;
 pub mod error;
 pub mod store;
+pub mod sync;
 pub mod vault;
 pub mod voice;
 
@@ -30,6 +31,25 @@ pub struct App {
     pub ai: Ai,
     pub voice: Arc<Voice>,
     openrouter: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+    pub auth: sync::auth::Auth,
+    sync_state: std::sync::Mutex<SyncState>,
+    /// Wakes the sync loop (a local change, the window coming to the front, "Sync now").
+    sync_wake: tokio::sync::Notify,
+}
+
+#[derive(serde::Serialize, Clone, Default)]
+struct SyncState {
+    /// "off" (not signed in), "idle", "syncing" or "error".
+    state: &'static str,
+    last_synced_at: Option<String>,
+    error: Option<String>,
+}
+
+impl App {
+    /// Something changed here: sync soon.
+    fn poke(&self) {
+        self.sync_wake.notify_one();
+    }
 }
 
 /// `.writey` files Writey was opened with, waiting for the page to ask for them.
@@ -83,27 +103,32 @@ async fn notebook_create(
     page_key: String,
     title: Option<String>,
 ) -> AppResult<NotebookRow> {
+    s.poke();
     s.store
         .create_notebook(&sort_key, &page_key, title.as_deref())
 }
 
 #[tauri::command]
 async fn notebook_rename(s: Cmd<'_>, id: String, title: String) -> AppResult<()> {
+    s.poke();
     s.store.rename_notebook(&id, &title)
 }
 
 #[tauri::command]
 async fn notebook_move(s: Cmd<'_>, id: String, sort_key: String) -> AppResult<()> {
+    s.poke();
     s.store.move_notebook(&id, &sort_key)
 }
 
 #[tauri::command]
 async fn notebook_trash(s: Cmd<'_>, id: String) -> AppResult<()> {
+    s.poke();
     s.store.trash_notebook(&id)
 }
 
 #[tauri::command]
 async fn notebook_restore(s: Cmd<'_>, id: String) -> AppResult<()> {
+    s.poke();
     s.store.restore_notebook(&id)
 }
 
@@ -118,16 +143,19 @@ async fn pages_add(
     notebook_id: String,
     pages: Vec<NewPage>,
 ) -> AppResult<Vec<PageRow>> {
+    s.poke();
     s.store.add_pages(&notebook_id, &pages)
 }
 
 #[tauri::command]
 async fn page_move(s: Cmd<'_>, id: String, sort_key: String) -> AppResult<()> {
+    s.poke();
     s.store.move_page(&id, &sort_key)
 }
 
 #[tauri::command]
 async fn page_trash(s: Cmd<'_>, id: String) -> AppResult<()> {
+    s.poke();
     s.store.trash_page(&id)
 }
 
@@ -147,6 +175,7 @@ async fn page_save(s: Cmd<'_>, request: Request<'_>) -> AppResult<Value> {
     let base: i64 = header(&request, "x-base-version")?
         .parse()
         .map_err(|_| AppError::bad("bad version"))?;
+    s.poke();
     Ok(match s.store.save_page(id, base, raw_body(&request)?)? {
         SaveOutcome::Saved(v) => json!({ "ok": true, "version": v }),
         SaveOutcome::Conflict(v) => json!({ "ok": false, "conflictVersion": v }),
@@ -156,6 +185,7 @@ async fn page_save(s: Cmd<'_>, request: Request<'_>) -> AppResult<Value> {
 /// Body: the file. Headers: `x-kind` (pdf or image), `x-mime`, `x-page-count` for PDFs.
 #[tauri::command]
 async fn asset_add(s: Cmd<'_>, request: Request<'_>) -> AppResult<AssetRow> {
+    s.poke();
     let kind = header(&request, "x-kind")?;
     let mime = header(&request, "x-mime")?;
     let pages = header(&request, "x-page-count")
@@ -166,7 +196,18 @@ async fn asset_add(s: Cmd<'_>, request: Request<'_>) -> AppResult<AssetRow> {
 
 #[tauri::command]
 async fn asset_read(s: Cmd<'_>, id: String) -> AppResult<Response> {
-    Ok(Response::new(s.store.asset_bytes(&id)?))
+    if s.store.has_asset_file(&id) || !s.auth.account(&s.vault).signed_in {
+        return Ok(Response::new(s.store.asset_bytes(&id)?));
+    }
+    // A file that came with a synced page: download it from the account once.
+    use sync::remote::Remote;
+    let remote = sync::remote::Http {
+        http: s.ai.http.clone(),
+        token: s.auth.access_token(&s.vault).await?,
+    };
+    let (mime, bytes) = remote.asset(&id).await?;
+    s.store.put_downloaded_asset(&id, &mime, &bytes)?;
+    Ok(Response::new(bytes))
 }
 
 // ---------------------------------------------------------------------- conversations
@@ -178,11 +219,13 @@ async fn threads_list(s: Cmd<'_>, notebook_id: String) -> AppResult<Vec<ThreadIn
 
 #[tauri::command]
 async fn thread_create(s: Cmd<'_>, notebook_id: String, title: String) -> AppResult<ThreadInfo> {
+    s.poke();
     s.store.create_thread(&notebook_id, &title)
 }
 
 #[tauri::command]
 async fn thread_delete(s: Cmd<'_>, id: String) -> AppResult<()> {
+    s.poke();
     s.store.delete_thread(&id)
 }
 
@@ -197,6 +240,7 @@ async fn messages_append(
     thread_id: String,
     messages: Vec<StoredMessage>,
 ) -> AppResult<()> {
+    s.poke();
     s.store.append_messages(&thread_id, &messages)
 }
 
@@ -405,6 +449,105 @@ fn focus(app: &tauri::AppHandle) {
     }
 }
 
+// ---------------------------------------------------------------------- account and sync
+
+#[derive(serde::Serialize, Clone)]
+struct AccountStatus {
+    #[serde(flatten)]
+    account: sync::auth::Account,
+    #[serde(flatten)]
+    sync: SyncState,
+}
+
+fn account_status_of(s: &App) -> AccountStatus {
+    let account = s.auth.account(&s.vault);
+    let mut sync = s
+        .sync_state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if !account.signed_in {
+        sync.state = "off";
+    }
+    AccountStatus { account, sync }
+}
+
+#[tauri::command]
+fn account_status(s: Cmd<'_>) -> AccountStatus {
+    account_status_of(&s)
+}
+
+#[tauri::command]
+async fn account_login(app: tauri::AppHandle, s: Cmd<'_>) -> AppResult<AccountStatus> {
+    let result = s.auth.login(&s.vault, |url| open_browser(&app, url)).await;
+    focus(&app);
+    result?;
+    s.poke();
+    Ok(account_status_of(&s))
+}
+
+#[tauri::command]
+fn account_cancel_login(s: Cmd<'_>) {
+    s.auth.cancel_login();
+}
+
+#[tauri::command]
+async fn account_logout(s: Cmd<'_>) -> AppResult<AccountStatus> {
+    s.auth.logout(&s.vault).await?;
+    Ok(account_status_of(&s))
+}
+
+#[tauri::command]
+fn sync_now(s: Cmd<'_>) {
+    s.poke();
+}
+
+/// Syncs whenever woken, and every half minute, while signed in to the Writey account.
+async fn sync_loop(app: tauri::AppHandle) {
+    use tauri::Emitter;
+    loop {
+        let s = app.state::<App>();
+        let _ = tokio::time::timeout(sync::INTERVAL, s.sync_wake.notified()).await;
+        // Let a burst of local saves settle first.
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        if !s.auth.account(&s.vault).signed_in {
+            continue;
+        }
+        let set = |state: &'static str, error: Option<String>, done: bool| {
+            let mut st = s.sync_state.lock().unwrap_or_else(|e| e.into_inner());
+            st.state = state;
+            st.error = error;
+            if done {
+                st.last_synced_at = Some(store::now());
+            }
+        };
+        set("syncing", None, false);
+        let _ = app.emit("sync:status", account_status_of(&s));
+        let result = async {
+            let token = s.auth.access_token(&s.vault).await?;
+            let remote = sync::remote::Http {
+                http: s.ai.http.clone(),
+                token,
+            };
+            sync::sync_once(&s.store, &remote).await
+        }
+        .await;
+        match result {
+            Ok(report) => {
+                set("idle", None, true);
+                if report.lists_changed || !report.pages.is_empty() || report.pulled > 0 {
+                    let _ = app.emit("sync:changed", &report);
+                }
+            }
+            Err(e) => {
+                log::warn!("sync failed: {}", e.message);
+                set("error", Some(e.message), false);
+            }
+        }
+        let _ = app.emit("sync:status", account_status_of(&s));
+    }
+}
+
 // ---------------------------------------------------------------------- voice
 
 #[tauri::command]
@@ -558,7 +701,14 @@ pub fn run() {
                 ai,
                 voice,
                 openrouter: std::sync::Mutex::new(None),
+                auth: sync::auth::Auth::new(reqwest::Client::new()),
+                sync_state: std::sync::Mutex::new(SyncState {
+                    state: "idle",
+                    ..Default::default()
+                }),
+                sync_wake: tokio::sync::Notify::new(),
             });
+            tauri::async_runtime::spawn(sync_loop(app.handle().clone()));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -616,6 +766,11 @@ pub fn run() {
             voice_remove_models,
             app_info,
             opened_files,
+            account_status,
+            account_login,
+            account_cancel_login,
+            account_logout,
+            sync_now,
         ])
         .build(tauri::generate_context!())
         .expect("error while starting Writey")

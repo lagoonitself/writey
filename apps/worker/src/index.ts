@@ -163,7 +163,18 @@ app.post('/assets', async (c) => {
   const body = c.req.raw.body
   if (!body) return c.json<ApiError>({ error: 'empty_body' }, 400)
 
-  const id = crypto.randomUUID()
+  // The desktop app syncs files under the ids its pages already use (HANDOFF D57).
+  const given = c.req.header('X-Asset-Id')
+  if (given !== undefined && !isUuid(given)) return c.json<ApiError>({ error: 'bad_id' }, 400)
+  if (given) {
+    const [have] = await select<AssetRow>(
+      c.env,
+      c.get('token'),
+      `assets?id=eq.${given}&select=${ASSET_COLUMNS}`,
+    )
+    if (have) return c.json(have, 200)
+  }
+  const id = given ?? crypto.randomUUID()
   const key = `u/${c.get('user').userId}/assets/${id}`
   // R2 rejects the upload if the bytes don't match the declared SHA-256.
   await c.env.FILES.put(key, body, { httpMetadata: { contentType: type }, sha256 })

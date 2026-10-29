@@ -23,6 +23,9 @@ const NAME = new Set([
   'reity',
   'righti',
   'writi',
+  'ridey',
+  'ridy',
+  'rydey',
 ])
 const LEAD = new Set(['ok', 'okay', 'so', 'um', 'uh', 'oh', 'and'])
 

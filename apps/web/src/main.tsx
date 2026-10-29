@@ -9,14 +9,17 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
 import { installDesktopShell } from './lib/shell'
+import { runDesktopLogin } from './site/desktopLogin'
 import './styles.css'
 
 installDesktopShell()
 
 const root = document.getElementById('root')
 if (!root) throw new Error('#root missing')
-createRoot(root).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-)
+// A tab only passing a Google sign-in on to the desktop app shows nothing.
+if (!runDesktopLogin())
+  createRoot(root).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  )

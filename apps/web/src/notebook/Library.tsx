@@ -1,6 +1,8 @@
+import type { Session } from '@supabase/supabase-js'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import type { NotebookRow } from '@writey/shared'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { onSynced, syncNow } from '../lib/account'
 import { exportNotebooks, importNotebooks } from '../lib/archive'
 import {
   createNotebook,
@@ -9,11 +11,13 @@ import {
   restoreNotebook,
   trashNotebook,
 } from '../lib/db'
-import { call } from '../lib/native'
+import { call, isDesktop } from '../lib/native'
 import { navigate } from '../lib/router'
+import { supabase } from '../lib/web/supabase'
 import { SettingsDialog } from '../settings/SettingsDialog'
-import { useAiState } from '../settings/useAiState'
-import { EditIcon, GearIcon, PlusIcon, TrashIcon } from './icons'
+import { takeOpenSettingsFlag, useAiState } from '../settings/useAiState'
+import { exportEverything } from '../site/exporter'
+import { EditIcon, GearIcon, PlusIcon, SignOutIcon, TrashIcon } from './icons'
 
 /** Book-cloth colors: muted, so the pages stay the brightest thing on screen. */
 const COVERS = ['#2b3a67', '#7e2e2b', '#2f5a48', '#a8772a', '#4f3a63', '#2c2b29', '#3f5f7a']
@@ -32,12 +36,12 @@ function greeting(): string {
 
 type AppInfo = { version: string; user_name: string | null }
 
-export function Library() {
+export function Library({ session }: { session?: Session }) {
   const [notebooks, setNotebooks] = useState<NotebookRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [ai, setAi] = useAiState()
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(takeOpenSettingsFlag)
   const [editing, setEditing] = useState<string | null>(null)
   const [undo, setUndo] = useState<NotebookRow | null>(null)
   const [info, setInfo] = useState<AppInfo | null>(null)
@@ -53,13 +57,19 @@ export function Library() {
 
   useEffect(() => {
     void load()
+    if (!isDesktop()) return
     call<AppInfo>('app_info')
       .then(setInfo)
       .catch(() => {})
-    // A .writey file opened from Explorer or Finder lands here.
+    // A .writey file opened from Explorer or Finder, or notebooks synced from the account.
     const onImported = () => void load()
     window.addEventListener('writey-imported', onImported)
-    return () => window.removeEventListener('writey-imported', onImported)
+    const synced = onSynced((r) => r.lists_changed && void load())
+    void syncNow().catch(() => {})
+    return () => {
+      window.removeEventListener('writey-imported', onImported)
+      void synced.then((off) => off())
+    }
   }, [load])
 
   const create = async () => {
@@ -89,7 +99,7 @@ export function Library() {
     try {
       await trashNotebook(nb.id)
       setNotebooks((prev) => prev?.filter((n) => n.id !== nb.id) ?? null)
-      setUndo(nb)
+      if (isDesktop()) setUndo(nb)
       window.clearTimeout(undoTimer.current)
       undoTimer.current = window.setTimeout(() => setUndo(null), 8000)
     } catch (e) {
@@ -103,6 +113,19 @@ export function Library() {
     setUndo(null)
     await restoreNotebook(nb.id).catch((e: Error) => setError(e.message))
     void load()
+  }
+
+  const download = async () => {
+    try {
+      const blob = await exportEverything(() => {})
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `Writey notebooks ${new Date().toISOString().slice(0, 10)}.writey`
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
+    } catch (e) {
+      setError((e as Error).message)
+    }
   }
 
   const importFile = async () => {
@@ -130,7 +153,10 @@ export function Library() {
     await exportNotebooks(path).catch((e: Error) => setError(e.message))
   }
 
-  const name = info?.user_name ?? ''
+  const fullName = session?.user.user_metadata?.full_name as string | undefined
+  const name = session
+    ? (fullName?.split(' ')[0] ?? session.user.email?.split('@')[0] ?? '')
+    : (info?.user_name ?? '')
   const count = notebooks?.length ?? 0
 
   return (
@@ -146,7 +172,12 @@ export function Library() {
         >
           <GearIcon size={19} />
         </button>
-        <LibraryMenu onImport={importFile} onBackup={backup} version={info?.version} />
+        <LibraryMenu
+          onImport={isDesktop() ? importFile : undefined}
+          onBackup={isDesktop() ? backup : download}
+          version={info?.version}
+          session={session}
+        />
       </header>
 
       <section className="library-hero">
@@ -268,10 +299,12 @@ function LibraryMenu({
   onImport,
   onBackup,
   version,
+  session,
 }: {
-  onImport(): void
+  onImport?(): void
   onBackup(): void
   version?: string
+  session?: Session
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -312,12 +345,37 @@ function LibraryMenu({
       </button>
       {open && (
         <div className="menu" role="menu">
-          <button type="button" role="menuitem" onClick={pick(onImport)}>
-            Import notebooks…
-          </button>
+          {session && (
+            <div className="menu-who">
+              <strong>{session.user.user_metadata?.full_name ?? 'Signed in'}</strong>
+              <span>{session.user.email}</span>
+            </div>
+          )}
+          {onImport && (
+            <button type="button" role="menuitem" onClick={pick(onImport)}>
+              Import notebooks…
+            </button>
+          )}
           <button type="button" role="menuitem" onClick={pick(onBackup)}>
-            Back up all notebooks…
+            {onImport ? 'Back up all notebooks…' : 'Download all notebooks'}
           </button>
+          {!isDesktop() && (
+            <a
+              role="menuitem"
+              className="menu-link"
+              href="https://github.com/lagoonitself/writey/releases/latest"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Get the desktop app
+            </a>
+          )}
+          {session && (
+            <button type="button" role="menuitem" onClick={() => supabase.auth.signOut()}>
+              <SignOutIcon size={17} />
+              Sign out
+            </button>
+          )}
           {version && <div className="menu-who">Writey {version}</div>}
         </div>
       )}

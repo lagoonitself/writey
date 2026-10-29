@@ -1,5 +1,5 @@
 import { strToU8, zipSync } from 'fflate'
-import { supabase } from './supabase'
+import { supabase } from '../lib/web/supabase'
 
 // "Export my notebooks" for people who used the Writey website: everything they had, as one
 // .writey file the desktop app imports (same format as apps/desktop/src/store/archive.rs).

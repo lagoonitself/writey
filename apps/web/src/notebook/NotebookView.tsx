@@ -12,6 +12,7 @@ import {
   useState,
 } from 'react'
 import type { ChatControl } from '../chat/ChatPanel'
+import { onSynced, syncNow } from '../lib/account'
 import { uploadAsset } from '../lib/assets'
 import {
   A4,
@@ -148,6 +149,31 @@ export function NotebookView({ id }: { id: string }) {
       live = false
     }
   }, [id])
+
+  // ---- sync (desktop): pages and ink changed on another computer or the website ----
+  useEffect(() => {
+    if (!isDesktop()) return
+    const off = onSynced((r) => {
+      for (const pageId of r.pages) void handles.get(pageId)?.reloadIfClean()
+      if (r.lists_changed) {
+        listPages(id)
+          .then((rows) => setPages(rows))
+          .catch(() => {})
+      }
+      if (r.conflicts.length) {
+        void notify(
+          'This page was also changed on another device. Your version is kept as a new page at the end of the notebook.',
+          'info',
+        )
+      }
+    })
+    const onFocus = () => void syncNow().catch(() => {})
+    window.addEventListener('focus', onFocus)
+    return () => {
+      void off.then((f) => f())
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [id, handles])
 
   // ---- zoom, anchored on the middle of the viewport ----
   const setZoom = useCallback((next: number) => {

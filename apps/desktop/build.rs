@@ -4,7 +4,6 @@ fn main() {
         // The speech engine is downloaded with the voice models, so it's linked lazily and
         // loaded from there (voice/gpu.rs) only once voice is set up.
         println!("cargo:rustc-link-arg=/DELAYLOAD:sherpa-onnx-c-api.dll");
-        println!("cargo:rustc-link-arg=/DELAYLOAD:onnxruntime.dll");
         println!("cargo:rustc-link-lib=delayimp");
     }
     if os == "macos" {

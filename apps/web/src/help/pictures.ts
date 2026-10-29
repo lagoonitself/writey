@@ -1,4 +1,5 @@
-import { callForBytes } from '../lib/native'
+import { callForBytes, isDesktop } from '../lib/native'
+import { authedFetch } from '../lib/web/api'
 
 // Real diagrams from the web (HANDOFF D49): Writey searches Wikimedia Commons, whose
 // pictures are all free to reuse with credit, shows the model a numbered contact sheet,
@@ -118,6 +119,11 @@ export async function pictureBlob(url: string, signal: AbortSignal): Promise<Blo
     if (res.ok) return await res.blob()
   } catch (e) {
     if (signal.aborted) throw e
+  }
+  if (!isDesktop()) {
+    const res = await authedFetch(`/picture?url=${encodeURIComponent(url)}`, { signal })
+    if (!res.ok) throw new Error("couldn't download the picture")
+    return res.blob()
   }
   const bytes = await callForBytes('picture_fetch', { url }).catch(() => {
     throw new Error("couldn't download the picture")

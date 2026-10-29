@@ -144,6 +144,9 @@ export class PageController {
       insertImage: (asset, w, h) => this.insertImage(asset, w, h),
       flush: () => this.flush(),
       isDirty: () => this.isDirty(),
+      reloadIfClean: async () => {
+        if (this.loaded && !this.isDirty() && !this.saving) await this.load()
+      },
       isLoaded: () => this.loaded,
       snapshot: (withGhost) => this.snapshot(withGhost),
       ghostStart: (actions) => this.ghostStart(actions),

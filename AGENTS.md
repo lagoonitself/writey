@@ -12,7 +12,7 @@ If these disagree, `HANDOFF.md` wins (it's the newest record). Fix the other fil
 
 These are decided. Don't propose alternatives unless the owner asks:
 
-- **Writey is a desktop app (HANDOFF D57):** Tauri 2 + Rust for Windows and Apple Silicon Macs. The React UI and the TypeScript packages run in the web view; Rust owns storage (SQLite on disk), keys (OS keychain), AI calls, ChatGPT/OpenRouter sign-in and voice. No Supabase, no Python Helper. The website only offers the download and the old web notebooks' export.
+- **Writey runs in two places with one UI (HANDOFF D57, D58):** the website (Supabase + Worker + R2, Google sign-in, ChatGPT through the Python Writey Helper) and a Tauri 2 desktop app for Windows and Apple Silicon Macs (Rust: SQLite on disk, OS keychain, AI calls, ChatGPT/OpenRouter sign-in, voice). The desktop app **syncs with the website's account**. UI code reaches a backend only through `apps/web/src/lib/*` facades (`lib/desktop/*` or `lib/web/*`, chosen by `isDesktop()`).
 - **No Gemini Live, no cloud voice.** STT (Parakeet TDT 0.6B v2), TTS (Kokoro 82M) and Silero VAD run locally in Rust via sherpa-onnx, **on the GPU** (CUDA on NVIDIA, CoreML on Apple Silicon) with automatic CPU fallback.
 - English only for speech.
 - Thinking providers are **only** OpenRouter, OpenCode Zen and ChatGPT (Sign in with ChatGPT, done by the desktop app). "OpenCode" means OpenCode Zen.
@@ -60,7 +60,7 @@ pnpm test         # vitest
 pnpm run deploy   # website; NOT `pnpm deploy` (pnpm built-in)
 ```
 
-Run `pnpm lint && pnpm typecheck && pnpm test` before pushing, plus `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` in `apps/desktop` if you touched Rust (where sherpa-onnx's GitHub download is blocked, use `DOCS_RS=1 cargo clippy` and `cargo test --no-default-features`). CI runs all of these; the `Desktop` workflow builds the Windows and macOS installers, runs a real-model speech round trip, and publishes the installers to the GitHub release `v<version>` on every push to `main`.
+Run `pnpm lint && pnpm typecheck && pnpm test` before pushing, plus `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` in `apps/desktop` if you touched Rust, and `uv run --directory apps/helper pytest` if you touched the Helper (where sherpa-onnx's GitHub download is blocked, use `DOCS_RS=1 cargo clippy` and `cargo test --no-default-features`). CI runs all of these; the `Desktop` workflow builds the Windows and macOS installers, runs a real-model speech round trip, and publishes the installers to the GitHub release `v<version>` on every push to `main`.
 
 ## Releasing the app
 

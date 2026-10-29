@@ -3277,3 +3277,10 @@ button.write-on-page:hover:not(:disabled) {
   font: 400 24px var(--display);
   margin: 0 0 6px;
 }
+.menu .menu-link {
+  display: block;
+  padding: 8px 12px;
+  color: inherit;
+  text-decoration: none;
+  font: inherit;
+}

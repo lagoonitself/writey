@@ -28,7 +28,7 @@ jobs:
         include:
           - os: windows-latest
             name: windows
-          - os: macos-14
+          - os: macos-latest
             name: macos
     runs-on: ${{ matrix.os }}
     steps:
@@ -86,9 +86,9 @@ jobs:
             provider: cpu
           - os: windows-latest
             provider: cpu
-          - os: macos-14
+          - os: macos-latest
             provider: cpu
-          - os: macos-14
+          - os: macos-latest
             provider: coreml
     runs-on: ${{ matrix.os }}
     env:

@@ -1,0 +1,29 @@
+[project]
+name = "writey-helper"
+version = "0.5.0"
+description = "Local companion for Writey: Sign in with ChatGPT."
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.162.0",
+    "httpx>=0.28.1",
+    "pyjwt[crypto]>=2.15.1",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+writey-helper = "writey_helper.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]

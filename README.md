@@ -1,10 +1,10 @@
 # Writey
 
-A handwritten notebook for math and physics with an AI you talk to, for **Windows and Apple Silicon Macs**.
+A handwritten notebook for math and physics with an AI you talk to, **on the web and for Windows and Apple Silicon Macs**, kept in sync.
 Say **"Hey, what's next?"** and it continues your work in handwriting on the page.
 Say **"Hey, why does this work?"** and it sketches on the page and explains beside it.
 
-Open source (MIT). Bring your own AI: your ChatGPT plan, OpenRouter or OpenCode Zen. Notebooks stay on your computer; speech runs locally on your GPU.
+Open source (MIT). Bring your own AI: your ChatGPT plan, OpenRouter or OpenCode Zen. Use it at [writey.writey.workers.dev](https://writey.writey.workers.dev), or get the app (offline notebooks, voice on your GPU) and sign in with the same Google account to sync.
 
 **Download:** [Windows](https://github.com/lagoonitself/writey/releases/latest/download/Writey-Windows-Setup.exe) · [Mac (Apple Silicon)](https://github.com/lagoonitself/writey/releases/latest/download/Writey-macOS-AppleSilicon.dmg)
 
@@ -15,8 +15,9 @@ See [HANDOFF.md](HANDOFF.md) for decisions and current state, and [docs/ARCHITEC
 | Path                  | What                                                                               |
 | --------------------- | ---------------------------------------------------------------------------------- |
 | `apps/desktop`        | The app (Tauri 2, Rust): storage, keys, AI calls, sign-ins, local voice on the GPU |
-| `apps/web`            | The UI (React + Vite) the app shows; on the website, the download page             |
-| `apps/worker`         | Cloudflare Worker: hosts the website and the old web notebooks' export             |
+| `apps/web`            | The UI (React + Vite), shared by the website and the app                           |
+| `apps/worker`         | Cloudflare Worker: the website's API (also used by desktop sync) + hosting         |
+| `apps/helper`         | Writey Helper (Python): Sign in with ChatGPT for the website                       |
 | `packages/ink-engine` | Page model, hit-testing, undo, ink rendering                                       |
 | `packages/ai-core`    | Prompts, intent rules, focus region, streams                                       |
 | `packages/inkscript`  | Writey's handwriting: LaTeX layout, glyphs, diagrams                               |
@@ -29,6 +30,8 @@ Requires Node 24, pnpm 10 and Rust (stable). On Linux also the
 
 ```bash
 pnpm install
+cp apps/web/.env.example apps/web/.env.local   # Supabase URL + publishable key (website)
+pnpm dev          # the website: UI on :5173, Worker on :8787
 pnpm app          # the desktop app, with the UI hot-reloading from :5173
 pnpm app:build    # installers in apps/desktop/target/release/bundle
 ```

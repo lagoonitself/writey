@@ -200,6 +200,28 @@ describe('assets', () => {
     expect(r2.store.get(`u/user-1/assets/${row.id}`)?.contentType).toBe('image/png')
   })
 
+  it('keeps an id the desktop app chose', async () => {
+    const id = '22222222-2222-4222-8222-222222222222'
+    restHandler = (c) =>
+      c.method === 'GET' ? json([]) : json([{ ...(c.body as object), created_at: 'now' }], 201)
+    const res = await upload('image', 'image/png', { 'X-Asset-Id': id })
+    expect(res.status).toBe(201)
+    expect(((await res.json()) as { id: string }).id).toBe(id)
+    expect(r2.store.has(`u/user-1/assets/${id}`)).toBe(true)
+  })
+
+  it('returns the existing row for an id already uploaded', async () => {
+    const id = '22222222-2222-4222-8222-222222222222'
+    restHandler = () => json([{ id, kind: 'image', bytes: 2 }])
+    const res = await upload('image', 'image/png', { 'X-Asset-Id': id })
+    expect(res.status).toBe(200)
+    expect(r2.store.size).toBe(0)
+  })
+
+  it('refuses a bad id', async () => {
+    expect((await upload('image', 'image/png', { 'X-Asset-Id': 'x' })).status).toBe(400)
+  })
+
   it('cleans up the blob if the row insert fails', async () => {
     restHandler = () => json({ message: 'nope' }, 400)
     const res = await upload('image', 'image/png')

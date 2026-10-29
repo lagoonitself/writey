@@ -12,14 +12,16 @@ import {
 } from '../lib/ai'
 import { chatgptWelcomed } from '../lib/chatgpt'
 import { ask } from '../lib/dialogs'
-import { NativeError } from '../lib/native'
+import { isDesktop, NativeError } from '../lib/native'
+import { chatgptUsed } from '../lib/web/helper'
 import { ChevronIcon, CloseIcon } from '../notebook/icons'
 import { VOICE_ENABLED } from '../voice/useVoice'
 import { ChatgptPanel, WelcomeNotice } from './ChatgptCard'
+import { ChatgptWebPanel } from './ChatgptWebCard'
 import { DataSection } from './DataSection'
 import { ModelPicker } from './ModelPicker'
 import { ProviderMark } from './ProviderMark'
-import { type AiState, usable } from './useAiState'
+import { type AiState, chatgptReturn, usable } from './useAiState'
 import { VoiceSection } from './VoiceSection'
 
 export type SettingsTab = 'ai' | 'voice' | 'data' | 'privacy'
@@ -34,7 +36,11 @@ type Props = {
 const TABS: { id: SettingsTab; label: string; sub: string }[] = [
   { id: 'ai', label: 'AI', sub: 'Account and model' },
   ...(VOICE_ENABLED ? [{ id: 'voice' as const, label: 'Voice', sub: 'Talk to Writey' }] : []),
-  { id: 'data', label: 'Notebooks', sub: 'Backup and import' },
+  {
+    id: 'data',
+    label: 'Notebooks',
+    sub: isDesktop() ? 'Sync and backups' : 'Desktop app and backups',
+  },
   { id: 'privacy', label: 'Privacy', sub: VOICE_ENABLED ? 'Keys and audio' : 'Keys and images' },
 ]
 
@@ -59,10 +65,10 @@ const shortDate = (iso: string) =>
 export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: Props) {
   const ref = useRef<HTMLDialogElement>(null)
   const [tab, setTab] = useState<SettingsTab>(
-    firstTab === 'voice' && !VOICE_ENABLED ? 'ai' : firstTab,
+    chatgptReturn || (firstTab === 'voice' && !VOICE_ENABLED) ? 'ai' : firstTab,
   )
   const [open, setOpen] = useState<AiProvider | null>(() =>
-    usable(ai, ai.settings.provider) ? null : 'chatgpt',
+    chatgptReturn ? 'chatgpt' : usable(ai, ai.settings.provider) ? null : 'chatgpt',
   )
   const [saved, setSaved] = useState(false)
 
@@ -147,7 +153,15 @@ export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: 
                     >
                       {p === 'chatgpt' ? (
                         <>
-                          <ChatgptPanel ai={ai} onChange={onChange} />
+                          {isDesktop() ? (
+                            <ChatgptPanel ai={ai} onChange={onChange} />
+                          ) : (
+                            <ChatgptWebPanel
+                              ai={ai}
+                              onChange={onChange}
+                              onInstead={() => setOpen('openrouter')}
+                            />
+                          )}
                           {usable(ai, p) && ai.settings.provider !== p && (
                             <button type="button" className="primary" onClick={() => use(p)}>
                               Use ChatGPT for Writey
@@ -170,15 +184,30 @@ export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: 
             <section className="settings-section">
               <h3 className="settings-title">Privacy</h3>
               <ul className="privacy-list">
-                <li>
-                  <strong>Your notebooks</strong> stay on this computer. Nothing is uploaded except
-                  what you ask the AI about.
-                </li>
-                <li>
-                  <strong>API keys and your ChatGPT sign-in</strong> are encrypted on this computer,
-                  with the key in your system’s keychain, and only ever sent to that provider. You
-                  can remove them any time under AI.
-                </li>
+                {isDesktop() ? (
+                  <>
+                    <li>
+                      <strong>Your notebooks</strong> are saved on this computer, and in your Writey
+                      account too when sync is on (Settings → Notebooks).
+                    </li>
+                    <li>
+                      <strong>API keys and your ChatGPT sign-in</strong> are encrypted on this
+                      computer, with the key in your system’s keychain, and only ever sent to that
+                      provider. You can remove them any time under AI.
+                    </li>
+                  </>
+                ) : (
+                  <>
+                    <li>
+                      <strong>API keys</strong> are encrypted on Writey’s server and only ever sent
+                      to that provider. You can remove them any time under AI.
+                    </li>
+                    <li>
+                      <strong>Your ChatGPT sign-in</strong> never leaves this computer: Writey
+                      Helper keeps it.
+                    </li>
+                  </>
+                )}
                 {VOICE_ENABLED && (
                   <li>
                     <strong>Your voice</strong> is turned into text on this computer. No audio is
@@ -258,8 +287,14 @@ function NowUsing({ ai, onConnect }: { ai: AiState; onConnect(): void }) {
 
 function statusOf(ai: AiState, provider: AiProvider): { text: string; ok: boolean } {
   if (provider === 'chatgpt') {
-    if (ai.chatgpt?.signed_in) {
+    if (ai.chatgpt?.signed_in && (isDesktop() || ai.helper === 'ok')) {
       return { text: ai.chatgpt.email ?? 'Signed in', ok: Boolean(ai.chatgpt.plan_usage) }
+    }
+    if (!isDesktop() && ai.helper === 'outdated') {
+      return { text: 'Writey Helper needs an update', ok: false }
+    }
+    if (!isDesktop() && ai.helper === 'offline' && chatgptUsed()) {
+      return { text: 'Writey Helper isn’t running', ok: false }
     }
     return { text: 'Use your Plus or Pro plan', ok: false }
   }

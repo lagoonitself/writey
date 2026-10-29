@@ -1,31 +1,34 @@
-import { call, streamResponse } from './native'
+import * as desktop from './desktop/chatgpt'
+import { isDesktop, NativeError } from './native'
+import * as web from './web/helper'
 
-// Sign in with ChatGPT, done by the desktop app itself (apps/desktop/src/ai/chatgpt.rs).
-// The tokens stay in Rust; the page only learns the email and whether plan usage is on.
+// Sign in with ChatGPT. The desktop app does it itself; the website needs Writey Helper on
+// the computer (OpenAI only allows a 127.0.0.1 callback; HANDOFF D15, D26).
 
-export type ChatgptStatus = {
-  signed_in: boolean
-  email: string | null
-  /** The plan-usage scope was granted, so requests can use the ChatGPT plan. */
-  plan_usage: boolean
-  /** First sign-in: show the "You're using your ChatGPT plan" notice once. */
-  welcome: boolean
-  login_pending: boolean
-  error: string | null
+export type { ChatgptStatus } from './desktop/chatgpt'
+
+const helperError = (e: unknown) =>
+  e instanceof web.HelperError ? new NativeError(e.code, e.code) : e
+
+export const chatgptStatus = () => (isDesktop() ? desktop.chatgptStatus() : web.chatgptStatus())
+
+export const chatgptWelcomed = async (): Promise<void> => {
+  if (isDesktop()) await desktop.chatgptWelcomed()
+  else await web.chatgptWelcomed()
 }
 
-export const chatgptStatus = () => call<ChatgptStatus>('chatgpt_status')
+export const chatgptLogout = () => (isDesktop() ? desktop.chatgptLogout() : web.chatgptLogout())
 
-/** Opens OpenAI's sign-in in the browser and resolves once it comes back (or is cancelled). */
-export const chatgptLogin = (switchAccount = false) =>
-  call<ChatgptStatus>('chatgpt_login', { switchAccount })
-
-export const chatgptCancelLogin = () => call<void>('chatgpt_cancel_login')
-
-export const chatgptWelcomed = () => call<void>('chatgpt_welcomed')
-
-export const chatgptLogout = () => call<{ revoked: boolean | null }>('chatgpt_logout')
+/** Desktop only: opens the sign-in in the browser and resolves when it's done. */
+export const chatgptLogin = desktop.chatgptLogin
+export const chatgptCancelLogin = desktop.chatgptCancelLogin
 
 /** Streams a Responses API call with the ChatGPT plan. The caller reads the response. */
-export const chatgptResponses = (body: string, signal: AbortSignal) =>
-  streamResponse('ai_chatgpt', { body }, signal)
+export async function chatgptResponses(body: string, signal: AbortSignal): Promise<Response> {
+  if (isDesktop()) return desktop.chatgptResponses(body, signal)
+  try {
+    return await web.chatgptResponses(body, signal)
+  } catch (e) {
+    throw helperError(e)
+  }
+}

@@ -260,8 +260,8 @@ pub fn import_from<R: Read + Seek>(
         for p in &nb.pages {
             let content = p.content.as_ref().and_then(|n| contents.get(n));
             tx.execute(
-                "insert into pages (id, notebook_id, sort_key, width, height, background, version, content, updated_at)
-                 values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "insert into pages (id, notebook_id, sort_key, width, height, background, version, content, updated_at, content_dirty)
+                 values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8 is not null)",
                 params![
                     new_id(),
                     id,

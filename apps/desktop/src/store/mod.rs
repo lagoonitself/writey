@@ -2,6 +2,7 @@
 //! imported PDFs and images. Replaces Supabase + R2 from the web version (HANDOFF D57).
 
 pub mod archive;
+pub mod sync;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -178,6 +179,7 @@ impl Store {
             "pragma journal_mode = wal; pragma synchronous = normal; pragma foreign_keys = on;",
         )?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             assets,
@@ -254,7 +256,7 @@ impl Store {
             return Err(AppError::bad("A notebook needs a name."));
         }
         let n = self.db().execute(
-            "update notebooks set title = ?2, updated_at = ?3 where id = ?1 and deleted_at is null",
+            "update notebooks set title = ?2, updated_at = ?3, dirty = 1 where id = ?1 and deleted_at is null",
             params![id, title.chars().take(200).collect::<String>(), now()],
         )?;
         if n == 0 {
@@ -265,8 +267,8 @@ impl Store {
 
     pub fn move_notebook(&self, id: &str, sort_key: &str) -> AppResult<()> {
         self.db().execute(
-            "update notebooks set sort_key = ?2 where id = ?1",
-            params![id, sort_key],
+            "update notebooks set sort_key = ?2, updated_at = ?3, dirty = 1 where id = ?1",
+            params![id, sort_key, now()],
         )?;
         Ok(())
     }
@@ -274,7 +276,7 @@ impl Store {
     /// Notebooks go to the trash first; `purge_trash` removes them for good.
     pub fn trash_notebook(&self, id: &str) -> AppResult<()> {
         self.db().execute(
-            "update notebooks set deleted_at = ?2 where id = ?1",
+            "update notebooks set deleted_at = ?2, updated_at = ?2, dirty = 1 where id = ?1",
             params![id, now()],
         )?;
         Ok(())
@@ -282,8 +284,8 @@ impl Store {
 
     pub fn restore_notebook(&self, id: &str) -> AppResult<()> {
         self.db().execute(
-            "update notebooks set deleted_at = null where id = ?1",
-            params![id],
+            "update notebooks set deleted_at = null, updated_at = ?2, dirty = 1 where id = ?1",
+            params![id, now()],
         )?;
         Ok(())
     }
@@ -295,11 +297,11 @@ impl Store {
         let n = {
             let db = self.db();
             let n = db.execute(
-                "delete from notebooks where deleted_at is not null and deleted_at < ?1",
+                "delete from notebooks where deleted_at is not null and deleted_at < ?1 and (dirty = 0 or on_server = 0)",
                 [&cutoff],
             )?;
             db.execute(
-                "delete from pages where deleted_at is not null and deleted_at < ?1",
+                "delete from pages where deleted_at is not null and deleted_at < ?1 and (dirty = 0 or on_server = 0)",
                 [&cutoff],
             )?;
             n
@@ -400,15 +402,15 @@ impl Store {
 
     pub fn move_page(&self, id: &str, sort_key: &str) -> AppResult<()> {
         self.db().execute(
-            "update pages set sort_key = ?2 where id = ?1",
-            params![id, sort_key],
+            "update pages set sort_key = ?2, updated_at = ?3, dirty = 1 where id = ?1",
+            params![id, sort_key, now()],
         )?;
         Ok(())
     }
 
     pub fn trash_page(&self, id: &str) -> AppResult<()> {
         self.db().execute(
-            "update pages set deleted_at = ?2 where id = ?1",
+            "update pages set deleted_at = ?2, updated_at = ?2, dirty = 1 where id = ?1",
             params![id, now()],
         )?;
         Ok(())
@@ -451,7 +453,7 @@ impl Store {
             return Ok(SaveOutcome::Conflict(version));
         }
         tx.execute(
-            "update pages set content = ?2, version = ?3, updated_at = ?4 where id = ?1",
+            "update pages set content = ?2, version = ?3, updated_at = ?4, content_dirty = 1 where id = ?1",
             params![id, content, base + 1, at],
         )?;
         tx.execute(
@@ -613,8 +615,15 @@ impl Store {
     }
 
     pub fn delete_thread(&self, id: &str) -> AppResult<()> {
-        self.db()
-            .execute("delete from ai_threads where id = ?1", [id])?;
+        let mut db = self.db();
+        let tx = db.transaction()?;
+        // The server forgets it on the next sync.
+        tx.execute(
+            "insert or ignore into deleted_threads (id) select id from ai_threads where id = ?1 and on_server = 1",
+            [id],
+        )?;
+        tx.execute("delete from ai_threads where id = ?1", [id])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -688,7 +697,7 @@ impl Store {
             )?;
         }
         tx.execute(
-            "update ai_threads set updated_at = ?2 where id = ?1",
+            "update ai_threads set updated_at = ?2, dirty = 1 where id = ?1",
             params![thread_id, at],
         )?;
         tx.commit()?;
@@ -718,6 +727,31 @@ impl Store {
     pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.db()
     }
+}
+
+/// Schema changes after the first release, by `user_version`.
+fn migrate(conn: &Connection) -> AppResult<()> {
+    let version: i64 = conn.query_row("pragma user_version", [], |r| r.get(0))?;
+    if version < 1 {
+        // Sync with the Writey account (HANDOFF D57): what still needs uploading, and what
+        // the server already has. Everything made before sync existed is new to the server.
+        conn.execute_batch(
+            "alter table notebooks add column dirty integer not null default 1;
+             alter table notebooks add column on_server integer not null default 0;
+             alter table pages add column dirty integer not null default 1;
+             alter table pages add column on_server integer not null default 0;
+             alter table pages add column content_dirty integer not null default 0;
+             alter table pages add column remote_version integer;
+             alter table assets add column uploaded integer not null default 0;
+             alter table ai_threads add column dirty integer not null default 1;
+             alter table ai_threads add column on_server integer not null default 0;
+             alter table ai_messages add column synced integer not null default 0;
+             create table if not exists deleted_threads (id text primary key);
+             update pages set content_dirty = 1 where content is not null;
+             pragma user_version = 1;",
+        )?;
+    }
+    Ok(())
 }
 
 fn notebook_row(r: &rusqlite::Row) -> rusqlite::Result<NotebookRow> {

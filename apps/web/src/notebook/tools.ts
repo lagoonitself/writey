@@ -63,6 +63,8 @@ export type PageHandle = {
   /** Saves now if there are unsaved edits. */
   flush(): Promise<void>
   isDirty(): boolean
+  /** Shows ink that changed elsewhere (sync), unless there are unsaved edits here. */
+  reloadIfClean(): Promise<void>
   /** True once the page's ink has loaded and it can take new ink. */
   isLoaded(): boolean
   /** What the help engine needs to see this page; `withGhost` includes the AI preview. */
