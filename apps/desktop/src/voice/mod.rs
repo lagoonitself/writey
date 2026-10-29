@@ -159,7 +159,7 @@ impl Voice {
     /// Marks packs already on disk as downloaded.
     fn refresh_disk_state(&self) {
         let accel = lock(&self.inner).accel;
-        let stt = self.have(Self::stt_pack(accel));
+        let stt = self.have(Self::stt_pack(accel)) || self.have(&models::STT_GPU);
         let tts = self.have(&models::TTS);
         let eng = self.have(Self::engine_pack(accel));
         let mut i = lock(&self.inner);
@@ -281,7 +281,13 @@ impl Voice {
         }
         let accel = self.ensure_engine().await?;
         if want_stt && !matches!(lock(&self.inner).stt, ModelState::Ready) {
-            let pack = Self::stt_pack(accel);
+            // The GPU fell back: the full model already here runs on the CPU too.
+            let pack =
+                if !accel.is_gpu() && self.have(&models::STT_GPU) && !self.have(&models::STT_CPU) {
+                    &models::STT_GPU
+                } else {
+                    Self::stt_pack(accel)
+                };
             self.ensure_pack(pack, |i, s| i.stt = s).await?;
             self.load(true, pack, accel).await;
         }

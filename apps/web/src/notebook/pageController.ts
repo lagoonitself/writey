@@ -21,6 +21,7 @@ import { PICTURE_MS, type Written } from '@writey/inkscript'
 import type { AssetRow, PageRow } from '@writey/shared'
 import { loadImage } from '../lib/assets'
 import { ask } from '../lib/dialogs'
+import { NativeError } from '../lib/native'
 import { backupPage, clearBackup, loadPage, savePage } from '../lib/pageStore'
 import { renderPdfPage } from '../lib/pdf'
 import {
@@ -510,6 +511,12 @@ export class PageController {
         this.cb.onSaveState('saved')
       }
     } catch (err) {
+      // A deleted page has nothing left to save to.
+      if (err instanceof NativeError && err.code === 'not_found') {
+        void clearBackup(this.page.id).catch(() => {})
+        this.savedRevision = revision
+        return
+      }
       console.error('page save failed', err)
       this.cb.onSaveState('error')
       this.scheduleSave(RETRY_DELAY_MS)

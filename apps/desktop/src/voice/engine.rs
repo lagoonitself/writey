@@ -403,11 +403,14 @@ fn listen(
     // A segment that began before push-to-talk was pressed is dropped (its words go to PTT).
     let mut skip_segment = false;
     let mut last_audio = Instant::now();
+    // No sound at all at first can be macOS asking for mic permission; give it time.
+    let mut heard_any = false;
     while !stop.load(Ordering::SeqCst) {
         let chunk = match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(c) => c,
             Err(RecvTimeoutError::Timeout) => {
-                if last_audio.elapsed() > Duration::from_secs(5) {
+                let limit = Duration::from_secs(if heard_any { 5 } else { 120 });
+                if last_audio.elapsed() > limit {
                     emit_state(
                         &app,
                         "error",
@@ -420,6 +423,7 @@ fn listen(
             Err(RecvTimeoutError::Disconnected) => break,
         };
         last_audio = Instant::now();
+        heard_any = true;
         let audio = rs.process(&chunk);
         let (ptt_on, release) = {
             let mut p = lock(&ptt);

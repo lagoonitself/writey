@@ -1,3 +1,4 @@
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { NotebookRow, PageRow } from '@writey/shared'
 import { generateKeyBetween } from 'fractional-indexing'
 import {
@@ -22,6 +23,7 @@ import {
   trashPage,
 } from '../lib/db'
 import { ask, notify } from '../lib/dialogs'
+import { isDesktop } from '../lib/native'
 import { pdfPageSizes } from '../lib/pdf'
 import { navigate } from '../lib/router'
 import { SettingsDialog, type SettingsTab } from '../settings/SettingsDialog'
@@ -222,10 +224,17 @@ export function NotebookView({ id }: { id: string }) {
       }
     }
     document.addEventListener('visibilitychange', onHide)
-    window.addEventListener('beforeunload', onUnload)
+    // The app window saves before it closes; a browser tab asks first.
+    const closing = isDesktop()
+      ? getCurrentWindow().onCloseRequested(async () => {
+          await flushAll()
+        })
+      : null
+    if (!closing) window.addEventListener('beforeunload', onUnload)
     return () => {
       document.removeEventListener('visibilitychange', onHide)
       window.removeEventListener('beforeunload', onUnload)
+      void closing?.then((off) => off())
     }
   }, [flushAll, handles])
 
