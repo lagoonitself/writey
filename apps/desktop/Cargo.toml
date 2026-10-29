@@ -1,0 +1,80 @@
+[package]
+name = "writey"
+version = "1.0.0"
+description = "Writey: a notebook for your pen that writes back"
+authors = ["Writey contributors"]
+license = "MIT"
+repository = "https://github.com/lagoonitself/writey"
+edition = "2021"
+rust-version = "1.85"
+
+[lib]
+name = "writey_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "writey"
+path = "src/main.rs"
+
+[features]
+default = ["voice"]
+# Local speech (Silero VAD, Parakeet STT, Kokoro TTS via sherpa-onnx; mic and speaker via cpal).
+# Off for quick checks on machines that can't download sherpa-onnx's native libraries.
+voice = ["dep:sherpa-onnx", "dep:cpal"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-log = "2"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip", "http2", "charset"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+aes-gcm = "0.10"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+url = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+bzip2 = "0.5"
+flate2 = "1"
+jsonwebtoken = "9"
+hex = "0.4"
+cpal = { version = "0.16", optional = true }
+
+# Windows and macOS link sherpa-onnx's shared libraries: macOS ships them in the app (their
+# ONNX Runtime has CoreML for the Apple GPU), Windows downloads them with the voice models
+# (the CUDA build for NVIDIA GPUs) and links them lazily. Elsewhere (Linux, CI checks) static.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+sherpa-onnx = { version = "2.0.1", default-features = false, features = ["shared"], optional = true }
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+sherpa-onnx = { version = "2.0.1", default-features = false, features = ["static"], optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_LibraryLoader", "Win32_Foundation"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true
+panic = "unwind"

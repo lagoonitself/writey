@@ -4,7 +4,7 @@ The single place to learn **what Writey is, what was decided and why, where it s
 Read this first, then `docs/ARCHITECTURE.md` for the technical design.
 Update this file whenever a decision changes or a phase ships.
 
-Last updated: 2026-10-28 (voice off; the Helper is ChatGPT-only)
+Last updated: 2026-10-29 (Writey is a desktop app: Tauri 2 + Rust, local voice on the GPU)
 
 ---
 
@@ -88,6 +88,8 @@ The owner wants **both** outputs (chat and handwriting). Writey picks one from w
 | D55 | Dedicated drawing tools            | Owner, 2026-10-27: real ChatGPT answers drew the microscope and a concave mirror's rays by hand from lines and arcs, placed a microscope as two separate lenses, and a NAND full adder never drew ("no room", even on a blank page). Stored answers showed the model never used the optics kinds hidden inside `draw_diagram`'s free-form items. Now **`draw_ray_diagram`** (elements: convex/concave lens or mirror with x and f, object or "infinity", or ray rules) and **`draw_logic_circuit`** (inputs, gates, outputs) are tools of their own with full schemas; Writey turns them into the optics/logic items. `draw_diagram` refuses lens, curved-mirror and instrument drawings made of lines, arrows and arcs (pointing at `draw_ray_diagram`, or `find_picture` for the instrument itself), and gate boxes now point at `draw_logic_circuit`. Several lens/mirror items with one object are traced as one chain, and an instrument's object at the objective's focus moves just beyond it. **Diagrams and tables always fit a page:** they shrink to the page's width and height instead of failing (a circuit with its own x/y range at large handwriting came out wider than the page), and a block that doesn't fit the student's own page turns to a new page even before Writey wrote anything.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | D56 | Voice off, Helper for ChatGPT only | Owner, 2026-10-28: no Python running in the background for now; Writey should just work with an API key or ChatGPT. **Voice is switched off** (`VOICE_ENABLED = false` in `apps/web/src/voice/useVoice.ts`): no mic button, no "?" voice guide, no Voice settings, no spoken replies. The browser voice code (VAD, "Hey …" wake word, push-to-talk, commands) stays so it can come back. **Helper 0.5.0 (API 5) is ChatGPT sign-in only:** speech models, `/stt`, `/tts`, `/voice/*`, onnxruntime/CUDA and the GPU setup are gone, and on start it deletes the models older Helpers downloaded. ChatGPT still needs the Helper: OpenAI's open-source sign-in only accepts a `127.0.0.1` callback, the website flow is a partner-only trial, and "paste a code" web logins reuse Codex's device-code login unofficially (checked again 2026-10-28). OpenRouter and OpenCode Zen need nothing installed. Settings → ChatGPT now walks someone without the Helper through it: why it's needed, download (Chrome "Keep", SmartScreen "Run anyway") or the uv commands on macOS/Linux, Chrome's local-network "Allow", then Continue with ChatGPT; plus "Use an OpenRouter key instead".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
+| D57 | Desktop app in Rust (Tauri 2) | Owner, 2026-10-29: "rewrite it as a desktop app in Rust (Tauri v2) for Windows and Apple Silicon Macs, with local speech-to-text and text-to-speech, on the GPU, not the CPU." **Writey is now a Tauri 2 app** (`apps/desktop`). The UI and the TypeScript packages (ink engine, InkScript, ai-core: proven, ~15k lines) run in the system web view (WebView2 / WKWebView); **Rust does everything around them**: notebooks in a local SQLite file plus a folder of PDFs and pictures (owner's pick: local files, no login), API keys and the ChatGPT sign-in in an AES-256-GCM file whose key lives in the OS keychain, model calls (the UI builds the body, Rust adds the key and streams the reply back over a Tauri channel, so keys never reach the page), **Sign in with ChatGPT ported from the Python Helper** (same SIWC flow; the Helper is gone, nothing to install or keep running), "Connect OpenRouter" through a localhost callback, Wikimedia picture downloads, `.writey` backup/import files (also opened from Explorer/Finder), trash with undo (purged after 30 days). **Voice is back, in Rust** via the official `sherpa-onnx` crate: the mic (cpal) → Silero VAD → Parakeet TDT 0.6B v2; Kokoro v1.0 (voice af_heart, 12 English voices, US lexicon; Writey turns numbers, symbols and unknown words into speakable words because Kokoro skips words it doesn't know). **GPU first:** CUDA on NVIDIA (Windows downloads sherpa-onnx's CUDA build plus NVIDIA's CUDA 12/cuDNN 9 runtime from their PyPI wheels, ~1.9 GB, checksums pinned; the app links the engine lazily with `/DELAYLOAD` and loads it from there), CoreML on Apple Silicon (shipped in the app); full-precision Parakeet on a GPU (8-bit layers have no GPU kernels), 8-bit on a CPU. A GPU is first tried in a child process (a broken driver can't crash the app); any failure falls back to the CPU and Settings says why; "Use the CPU instead" is a switch. Without the browser's echo canceller, a line heard over Writey's own voice is dropped when it's mostly words Writey just said, so "stop" still interrupts. The website became a download page plus a one-time "Export my notebooks" for web users (same `.writey` format). |
+
 ### Superseded
 
 - ~~Gemini Live as voice tier 1~~ → dropped (D13).
@@ -115,15 +117,19 @@ The owner wants **both** outputs (chat and handwriting). Writey picks one from w
 - ~~`point_at` (the pen resting on what the model reads) and `zoom` (close-ups)~~ → removed for speed (D54).
 - ~~Local voice in the Helper (Parakeet + Kokoro), mic in the ask bar~~ → paused; the Helper is ChatGPT-only (D56).
 - ~~40 model requests per answer as the safety cap~~ → 16, and answers usually end in their first response (D52).
+- ~~Web app in Chrome, Supabase + R2 storage, Google login~~ → desktop app with notebooks on disk (D57).
+- ~~Writey Helper (Python) for ChatGPT sign-in and voice; voice off (D56)~~ → both in the Rust app; voice back on, on the GPU (D57).
+- ~~Browser mic, VAD and playback (D21)~~ → Rust (cpal + Silero VAD); the page keeps the wake word, reply window and commands (D57).
 
 ## 4. Owner's setup
 
 - Windows laptop, **8 GB dedicated GPU (NVIDIA)**, Chrome, **Huion** pen tablet (enable Windows Ink in the Huion driver to get `pointerType: 'pen'`).
 - Pressure is ignored in v1.
 
-## 5. Current state (2026-10-25)
+## 5. Current state (2026-10-29)
 
-- **Live:** https://writey.writey.workers.dev
+- **Desktop app (D57):** `apps/desktop`. Installers: GitHub release `v1.0.0` (`Writey-Windows-Setup.exe`, `Writey-macOS-AppleSilicon.dmg`), rebuilt by the `Desktop` workflow on every push to `main`. Verified in a Linux build under WebDriver: library, new notebook, pen stroke saved to disk, backup/import, keys in the vault, settings tabs, and a full answer from a fake model (Rust adds the key, the stream reaches the page, ink lands on the page). Voice: unit-tested here (resampling, echo filter, text for Kokoro, downloads); the real-model round trip (Kokoro says a sentence, Parakeet hears it) runs in CI on Linux, Windows and macOS (CPU and CoreML). Not testable in CI: CUDA (no NVIDIA runners) and a real mic/speaker; the owner should try voice on the RTX 4060.
+- **Website:** https://writey.writey.workers.dev is now the download page plus "Export my notebooks" for the old web version.
 - **Supabase project:** `writey` (ref `ksnpzfgcxjallzucvuhr`). Google OAuth is on. Migrations in `supabase/migrations` are applied.
 - **Shipped**
   - Phase 0: monorepo, CI, auth shell, Worker API, schema.
@@ -161,9 +167,10 @@ The owner wants **both** outputs (chat and handwriting). Writey picks one from w
 
 The owner gave the go on 2026-10-25.
 
-1. **Owner:** connect a real AI (Settings), then try "Writey, what's next?" on a real page with the pen and the mic. Report what reads badly or lands in the wrong place.
+0. **Owner (desktop app):** install from the release, export your web notebooks on the website and import them (Settings → Notebooks), sign in to ChatGPT, then Settings → Voice → Download (CUDA on the RTX 4060) and try "Hey, what's next?". Report GPU problems (Settings → Voice shows why it fell back to the CPU). Later: code-signing certificates (Apple Developer ID for notarization, a Windows certificate) to remove the first-open warnings, and the Tauri updater (needs a signing key as a GitHub secret).
+1. **Owner:** connect a real AI (Settings), then try "Hey, what's next?" on a real page with the pen and the mic. Report what reads badly or lands in the wrong place.
 2. **Tune with real models:** check that DeepSeek V4.1 Flash and ChatGPT follow InkScript (one short line per block, doubled backslashes, `after` tags); adjust `packages/ai-core/src/prompts.ts`. Then the **eval set** (20–30 real pages).
-3. **Voice (paused, D56).** When it comes back: set `VOICE_ENABLED`, restore the speech part of the Helper from git (Helper 0.4.1), bump its API. **Fish S1-mini TTS (optional):** needs the owner to accept the license at huggingface.co/fishaudio/s1-mini and a Hugging Face token, plus PyTorch in the Helper. Kokoro stays the default.
+3. **Voice (D57):** tune the VAD thresholds and the echo filter on real hardware; DirectML for AMD/Intel GPUs on Windows (needs a sherpa-onnx DirectML build); speaker echo cancellation (WebRTC AEC) if the word filter isn't enough.
 4. **Pictures with real models:** check that searches find good Commons diagrams, that models pick clear ones and point at parts accurately; tune the query advice in `prompts.ts` and `searchPictures` (drawings first) if not.
 5. **Diagrams with real models:** check that they pick sensible coordinates and keep diagrams simple; add diagram pages to the eval set. Later: diagrams beside the work instead of only below it.
 
@@ -172,6 +179,12 @@ The owner gave the go on 2026-10-25.
 1. Delete the leftover e2e test user `writey-e2e@test.invalid` in Supabase? (Awaiting OK.)
 
 ## 8. Gotchas
+
+- **Desktop (D57):** the UI talks to Rust only through `apps/web/src/lib/native.ts` (`call`, `callBytes`, `streamResponse`); Rust errors arrive as `NativeError { code, message }`. Data lives in the OS app-data folder (`%APPDATA%\com.writey.notebook`, `~/Library/Application Support/com.writey.notebook`); voice models in the local app-data folder (`%LOCALAPPDATA%\com.writey.notebook\voice`).
+- sherpa-onnx ends the whole process on a missing or bad model file, so `voice/engine.rs` checks files before loading, downloads land in place only when complete, and GPU sessions are first tried in a child process (`writey --writey-speech-probe`).
+- Windows links `sherpa-onnx-c-api.dll` lazily (`/DELAYLOAD`, `apps/desktop/build.rs`): never call into sherpa-onnx before `gpu::use_engine_dir` has loaded the downloaded engine, or the app crashes.
+- macOS bundles sherpa-onnx's dylibs via `scripts/macos-frameworks.mjs` (writes `tauri.macos.conf.json`); without it the app can't start on a Mac.
+- The system web views don't all support `prompt()`/`confirm()`/`alert()`: use `lib/dialogs.ts`. Links to websites open in the browser (`lib/shell.ts`).
 
 - The URL is `<worker>.<account subdomain>.workers.dev`. The account subdomain was `anilreddy2569900` until 2026-10-25, when it became `writey` (API: delete, then create; there's no rename). Changing it again breaks the Helper's allowed origins (`apps/helper/writey_helper/config.py`) and Supabase's Site URL / redirect list. Cloudflare Workers Builds deploys every push to `main` (deploy command `cd apps/worker && npx wrangler deploy`, Supabase `VITE_*` values set as build variables).
 - Free Supabase org allows only 2 active projects. The `roleplay` project was **paused** to make room. Don't unpause it without freeing a slot.

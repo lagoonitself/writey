@@ -1,51 +1,39 @@
 import { useCallback, useEffect, useState } from 'react'
+import { ask } from '../lib/dialogs'
 import {
-  HELPER_SETUP_FILE,
-  type HelperState,
+  formatBytes,
   type ModelStatus,
-  synthesize,
+  missingBytes,
+  onVoice,
   type VoiceStatus,
-  voiceHelperState,
   voicePrepare,
+  voiceRemoveModels,
+  voiceSay,
+  voiceSetPrefer,
   voiceStatus,
-} from '../lib/helper'
+} from '../lib/voice'
 import { CheckIcon, DownloadIcon } from '../notebook/icons'
 import { loadVoicePrefs, saveVoicePrefs } from '../voice/useVoice'
 import { VoiceGuide } from '../voice/VoiceGuide'
 
-const VOICE_NAMES: Record<string, string> = {
-  af_heart: 'Heart (US)',
-  af_bella: 'Bella (US)',
-  af_nicole: 'Nicole (US)',
-  am_michael: 'Michael (US)',
-  am_fenrir: 'Fenrir (US)',
-  bf_emma: 'Emma (UK)',
-  bm_george: 'George (UK)',
-}
+const ACCEL_NAME = { cuda: 'NVIDIA GPU (CUDA)', coreml: 'Apple GPU (CoreML)', cpu: 'CPU' } as const
 
-/** Download sizes. Both models are larger (and much faster) on an NVIDIA GPU. */
-const SIZE = { cuda: { stt: '1.3 GB', tts: '340 MB' }, cpu: { stt: '660 MB', tts: '120 MB' } }
-const WHERE = { cuda: 'GPU', cpu: 'CPU' }
-
-function describe(m: ModelStatus, size: string): { text: string; ok: boolean } {
+function describe(m: ModelStatus): { text: string; ok: boolean } {
   switch (m.state) {
     case 'ready':
-      return { text: `Ready · ${WHERE[m.device ?? 'cpu']}`, ok: true }
+      return { text: `Ready · ${m.device === 'gpu' ? 'GPU' : 'CPU'}`, ok: true }
     case 'downloaded':
       return { text: 'Downloaded', ok: true }
     case 'downloading':
-      return { text: `Downloading ${Math.round((m.progress ?? 0) * 100)}%`, ok: false }
+      return { text: `Downloading ${Math.round(m.progress * 100)}%`, ok: false }
     case 'loading':
       return { text: 'Loading…', ok: false }
     case 'error':
-      return { text: 'Failed, try again', ok: false }
+      return { text: `Failed: ${m.error}`, ok: false }
     default:
-      return { text: size, ok: false }
+      return { text: formatBytes(m.bytes), ok: false }
   }
 }
-
-const busy = (s: VoiceStatus | null) =>
-  Boolean(s && [s.stt, s.tts].some((m) => m.state === 'downloading' || m.state === 'loading'))
 
 function Step({
   n,
@@ -71,30 +59,34 @@ function Step({
   )
 }
 
-/** Settings → Voice: local speech models in Writey Helper (docs §7). */
+/** Settings → Voice: local speech models, on the GPU when there is one (HANDOFF D57). */
 export function VoiceSection() {
   const [prefs, setPrefs] = useState(loadVoicePrefs)
-  const [helper, setHelper] = useState<HelperState | null>(null)
   const [status, setStatus] = useState<VoiceStatus | null>(null)
-  const [sample, setSample] = useState(false)
-  const [checked, setChecked] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
-    const h = await voiceHelperState()
-    setHelper(h)
-    if (h === 'ok') setStatus(await voiceStatus().catch(() => null))
+    setStatus(await voiceStatus().catch(() => null))
   }, [])
 
-  // Talking to 127.0.0.1 makes Chrome ask about local network access, so only on request.
   useEffect(() => {
-    if (checked) void refresh()
-  }, [checked, refresh])
+    void refresh()
+    const off = onVoice('voice:models', setStatus)
+    return () => void off.then((f) => f())
+  }, [refresh])
 
+  // Download progress isn't an event of its own; poll while busy.
+  const busy = Boolean(
+    status &&
+      [status.engine, status.stt, status.tts].some(
+        (m) => m && (m.state === 'downloading' || m.state === 'loading'),
+      ),
+  )
   useEffect(() => {
-    if (!busy(status)) return
-    const t = window.setTimeout(() => void refresh(), 1200)
-    return () => window.clearTimeout(t)
-  }, [status, refresh])
+    if (!busy) return
+    const t = window.setInterval(() => void refresh(), 800)
+    return () => window.clearInterval(t)
+  }, [busy, refresh])
 
   const update = (next: typeof prefs) => {
     setPrefs(next)
@@ -102,95 +94,115 @@ export function VoiceSection() {
   }
 
   const download = async () => {
-    setStatus(await voicePrepare({ stt: true, tts: true }).catch(() => status))
-  }
-
-  const playSample = async () => {
-    setSample(true)
+    setError(null)
     try {
-      const wav = await synthesize("Hi, I'm Writey. Say my name when you want a hand.", prefs.voice)
-      const url = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }))
-      const audio = new Audio(url)
-      audio.onended = () => URL.revokeObjectURL(url)
-      await audio.play()
+      setStatus(await voicePrepare({ stt: true, tts: true }))
     } catch (e) {
-      console.error('sample failed', e)
-    } finally {
-      setSample(false)
+      setError((e as Error).message)
     }
   }
 
-  const size = SIZE[status?.device ?? 'cpu']
-  const stt = status && describe(status.stt, size.stt)
-  const tts = status && describe(status.tts, size.tts)
-  const helperOk = helper === 'ok'
-  const modelsOk = Boolean(stt?.ok && tts?.ok)
-  const missing =
-    status && [status.stt, status.tts].some((m) => m.state === 'missing' || m.state === 'error')
+  const setPrefer = async (prefer: 'auto' | 'cpu') => {
+    setStatus(await voiceSetPrefer(prefer))
+  }
+
+  const remove = async () => {
+    if (!(await ask('Delete the downloaded speech models? You can download them again later.')))
+      return
+    setStatus(await voiceRemoveModels())
+  }
+
+  if (!status) {
+    return (
+      <section className="settings-section">
+        <h3 className="settings-title">Voice</h3>
+        <p className="note">Checking this computer…</p>
+      </section>
+    )
+  }
+  if (!status.available) {
+    return (
+      <section className="settings-section">
+        <h3 className="settings-title">Voice</h3>
+        <p className="note">Voice isn’t part of this build of Writey.</p>
+      </section>
+    )
+  }
+
+  const stt = describe(status.stt)
+  const tts = describe(status.tts)
+  const engine = status.engine && describe(status.engine)
+  const missing = missingBytes(status)
+  const allOk = stt.ok && tts.ok && (!engine || engine.ok)
+  const gpu = status.accel !== 'cpu'
 
   return (
     <>
       <section className="settings-section">
         <h3 className="settings-title">Voice</h3>
         <p className="section-sub">
-          Talk to Writey while you write, no clicking. Speech runs on this computer in Writey
-          Helper, so no audio leaves it.
+          Talk to Writey while you write, no clicking. Speech runs on this computer, so no audio
+          leaves it.
         </p>
-
-        {!checked ? (
-          <button type="button" className="primary" onClick={() => setChecked(true)}>
-            Set up voice on this computer
+        <div className={`now-using${gpu ? ' ready' : ''}`}>
+          <span className="now-using-text">
+            <small>Speech runs on</small>
+            <strong>{ACCEL_NAME[status.accel]}</strong>
+            {status.gpu_name && <span>{status.gpu_name}</span>}
+          </span>
+          {status.prefer === 'cpu' ? (
+            <button type="button" onClick={() => setPrefer('auto')}>
+              Use the GPU
+            </button>
+          ) : (
+            gpu && (
+              <button type="button" className="link-btn" onClick={() => setPrefer('cpu')}>
+                Use the CPU instead
+              </button>
+            )
+          )}
+        </div>
+        {status.gpu_error && <p className="inline-error">{status.gpu_error}</p>}
+        <ol className="voice-steps">
+          <Step n={1} title="Download the speech models" done={allOk}>
+            <dl className="voice-models">
+              {engine && status.engine && (
+                <>
+                  <dt>Speech engine {status.accel === 'cuda' ? '(CUDA for your GPU)' : ''}</dt>
+                  <dd className={engine.ok ? 'ok' : ''}>{engine.text}</dd>
+                </>
+              )}
+              <dt>
+                Understanding you (Parakeet, English
+                {status.accel === 'cpu' ? ', compact' : ', full precision'})
+              </dt>
+              <dd className={stt.ok ? 'ok' : ''}>{stt.text}</dd>
+              <dt>Writey’s voice (Kokoro)</dt>
+              <dd className={tts.ok ? 'ok' : ''}>{tts.text}</dd>
+            </dl>
+            {missing > 0 && !busy && (
+              <button type="button" className="primary" onClick={() => void download()}>
+                <DownloadIcon size={16} />
+                Download (about {formatBytes(missing)}, once)
+              </button>
+            )}
+            {!missing && !busy && !allOk && (
+              <button type="button" onClick={() => void download()}>
+                Load the models
+              </button>
+            )}
+            {error && <p className="inline-error">{error}</p>}
+          </Step>
+          <Step
+            n={2}
+            title="Click the mic under the page and say “Hey, …”"
+            done={status.listening}
+          />
+        </ol>
+        {allOk && (
+          <button type="button" className="link-btn" onClick={() => void remove()}>
+            Delete the speech models
           </button>
-        ) : (
-          <ol className="voice-steps">
-            <Step n={1} title="Install Writey Helper" done={helperOk}>
-              {helper === null ? (
-                <p className="note">Looking for Writey Helper…</p>
-              ) : !helperOk ? (
-                <>
-                  <p className="note">
-                    {helper === 'outdated'
-                      ? 'An older version is installed. Run the setup again to update it.'
-                      : 'A small free app that runs the speech models. Run the downloaded file once; it starts with Windows after that.'}
-                  </p>
-                  <div className="voice-row">
-                    <a
-                      className="btn primary"
-                      href={HELPER_SETUP_FILE}
-                      download="writey-helper-setup.cmd"
-                    >
-                      <DownloadIcon size={16} />
-                      {helper === 'outdated' ? 'Update Writey Helper' : 'Download Writey Helper'}
-                    </a>
-                    <button type="button" onClick={() => void refresh()}>
-                      I’ve run it, check again
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <p className="note">Running on this computer.</p>
-              )}
-            </Step>
-            <Step n={2} title="Download the speech models" done={helperOk && modelsOk}>
-              {helperOk && status && stt && tts && (
-                <>
-                  <dl className="voice-models">
-                    <dt>Understanding you (Parakeet, English)</dt>
-                    <dd className={stt.ok ? 'ok' : ''}>{stt.text}</dd>
-                    <dt>Writey’s voice (Kokoro)</dt>
-                    <dd className={tts.ok ? 'ok' : ''}>{tts.text}</dd>
-                  </dl>
-                  {missing && (
-                    <button type="button" className="primary" onClick={() => void download()}>
-                      <DownloadIcon size={16} />
-                      Download (about {status.device === 'cuda' ? '1.6 GB' : '780 MB'}, once)
-                    </button>
-                  )}
-                </>
-              )}
-            </Step>
-            <Step n={3} title="Click the mic under the page and say “Hey, …”" done={false} />
-          </ol>
         )}
       </section>
 
@@ -217,15 +229,20 @@ export function VoiceSection() {
               onChange={(e) => update({ ...prefs, voice: e.target.value })}
               aria-label="Voice"
             >
-              {Object.entries(VOICE_NAMES).map(([id, name]) => (
-                <option key={id} value={id}>
-                  {name}
+              {status.voices.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}
                 </option>
               ))}
             </select>
-            {status?.tts.state === 'ready' && (
-              <button type="button" onClick={playSample} disabled={sample}>
-                {sample ? 'Playing…' : 'Hear it'}
+            {status.tts.state === 'ready' && (
+              <button
+                type="button"
+                onClick={() =>
+                  void voiceSay("Hi, I'm Writey. Say hey when you want a hand.", prefs.voice)
+                }
+              >
+                Hear it
               </button>
             )}
           </div>

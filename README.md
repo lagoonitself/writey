@@ -1,54 +1,48 @@
 # Writey
 
-A handwritten notebook for math and physics with an AI you talk to.
-Say **"Writey, what's next?"** and it continues your work in handwriting on the page.
-Say **"Writey, why does this work?"** and it explains in a side chat.
+A handwritten notebook for math and physics with an AI you talk to, for **Windows and Apple Silicon Macs**.
+Say **"Hey, what's next?"** and it continues your work in handwriting on the page.
+Say **"Hey, why does this work?"** and it sketches on the page and explains beside it.
 
-Open source (MIT). Bring your own AI keys: OpenRouter, OpenCode Zen or your ChatGPT plan.
+Open source (MIT). Bring your own AI: your ChatGPT plan, OpenRouter or OpenCode Zen. Notebooks stay on your computer; speech runs locally on your GPU.
+
+**Download:** [Windows](https://github.com/lagoonitself/writey/releases/latest/download/Writey-Windows-Setup.exe) · [Mac (Apple Silicon)](https://github.com/lagoonitself/writey/releases/latest/download/Writey-macOS-AppleSilicon.dmg)
 
 See [HANDOFF.md](HANDOFF.md) for decisions and current state, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how it works.
 
 ## Layout
 
-| Path                  | What                                         |
-| --------------------- | -------------------------------------------- |
-| `apps/web`            | React app (Vite)                             |
-| `apps/worker`         | Cloudflare Worker: API + hosts the built app |
-| `packages/ink-engine` | Page model, hit-testing, undo, ink rendering |
-| `packages/ai-core`    | Prompts, intent rules, focus region, streams |
-| `packages/inkscript`  | Writey's handwriting: LaTeX layout, glyphs   |
-| `apps/helper`         | Writey Helper: ChatGPT sign-in               |
-| `packages/shared`     | Types shared by web and worker               |
-| `supabase/migrations` | Database schema and row-level security       |
+| Path                  | What                                                                               |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| `apps/desktop`        | The app (Tauri 2, Rust): storage, keys, AI calls, sign-ins, local voice on the GPU |
+| `apps/web`            | The UI (React + Vite) the app shows; on the website, the download page             |
+| `apps/worker`         | Cloudflare Worker: hosts the website and the old web notebooks' export             |
+| `packages/ink-engine` | Page model, hit-testing, undo, ink rendering                                       |
+| `packages/ai-core`    | Prompts, intent rules, focus region, streams                                       |
+| `packages/inkscript`  | Writey's handwriting: LaTeX layout, glyphs, diagrams                               |
+| `packages/shared`     | Types shared by the UI and the worker                                              |
 
 ## Development
 
-Requires Node 24 and pnpm 10.
+Requires Node 24, pnpm 10 and Rust (stable). On Linux also the
+[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) and `libasound2-dev`.
 
 ```bash
 pnpm install
-cp apps/web/.env.example apps/web/.env.local   # fill in Supabase URL + publishable key
-pnpm dev                                        # web on :5173, worker on :8787
+pnpm app          # the desktop app, with the UI hot-reloading from :5173
+pnpm app:build    # installers in apps/desktop/target/release/bundle
 ```
 
-Set `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` in `apps/worker/wrangler.jsonc` to your project, and apply `supabase/migrations` in order. Deploying needs an R2 bucket named `writey` (`wrangler dev` simulates it locally).
+The first `cargo` build downloads sherpa-onnx's libraries from GitHub. Voice models are downloaded by the app (Settings → Voice). On macOS run `node scripts/macos-frameworks.mjs target/release` in `apps/desktop` after `cargo build --release` and before `pnpm app:build`, so the speech libraries are bundled.
 
-Provider keys are encrypted with a 32-byte master key. Put `CREDENTIALS_KEY=<base64>` in `apps/worker/.dev.vars` for local dev, and set it in production with `wrangler secret put CREDENTIALS_KEY`. Generate one with `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
-
-| Command           | Does                                    |
-| ----------------- | --------------------------------------- |
-| `pnpm lint`       | Biome lint + format check               |
-| `pnpm format`     | Auto-fix lint and formatting            |
-| `pnpm typecheck`  | TypeScript across all packages          |
-| `pnpm test`       | Vitest across all packages              |
-| `pnpm run deploy` | Build the web app and deploy the Worker |
-
-### Google sign-in setup (once)
-
-1. Google Cloud Console → APIs & Services → Credentials → **Create OAuth client ID** (Web application).
-2. Authorized redirect URI: `https://<your-project>.supabase.co/auth/v1/callback`.
-3. Supabase dashboard → Authentication → Sign In / Providers → **Google**: paste the client ID and secret.
-4. Supabase → Authentication → URL Configuration: add `http://localhost:5173` and your deployed URL to the redirect allow list.
+| Command                                | Does                                     |
+| -------------------------------------- | ---------------------------------------- |
+| `pnpm lint` / `pnpm format`            | Biome lint + format check / auto-fix     |
+| `pnpm typecheck`                       | TypeScript across all packages           |
+| `pnpm test`                            | Vitest across all packages               |
+| `cd apps/desktop && cargo test`        | Rust tests                               |
+| `cargo test --test voice -- --ignored` | Real-model speech round trip (downloads) |
+| `pnpm run deploy`                      | Build and deploy the website             |
 
 ## License
 

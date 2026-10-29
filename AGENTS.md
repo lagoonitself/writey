@@ -3,7 +3,7 @@
 ## Read first, in order
 
 1. `HANDOFF.md`: what Writey is, every decision and why, current state, next steps, open questions.
-2. `docs/ARCHITECTURE.md`: the technical design (ink engine, help engine, InkScript, providers, Helper, data model, phases).
+2. `docs/ARCHITECTURE.md`: the technical design (ink engine, help engine, InkScript, providers, voice, data model, phases).
 3. `README.md`: setup and commands.
 
 If these disagree, `HANDOFF.md` wins (it's the newest record). Fix the other file when you notice.
@@ -12,12 +12,13 @@ If these disagree, `HANDOFF.md` wins (it's the newest record). Fix the other fil
 
 These are decided. Don't propose alternatives unless the owner asks:
 
-- **No Gemini Live, no cloud voice, no browser-run voice models.** STT (Parakeet TDT 0.6B v2) and TTS (Fish OpenAudio S1-mini) run locally in the Python Writey Helper. The browser owns mic, VAD, playback and the transcript (HANDOFF D21). **Voice is switched off for now (D56):** the Helper is ChatGPT-only; the browser voice code stays behind `VOICE_ENABLED`.
+- **Writey is a desktop app (HANDOFF D57):** Tauri 2 + Rust for Windows and Apple Silicon Macs. The React UI and the TypeScript packages run in the web view; Rust owns storage (SQLite on disk), keys (OS keychain), AI calls, ChatGPT/OpenRouter sign-in and voice. No Supabase, no Python Helper. The website only offers the download and the old web notebooks' export.
+- **No Gemini Live, no cloud voice.** STT (Parakeet TDT 0.6B v2), TTS (Kokoro 82M) and Silero VAD run locally in Rust via sherpa-onnx, **on the GPU** (CUDA on NVIDIA, CoreML on Apple Silicon) with automatic CPU fallback.
 - English only for speech.
-- Thinking providers are **only** OpenRouter, OpenCode Zen and ChatGPT (Sign in with ChatGPT via the Helper). "OpenCode" means OpenCode Zen.
+- Thinking providers are **only** OpenRouter, OpenCode Zen and ChatGPT (Sign in with ChatGPT, done by the desktop app). "OpenCode" means OpenCode Zen.
 - Default model: DeepSeek V4.1 Flash via OpenRouter.
 - Chat vs ink is chosen by intent (see HANDOFF D3). AI ink is a ghost preview with Accept.
-- Chrome on desktop with a pen tablet first; iPad later.
+- Windows and Apple Silicon Mac with a pen tablet first; iPad later.
 - Custom canvas engine (no tldraw/Excalidraw).
 
 ## Working style (owner's preferences)
@@ -31,36 +32,41 @@ These are decided. Don't propose alternatives unless the owner asks:
 
 ## Repo map
 
-| Path                  | What                                                                                    |
-| --------------------- | --------------------------------------------------------------------------------------- |
-| `apps/web`            | React + Vite app (notebook UI, toolbar, library)                                        |
-| `apps/worker`         | Cloudflare Worker (Hono): `/api/*` + hosts `web/dist`                                   |
-| `packages/ink-engine` | Page model, editor/undo, geometry, render, serialize                                    |
-| `packages/shared`     | Types shared by web and worker                                                          |
-| `supabase/migrations` | SQL schema + RLS                                                                        |
-| `packages/ai-core`    | Prompts, intent rules, focus region + line labels, SSE parsing, error messages          |
-| `apps/helper`         | Writey Helper (Python, uv): Sign in with ChatGPT + Responses proxy (voice removed, D56) |
-| `packages/inkscript`  | AI handwriting: InkScript parser, LaTeX layout, glyphs, placement, pen timing           |
+| Path                  | What                                                                           |
+| --------------------- | ------------------------------------------------------------------------------ |
+| `apps/desktop`        | The app: Tauri 2 / Rust (store, vault, ai, voice); `cargo test` there          |
+| `apps/web`            | React + Vite UI (notebook, toolbar, library); `src/site` is the website        |
+| `apps/worker`         | Cloudflare Worker (Hono): website + old notebooks' export API                  |
+| `packages/ink-engine` | Page model, editor/undo, geometry, render, serialize                           |
+| `packages/shared`     | Types shared by web and worker                                                 |
+| `supabase/migrations` | The old web version's schema (read by the export page only)                    |
+| `packages/ai-core`    | Prompts, intent rules, focus region + line labels, SSE parsing, error messages |
+| `packages/inkscript`  | AI handwriting: InkScript parser, LaTeX layout, glyphs, placement, pen timing  |
 
 `ink-engine`, `inkscript` and `ai-core` stay plain TypeScript with no React, so they're testable and reusable on iPad later.
 
 ## Commands
 
-Node 24, pnpm 10.
+Node 24, pnpm 10, Rust stable.
 
 ```bash
 pnpm install
-pnpm dev          # web :5173 + worker :8787
+pnpm app          # desktop app in dev (UI on :5173)
+pnpm app:build    # installers
 pnpm lint         # biome check
 pnpm format       # biome fix
 pnpm typecheck
 pnpm test         # vitest
-pnpm run deploy   # NOT `pnpm deploy` (pnpm built-in)
+pnpm run deploy   # website; NOT `pnpm deploy` (pnpm built-in)
 ```
 
-Run `pnpm lint && pnpm typecheck && pnpm test` before pushing, plus `uv run --directory apps/helper pytest` if you touched the Helper. CI runs all of these.
+Run `pnpm lint && pnpm typecheck && pnpm test` before pushing, plus `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` in `apps/desktop` if you touched Rust (where sherpa-onnx's GitHub download is blocked, use `DOCS_RS=1 cargo clippy` and `cargo test --no-default-features`). CI runs all of these; the `Desktop` workflow builds the Windows and macOS installers, runs a real-model speech round trip, and publishes the installers to the GitHub release `v<version>` on every push to `main`.
 
-## Deploying (non-interactive)
+## Releasing the app
+
+Bump `version` in `apps/desktop/tauri.conf.json` and `Cargo.toml` for a new release; pushes to `main` rebuild the installers of the current version. Installers are ad-hoc signed (Windows SmartScreen and macOS Gatekeeper warn on first open) until the owner adds signing certificates.
+
+## Deploying the website (non-interactive)
 
 Wrangler's own login has expired and can't refresh non-interactively. Instead:
 
@@ -85,4 +91,4 @@ Wrangler's own login has expired and can't refresh non-interactively. Instead:
 
 ## Testing the UI
 
-Run `pnpm dev`, open http://localhost:5173 and sign in with the e2e test user (`writey-e2e@test.invalid`; ask the owner or reset the password via SQL). For headless checks, sign in from the console with `(await import('/src/lib/supabase.ts')).supabase.auth.signInWithPassword(...)` and drive the canvas with synthetic PointerEvents.
+Run the real app under WebDriver: `pnpm tauri build --debug --no-bundle -- --no-default-features` in `apps/desktop`, then `tauri-driver` (on Linux with `xvfb-run` and `webkit2gtk-driver`) and drive it with W3C WebDriver (`tauri:options.application` = `target/debug/writey`). Drive the canvas with synthetic PointerEvents and call Rust directly with `window.__TAURI_INTERNALS__.invoke(...)`. Debug builds send OpenRouter/Zen requests to `WRITEY_TEST_CHAT_URL` when set, for a fake model.

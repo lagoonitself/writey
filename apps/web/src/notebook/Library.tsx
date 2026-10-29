@@ -1,12 +1,19 @@
-import type { Session } from '@supabase/supabase-js'
+import { open, save } from '@tauri-apps/plugin-dialog'
 import type { NotebookRow } from '@writey/shared'
-import { useEffect, useRef, useState } from 'react'
-import { createNotebook, listNotebooks, renameNotebook, trashNotebook } from '../lib/db'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { exportNotebooks, importNotebooks } from '../lib/archive'
+import {
+  createNotebook,
+  listNotebooks,
+  renameNotebook,
+  restoreNotebook,
+  trashNotebook,
+} from '../lib/db'
+import { call } from '../lib/native'
 import { navigate } from '../lib/router'
-import { supabase } from '../lib/supabase'
 import { SettingsDialog } from '../settings/SettingsDialog'
-import { takeOpenSettingsFlag, useAiState } from '../settings/useAiState'
-import { EditIcon, GearIcon, PlusIcon, SignOutIcon, TrashIcon } from './icons'
+import { useAiState } from '../settings/useAiState'
+import { EditIcon, GearIcon, PlusIcon, TrashIcon } from './icons'
 
 /** Book-cloth colors: muted, so the pages stay the brightest thing on screen. */
 const COVERS = ['#2b3a67', '#7e2e2b', '#2f5a48', '#a8772a', '#4f3a63', '#2c2b29', '#3f5f7a']
@@ -23,18 +30,37 @@ function greeting(): string {
   return h < 5 ? 'Late night' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
 }
 
-export function Library({ session }: { session: Session }) {
+type AppInfo = { version: string; user_name: string | null }
+
+export function Library() {
   const [notebooks, setNotebooks] = useState<NotebookRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [ai, setAi] = useAiState()
-  const [settingsOpen, setSettingsOpen] = useState(takeOpenSettingsFlag)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [editing, setEditing] = useState<string | null>(null)
+  const [undo, setUndo] = useState<NotebookRow | null>(null)
+  const [info, setInfo] = useState<AppInfo | null>(null)
+  const undoTimer = useRef(0)
+
+  const load = useCallback(
+    () =>
+      listNotebooks()
+        .then(setNotebooks)
+        .catch((e: Error) => setError(e.message)),
+    [],
+  )
 
   useEffect(() => {
-    listNotebooks()
-      .then(setNotebooks)
-      .catch((e: Error) => setError(e.message))
-  }, [])
+    void load()
+    call<AppInfo>('app_info')
+      .then(setInfo)
+      .catch(() => {})
+    // A .writey file opened from Explorer or Finder lands here.
+    const onImported = () => void load()
+    window.addEventListener('writey-imported', onImported)
+    return () => window.removeEventListener('writey-imported', onImported)
+  }, [load])
 
   const create = async () => {
     setCreating(true)
@@ -47,21 +73,64 @@ export function Library({ session }: { session: Session }) {
     }
   }
 
-  const rename = async (nb: NotebookRow) => {
-    const title = prompt('Rename notebook', nb.title)?.trim()
+  const rename = async (nb: NotebookRow, title: string) => {
+    setEditing(null)
+    title = title.trim()
     if (!title || title === nb.title) return
-    await renameNotebook(nb.id, title).catch((e: Error) => setError(e.message))
-    setNotebooks((prev) => prev?.map((n) => (n.id === nb.id ? { ...n, title } : n)) ?? null)
+    try {
+      await renameNotebook(nb.id, title)
+      setNotebooks((prev) => prev?.map((n) => (n.id === nb.id ? { ...n, title } : n)) ?? null)
+    } catch (e) {
+      setError((e as Error).message)
+    }
   }
 
   const remove = async (nb: NotebookRow) => {
-    if (!confirm(`Delete "${nb.title}"?`)) return
-    await trashNotebook(nb.id).catch((e: Error) => setError(e.message))
-    setNotebooks((prev) => prev?.filter((n) => n.id !== nb.id) ?? null)
+    try {
+      await trashNotebook(nb.id)
+      setNotebooks((prev) => prev?.filter((n) => n.id !== nb.id) ?? null)
+      setUndo(nb)
+      window.clearTimeout(undoTimer.current)
+      undoTimer.current = window.setTimeout(() => setUndo(null), 8000)
+    } catch (e) {
+      setError((e as Error).message)
+    }
   }
 
-  const fullName = session.user.user_metadata?.full_name as string | undefined
-  const name = fullName?.split(' ')[0] ?? session.user.email?.split('@')[0] ?? ''
+  const restore = async () => {
+    if (!undo) return
+    const nb = undo
+    setUndo(null)
+    await restoreNotebook(nb.id).catch((e: Error) => setError(e.message))
+    void load()
+  }
+
+  const importFile = async () => {
+    const path = await open({
+      title: 'Import notebooks',
+      multiple: false,
+      filters: [{ name: 'Writey notebooks', extensions: ['writey'] }],
+    })
+    if (typeof path !== 'string') return
+    try {
+      await importNotebooks(path)
+      void load()
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  const backup = async () => {
+    const path = await save({
+      title: 'Back up all notebooks',
+      defaultPath: `Writey notebooks ${new Date().toISOString().slice(0, 10)}.writey`,
+      filters: [{ name: 'Writey notebooks', extensions: ['writey'] }],
+    })
+    if (!path) return
+    await exportNotebooks(path).catch((e: Error) => setError(e.message))
+  }
+
+  const name = info?.user_name ?? ''
   const count = notebooks?.length ?? 0
 
   return (
@@ -77,17 +146,24 @@ export function Library({ session }: { session: Session }) {
         >
           <GearIcon size={19} />
         </button>
-        <AccountMenu session={session} name={fullName ?? name} />
+        <LibraryMenu onImport={importFile} onBackup={backup} version={info?.version} />
       </header>
 
       <section className="library-hero">
         <div>
           <h1>
-            {greeting()}, <em>{name}</em>.
+            {greeting()}
+            {name ? (
+              <>
+                , <em>{name}</em>.
+              </>
+            ) : (
+              '.'
+            )}
           </h1>
           <p>
             {notebooks === null
-              ? 'Fetching your notebooks…'
+              ? 'Opening your notebooks…'
               : count === 0
                 ? 'Nothing here yet. Start a notebook and write the first line.'
                 : `${count} notebook${count === 1 ? '' : 's'}. Pick up where you left off.`}
@@ -112,22 +188,50 @@ export function Library({ session }: { session: Session }) {
             className="notebook-card"
             style={{ '--cover': coverFor(nb.id), '--i': i } as React.CSSProperties}
           >
-            <button type="button" className="notebook-open" onClick={() => navigate(`/n/${nb.id}`)}>
-              <span className="notebook-label">
-                <span className="notebook-title">{nb.title}</span>
-                <span className="notebook-date">
-                  {new Date(nb.created_at).toLocaleDateString(undefined, {
-                    month: 'short',
-                    day: 'numeric',
-                    year: 'numeric',
-                  })}
+            {editing === nb.id ? (
+              <form
+                className="notebook-open notebook-rename"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  const input = e.currentTarget.elements.namedItem('title') as HTMLInputElement
+                  void rename(nb, input.value)
+                }}
+              >
+                <input
+                  name="title"
+                  className="field"
+                  defaultValue={nb.title}
+                  aria-label="Notebook name"
+                  // biome-ignore lint/a11y/noAutofocus: renaming starts typing right away
+                  autoFocus
+                  onFocus={(e) => e.currentTarget.select()}
+                  onBlur={(e) => void rename(nb, e.currentTarget.value)}
+                  onKeyDown={(e) => e.key === 'Escape' && setEditing(null)}
+                  maxLength={200}
+                />
+              </form>
+            ) : (
+              <button
+                type="button"
+                className="notebook-open"
+                onClick={() => navigate(`/n/${nb.id}`)}
+              >
+                <span className="notebook-label">
+                  <span className="notebook-title">{nb.title}</span>
+                  <span className="notebook-date">
+                    {new Date(nb.updated_at).toLocaleDateString(undefined, {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
+                    })}
+                  </span>
                 </span>
-              </span>
-            </button>
+              </button>
+            )}
             <span className="notebook-actions">
               <button
                 type="button"
-                onClick={() => rename(nb)}
+                onClick={() => setEditing(nb.id)}
                 title="Rename"
                 aria-label={`Rename ${nb.title}`}
               >
@@ -135,7 +239,7 @@ export function Library({ session }: { session: Session }) {
               </button>
               <button
                 type="button"
-                onClick={() => remove(nb)}
+                onClick={() => void remove(nb)}
                 title="Delete"
                 aria-label={`Delete ${nb.title}`}
               >
@@ -145,6 +249,14 @@ export function Library({ session }: { session: Session }) {
           </div>
         ))}
       </div>
+      {undo && (
+        <div className="undo-toast" role="status">
+          Deleted “{undo.title}”.
+          <button type="button" onClick={() => void restore()}>
+            Undo
+          </button>
+        </div>
+      )}
       {settingsOpen && (
         <SettingsDialog ai={ai} onChange={setAi} onClose={() => setSettingsOpen(false)} />
       )}
@@ -152,10 +264,17 @@ export function Library({ session }: { session: Session }) {
   )
 }
 
-function AccountMenu({ session, name }: { session: Session; name: string }) {
+function LibraryMenu({
+  onImport,
+  onBackup,
+  version,
+}: {
+  onImport(): void
+  onBackup(): void
+  version?: string
+}) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
-  const picture = session.user.user_metadata?.avatar_url as string | undefined
 
   useEffect(() => {
     if (!open) return
@@ -171,32 +290,35 @@ function AccountMenu({ session, name }: { session: Session; name: string }) {
     }
   }, [open])
 
+  const pick = (fn: () => void) => () => {
+    setOpen(false)
+    fn()
+  }
+
   return (
     <div className="account" ref={ref}>
       <button
         type="button"
-        className="avatar-btn"
+        className="ghost icon-btn"
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label="Account"
+        aria-label="More"
+        title="More"
       >
-        {picture ? (
-          <img src={picture} alt="" referrerPolicy="no-referrer" />
-        ) : (
-          (name.charAt(0) || '?').toUpperCase()
-        )}
+        <span aria-hidden="true" className="dots">
+          ⋯
+        </span>
       </button>
       {open && (
         <div className="menu" role="menu">
-          <div className="menu-who">
-            <strong>{name}</strong>
-            <span>{session.user.email}</span>
-          </div>
-          <button type="button" role="menuitem" onClick={() => supabase.auth.signOut()}>
-            <SignOutIcon size={17} />
-            Sign out
+          <button type="button" role="menuitem" onClick={pick(onImport)}>
+            Import notebooks…
           </button>
+          <button type="button" role="menuitem" onClick={pick(onBackup)}>
+            Back up all notebooks…
+          </button>
+          {version && <div className="menu-who">Writey {version}</div>}
         </div>
       )}
     </div>

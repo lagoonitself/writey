@@ -37,7 +37,7 @@ import {
 import type { AiSettings, KeyProvider, PageRow } from '@writey/shared'
 import { chatRequest } from '../lib/ai'
 import { primeImage, uploadAsset } from '../lib/assets'
-import { chatgptResponses, HelperError } from '../lib/helper'
+import { chatgptResponses } from '../lib/chatgpt'
 import type { PageSnapshot } from '../notebook/tools'
 import { type Capture, capturePage } from './capture'
 import {
@@ -141,7 +141,7 @@ const failureOf = (t: Transport, ev: StreamError) =>
     RESUMABLE.has(ev.code ?? '') || (ev.status !== undefined && retryable(ev.status)),
   )
 
-/** OpenRouter and OpenCode Zen: Chat Completions through the Worker. */
+/** OpenRouter and OpenCode Zen: Chat Completions, sent by the desktop app with your key. */
 function chatCompletions(provider: KeyProvider, model: string, signal: AbortSignal): Transport {
   return {
     async *stream(messages, effort, final) {
@@ -163,7 +163,7 @@ function chatCompletions(provider: KeyProvider, model: string, signal: AbortSign
       } catch (e) {
         if (signal.aborted) throw e
         throw new HelpFailure(
-          { message: "Couldn't reach Writey's server. Check your connection." },
+          { message: `${(e as Error).message || "Couldn't reach the AI"}. Check your connection.` },
           true,
         )
       }
@@ -185,7 +185,7 @@ function chatCompletions(provider: KeyProvider, model: string, signal: AbortSign
   }
 }
 
-/** ChatGPT plan: the Responses API through Writey Helper on this computer. */
+/** ChatGPT plan: the Responses API, signed in by the desktop app. */
 function chatgptPlan(model: string, signal: AbortSignal, cacheKey: string): Transport {
   return {
     async *stream(messages, effort, final) {
@@ -203,8 +203,13 @@ function chatgptPlan(model: string, signal: AbortSignal, cacheKey: string): Tran
           signal,
         )
       } catch (e) {
-        if (e instanceof HelperError) throw new HelpFailure(describeChatgptError(0, '', e.code))
-        throw e
+        if (signal.aborted) throw e
+        throw new HelpFailure(
+          {
+            message: `${(e as Error).message || "Couldn't reach ChatGPT"}. Check your connection.`,
+          },
+          true,
+        )
       }
       if (!res.ok)
         throw new HelpFailure(

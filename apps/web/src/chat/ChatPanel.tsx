@@ -13,6 +13,7 @@ import {
   type ThreadInfo,
   turnsOf,
 } from '../lib/ai'
+import { ask as confirmAsk, notify } from '../lib/dialogs'
 import { CloseIcon, HistoryIcon, NewChatIcon, TrashIcon } from '../notebook/icons'
 import type { PageHandle } from '../notebook/tools'
 import { type AiState, usable } from '../settings/useAiState'
@@ -364,11 +365,11 @@ export default function ChatPanel(p: Props) {
 
   const remove = async () => {
     if (!threadId || busy) return
-    if (!confirm('Delete this conversation with Writey?')) return
+    if (!(await confirmAsk('Delete this conversation with Writey?', { ok: 'Delete' }))) return
     try {
       await deleteThread(threadId)
     } catch (e) {
-      alert((e as Error).message)
+      void notify((e as Error).message)
       return
     }
     const rest = threads.filter((t) => t.id !== threadId)

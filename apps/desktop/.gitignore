@@ -1,0 +1,4 @@
+target/
+gen/
+frameworks/
+tauri.macos.conf.json

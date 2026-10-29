@@ -20,6 +20,7 @@ import {
 import { PICTURE_MS, type Written } from '@writey/inkscript'
 import type { AssetRow, PageRow } from '@writey/shared'
 import { loadImage } from '../lib/assets'
+import { ask } from '../lib/dialogs'
 import { backupPage, clearBackup, loadPage, savePage } from '../lib/pageStore'
 import { renderPdfPage } from '../lib/pdf'
 import {
@@ -431,7 +432,7 @@ export class PageController {
     ctx.stroke()
     ctx.rotate(-Math.PI / 5)
     // The name tag, like a collaborator's cursor, below and to the right of the tip.
-    ctx.font = '600 11px Geist, system-ui, sans-serif'
+    ctx.font = '600 11px "Geist Variable", Geist, system-ui, sans-serif'
     const w = ctx.measureText(label).width + 12
     const x = 10
     const y = 8
@@ -496,10 +497,10 @@ export class PageController {
         }
         return
       }
-      const keepMine = window.confirm(
-        'This page was changed somewhere else (another tab or device).\n\n' +
-          'OK: keep your version and overwrite the other one.\n' +
-          'Cancel: discard your changes and load the other version.',
+      const keepMine = await ask(
+        'This page was changed in another Writey window.\n\n' +
+          'Keep yours to overwrite the other version, or load theirs and drop your changes.',
+        { ok: 'Keep mine', cancel: 'Load theirs' },
       )
       if (keepMine) {
         this.version = result.conflictVersion

@@ -1,0 +1,146 @@
+# Builds Writey for Windows and Apple Silicon Macs, checks local speech with the real models,
+# and publishes the installers to the GitHub release for the app's version.
+name: Desktop
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/desktop/**
+      - apps/web/**
+      - packages/**
+      - pnpm-lock.yaml
+      - .github/workflows/desktop.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: macos-14
+            name: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Unit tests
+        working-directory: apps/desktop
+        run: cargo test --release --lib
+
+      - name: macOS — bundle the speech engine libraries
+        if: matrix.name == 'macos'
+        working-directory: apps/desktop
+        run: |
+          pnpm --filter @writey/web build
+          cargo build --release
+          node scripts/macos-frameworks.mjs target/release
+
+      - name: Build the app
+        working-directory: apps/desktop
+        run: pnpm tauri build
+
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p dist-app
+          if [ "${{ matrix.name }}" = windows ]; then
+            cp apps/desktop/target/release/bundle/nsis/*-setup.exe dist-app/Writey-Windows-Setup.exe
+          else
+            cp apps/desktop/target/release/bundle/dmg/*.dmg dist-app/Writey-macOS-AppleSilicon.dmg
+          fi
+          ls -la dist-app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: writey-${{ matrix.name }}
+          path: dist-app/*
+
+  voice:
+    # Kokoro speaks a sentence and Parakeet hears it back, with the real downloads.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            provider: cpu
+          - os: windows-latest
+            provider: cpu
+          - os: macos-14
+            provider: cpu
+          - os: macos-14
+            provider: coreml
+    runs-on: ${{ matrix.os }}
+    env:
+      WRITEY_VOICE_DIR: ${{ github.workspace }}/voice-models
+      WRITEY_TEST_PROVIDER: ${{ matrix.provider }}
+    steps:
+      - uses: actions/checkout@v7
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev librsvg2-dev libasound2-dev libxdo-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop
+      - uses: actions/cache@v4
+        with:
+          path: voice-models
+          key: voice-${{ runner.os }}-${{ matrix.provider }}-${{ hashFiles('apps/desktop/src/voice/models.rs') }}
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @writey/web build
+      - name: Download addresses are live
+        if: runner.os == 'Linux'
+        working-directory: apps/desktop
+        run: cargo test --release --test voice download_urls_are_live -- --ignored --nocapture
+      - name: Speech round trip (${{ matrix.provider }})
+        working-directory: apps/desktop
+        run: cargo test --release --test voice speech_round_trip -- --ignored --nocapture
+
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-app
+          merge-multiple: true
+      - name: Publish to the release for this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(jq -r .version apps/desktop/tauri.conf.json)
+          tag="v$version"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "$GITHUB_SHA" --title "Writey $version" --latest \
+              --notes "Writey for Windows and Apple Silicon Macs. Download **Writey-Windows-Setup.exe** or **Writey-macOS-AppleSilicon.dmg** below. Rebuilt on every change to main until the next version."
+          fi
+          gh release upload "$tag" dist-app/* --clobber

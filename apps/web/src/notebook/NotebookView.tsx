@@ -21,10 +21,11 @@ import {
   renameNotebook,
   trashPage,
 } from '../lib/db'
+import { ask, notify } from '../lib/dialogs'
 import { pdfPageSizes } from '../lib/pdf'
 import { navigate } from '../lib/router'
 import { SettingsDialog, type SettingsTab } from '../settings/SettingsDialog'
-import { takeOpenSettingsFlag, useAiState } from '../settings/useAiState'
+import { useAiState } from '../settings/useAiState'
 import type { VoiceCommand } from '../voice/trigger'
 import { useVoice } from '../voice/useVoice'
 import { BackIcon, DownIcon, GearIcon, PlusIcon, TrashIcon, UpIcon } from './icons'
@@ -88,7 +89,7 @@ export function NotebookView({ id }: { id: string }) {
   const [chatOpen, setChatOpenState] = useState(() => localStorage.getItem(CHAT_KEY) === '1')
   const [askSlot, setAskSlot] = useState<HTMLDivElement | null>(null)
   const [chatFocus, bumpChatFocus] = useReducer((n: number) => n + 1, 0)
-  const [settingsOpen, setSettingsOpen] = useState(takeOpenSettingsFlag)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('ai')
   const openSettings = (tab: SettingsTab = 'ai') => {
     setSettingsTab(tab)
@@ -265,7 +266,7 @@ export function NotebookView({ id }: { id: string }) {
       await fn()
     } catch (e) {
       console.error(e)
-      alert(`${label} failed: ${(e as Error).message}`)
+      void notify(`${label} failed: ${(e as Error).message}`)
     } finally {
       setBusy(null)
     }
@@ -333,12 +334,12 @@ export function NotebookView({ id }: { id: string }) {
       }
     })
 
-  const deletePage = (page: PageRow) => {
+  const deletePage = async (page: PageRow) => {
     if (pages.length === 1) {
-      alert('A notebook needs at least one page.')
+      void notify('A notebook needs at least one page.', 'info')
       return
     }
-    if (!confirm('Delete this page?')) return
+    if (!(await ask('Delete this page?', { ok: 'Delete' }))) return
     void run('Deleting the page', async () => {
       await trashPage(page.id)
       setPages((prev) => prev.filter((p) => p.id !== page.id))
@@ -443,7 +444,7 @@ export function NotebookView({ id }: { id: string }) {
     setTitle(next)
     if (notebook && next !== notebook.title) {
       setNotebook({ ...notebook, title: next })
-      renameNotebook(notebook.id, next).catch((e: Error) => alert(`Rename failed: ${e.message}`))
+      renameNotebook(notebook.id, next).catch((e: Error) => notify(`Rename failed: ${e.message}`))
     }
   }
 

@@ -8,12 +8,14 @@
   },
   "scripts": {
     "dev": "pnpm -r --parallel --filter @writey/web --filter @writey/worker dev",
-    "build": "pnpm -r build",
+    "build": "pnpm --filter @writey/web build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "deploy": "pnpm --filter @writey/web build && pnpm --filter @writey/worker run deploy"
+    "deploy": "pnpm --filter @writey/web build && pnpm --filter @writey/worker run deploy",
+    "app": "pnpm --filter @writey/desktop tauri dev",
+    "app:build": "pnpm --filter @writey/desktop tauri build"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.3",

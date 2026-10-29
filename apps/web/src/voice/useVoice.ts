@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { isDesktop } from '../lib/native'
 import { VoiceClient, type VoicePrefs, type VoiceState } from './client'
 import type { VoiceCommand } from './trigger'
 
-/**
- * Voice ("Hey …", push-to-talk, spoken replies) is off for now: the Helper no longer runs
- * speech models (HANDOFF D56). The code stays so it can come back; flip this to turn it on.
- */
-export const VOICE_ENABLED = false
+/** Voice runs in the desktop app (HANDOFF D57); the website has none. */
+export const VOICE_ENABLED = isDesktop()
 
 const PREFS_KEY = 'writey.voice'
 /** Writey talks back by default (HANDOFF D9, changed 2026-10-25). */
@@ -101,7 +99,10 @@ function useLiveVoice(handlers: VoiceHandlers): Voice {
   }
   const c = client.current
 
-  useEffect(() => () => c.stop(), [c])
+  useEffect(() => {
+    c.attach()
+    return () => c.dispose()
+  }, [c])
 
   // Push-to-talk: hold the key while you speak.
   useEffect(() => {
@@ -164,7 +165,7 @@ const NO_VOICE: Omit<Voice, 'ask'> = {
   transcript: () => '',
 }
 
-/** Voice switched off: nothing listens or speaks, and no mic or Helper is touched. */
+/** No voice (the website): nothing listens or speaks. */
 function useNoVoice(handlers: VoiceHandlers): Voice {
   const latest = useRef(handlers)
   latest.current = handlers

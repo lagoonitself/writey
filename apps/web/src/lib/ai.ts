@@ -7,119 +7,55 @@ import {
   isAiProvider,
   type KeyProvider,
 } from '@writey/shared'
-import { api, authedFetch, errorFrom } from './api'
-import { chatgptModels } from './helper'
-import { supabase } from './supabase'
+import { call, streamResponse } from './native'
 
 // ---------------------------------------------------------------------------
-// Provider keys, through the Worker (it encrypts them; docs §6.2)
+// Provider keys: kept encrypted on this computer, the key itself never reaches the page
 // ---------------------------------------------------------------------------
 
-export const listCredentials = () => api<CredentialInfo[]>('/credentials')
+export const listCredentials = () => call<CredentialInfo[]>('credentials_list')
 
 export const saveCredential = (provider: KeyProvider, key: string) =>
-  api<CredentialInfo>(`/credentials/${provider}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ key }),
-  })
+  call<CredentialInfo>('credential_save', { provider, key })
 
-export async function deleteCredential(provider: KeyProvider): Promise<void> {
-  const res = await authedFetch(`/credentials/${provider}`, { method: 'DELETE' })
-  if (!res.ok) throw await errorFrom(res)
-}
+export const deleteCredential = (provider: KeyProvider) =>
+  call<void>('credential_delete', { provider })
+
+/** Forgets every saved key and the ChatGPT sign-in (when the keychain lost the vault key). */
+export const resetVault = () => call<void>('vault_reset')
 
 // ---------------------------------------------------------------------------
-// Provider and model choice, in profiles.settings.ai
+// Provider and model choice
 // ---------------------------------------------------------------------------
 
 export async function loadAiSettings(): Promise<AiSettings> {
-  const { data } = await supabase.from('profiles').select('settings').maybeSingle()
-  const ai = (data?.settings as { ai?: Partial<AiSettings> } | undefined)?.ai
-  if (ai?.provider && isAiProvider(ai.provider) && typeof ai.model === 'string' && ai.model) {
+  const ai = await call<Partial<AiSettings> | null>('setting_get', { key: 'ai' })
+  if (ai?.provider && isAiProvider(ai.provider) && typeof ai.model === 'string') {
     return { provider: ai.provider, model: ai.model }
   }
   return DEFAULT_AI
 }
 
-export async function saveAiSettings(ai: AiSettings): Promise<void> {
-  const { data: user } = await supabase.auth.getUser()
-  if (!user.user) throw new Error('Not signed in')
-  const { data } = await supabase.from('profiles').select('settings').maybeSingle()
-  const settings = { ...((data?.settings as object | undefined) ?? {}), ai }
-  const { error } = await supabase.from('profiles').update({ settings }).eq('id', user.user.id)
-  if (error) throw new Error(error.message)
-}
-
-const modelLists = new Map<KeyProvider, Promise<ModelInfo[]>>()
+export const saveAiSettings = (ai: AiSettings) =>
+  call<void>('setting_set', { key: 'ai', value: ai })
 
 export function listModels(provider: AiProvider): Promise<ModelInfo[]> {
-  // ChatGPT's list depends on who is signed in to the Helper, so it isn't cached.
-  if (provider === 'chatgpt') return chatgptModels().then((json) => parseModels(provider, json))
-  let p = modelLists.get(provider)
-  if (!p) {
-    p = api<unknown>(`/ai/${provider}/models`).then((json) => parseModels(provider, json))
-    p.catch(() => modelLists.delete(provider))
-    modelLists.set(provider, p)
-  }
-  return p
+  // Rust caches the public lists for an hour; ChatGPT's depends on who is signed in.
+  return call<unknown>('models_list', { provider }).then((json) => parseModels(provider, json))
 }
 
-/** POSTs a Chat Completions body through the Worker. The caller reads the response. */
+/** Sends a Chat Completions body with the saved key. The caller reads the response. */
 export const chatRequest = (provider: KeyProvider, body: string, signal: AbortSignal) =>
-  authedFetch(`/ai/${provider}/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body,
-    signal,
-  })
+  streamResponse('ai_chat', { provider, body }, signal)
 
 // ---------------------------------------------------------------------------
-// "Connect OpenRouter": OAuth PKCE instead of pasting a key (docs §6.4)
+// "Connect OpenRouter": OAuth PKCE in the browser instead of pasting a key (docs §6.4)
 // ---------------------------------------------------------------------------
 
-const VERIFIER_KEY = 'writey.openrouter.verifier'
-const RETURN_KEY = 'writey.openrouter.return'
-export const OPENROUTER_CALLBACK = '/connect/openrouter'
+/** Opens openrouter.ai in the browser and resolves with the saved key once approved. */
+export const connectOpenRouter = () => call<CredentialInfo>('openrouter_connect')
 
-const base64url = (bytes: Uint8Array) =>
-  btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '')
-
-export async function startOpenRouterConnect(): Promise<void> {
-  const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)))
-  const challenge = base64url(
-    new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))),
-  )
-  sessionStorage.setItem(VERIFIER_KEY, verifier)
-  sessionStorage.setItem(RETURN_KEY, location.pathname)
-  const url = new URL('https://openrouter.ai/auth')
-  url.searchParams.set('callback_url', `${location.origin}${OPENROUTER_CALLBACK}`)
-  url.searchParams.set('code_challenge', challenge)
-  url.searchParams.set('code_challenge_method', 'S256')
-  location.assign(url)
-}
-
-/** Finishes the PKCE flow on the callback page. Returns the path to go back to. */
-export async function finishOpenRouterConnect(code: string): Promise<string> {
-  const verifier = sessionStorage.getItem(VERIFIER_KEY)
-  const back = sessionStorage.getItem(RETURN_KEY) ?? '/'
-  sessionStorage.removeItem(VERIFIER_KEY)
-  sessionStorage.removeItem(RETURN_KEY)
-  if (!verifier) throw new Error('This sign-in link has expired. Try connecting again.')
-  const res = await fetch('https://openrouter.ai/api/v1/auth/keys', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code, code_verifier: verifier, code_challenge_method: 'S256' }),
-  })
-  if (!res.ok) throw new Error(`OpenRouter refused the sign-in (${res.status}).`)
-  const { key } = (await res.json()) as { key?: string }
-  if (!key) throw new Error('OpenRouter did not return a key.')
-  await saveCredential('openrouter', key)
-  return back
-}
+export const cancelOpenRouter = () => call<void>('openrouter_cancel')
 
 // ---------------------------------------------------------------------------
 // Conversations: per notebook, several per notebook, newest first (docs §5.8)
@@ -137,74 +73,28 @@ export type StoredMessage = {
 
 export type ThreadInfo = { id: string; title: string | null; updated_at: string }
 
-type MessageRow = {
-  id: string
-  role: 'user' | 'assistant'
-  content: { text?: string; mode?: string; error?: boolean }
-  model: string | null
-  usage: Usage | null
-}
+export const listThreads = (notebookId: string) =>
+  call<ThreadInfo[]>('threads_list', { notebookId })
 
-export async function listThreads(notebookId: string): Promise<ThreadInfo[]> {
-  const { data, error } = await supabase
-    .from('ai_threads')
-    .select('id,title,updated_at')
-    .eq('notebook_id', notebookId)
-    .order('updated_at', { ascending: false })
-  if (error) throw new Error(error.message)
-  return data as ThreadInfo[]
-}
+export const loadMessages = (threadId: string) =>
+  call<StoredMessage[]>('messages_load', { threadId })
 
-export async function loadMessages(threadId: string): Promise<StoredMessage[]> {
-  const { data, error } = await supabase
-    .from('ai_messages')
-    .select('id,role,content,model,usage')
-    .eq('thread_id', threadId)
-    .order('created_at')
-  if (error) throw new Error(error.message)
-  return (data as MessageRow[]).map((m) => ({
-    id: m.id,
-    role: m.role,
-    text: m.content.text ?? '',
-    mode: m.content.mode,
-    error: m.content.error,
-    model: m.model,
-    usage: m.usage,
-  }))
-}
+export const createThread = (notebookId: string, title: string) =>
+  call<ThreadInfo>('thread_create', { notebookId, title })
 
-export async function createThread(notebookId: string, title: string): Promise<ThreadInfo> {
-  const { data, error } = await supabase
-    .from('ai_threads')
-    .insert({ notebook_id: notebookId, title: title.slice(0, 80) })
-    .select('id,title,updated_at')
-    .single()
-  if (error) throw new Error(error.message)
-  return data as ThreadInfo
-}
-
-export async function appendMessages(
-  threadId: string,
-  messages: Omit<StoredMessage, 'id'>[],
-): Promise<void> {
-  const { error } = await supabase.from('ai_messages').insert(
-    messages.map((m) => ({
-      thread_id: threadId,
-      role: m.role,
-      content: { text: m.text, mode: m.mode, error: m.error },
+export const appendMessages = (threadId: string, messages: Omit<StoredMessage, 'id'>[]) =>
+  call<void>('messages_append', {
+    threadId,
+    messages: messages.map((m) => ({
+      ...m,
+      id: '',
       model: m.model ?? null,
       usage: m.usage ?? null,
     })),
-  )
-  if (error) throw new Error(error.message)
-}
+  })
 
-export async function deleteThread(threadId: string): Promise<void> {
-  const { error } = await supabase.from('ai_threads').delete().eq('id', threadId)
-  if (error) throw new Error(error.message)
-}
+export const deleteThread = (id: string) => call<void>('thread_delete', { id })
 
-/** The model reads a reply as plain Markdown, without the chat's fold-out markup. */
 /**
  * A reply as the model should remember it. The copy of the page is marked as handwriting, so
  * the model doesn't take it for chat text and start repeating its working in the chat.

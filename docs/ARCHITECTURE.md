@@ -10,6 +10,16 @@ v0.2 changes: Gemini Live dropped (voice is local only, via Writey Helper); Chat
 
 ---
 
+> **2026-10-29 (HANDOFF D57): Writey is a desktop app.** Sections below that describe Supabase,
+> R2, the Worker API, Google login and the Python Writey Helper describe the old web version.
+> Now: `apps/desktop` (Tauri 2, Rust) owns storage (`src/store`: SQLite + an assets folder,
+> `.writey` archives), secrets (`src/vault.rs`: AES-256-GCM, key in the OS keychain), model
+> calls and sign-ins (`src/ai`: streaming over Tauri channels, Sign in with ChatGPT, OpenRouter
+> PKCE on a loopback port) and voice (`src/voice`: cpal mic → Silero VAD → Parakeet, Kokoro →
+> speaker, via sherpa-onnx; CUDA / CoreML first, CPU fallback, GPU checked in a child process).
+> The UI (`apps/web`) reaches Rust only through `src/lib/native.ts`; the ink engine, InkScript,
+> ai-core and the help engine are unchanged and still TypeScript.
+
 ## 1. Decisions at a glance
 
 | Area                     | Decision                                                                                                                                                                                                     |

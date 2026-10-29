@@ -1,5 +1,6 @@
 import { CHATGPT_USAGE_URL } from '@writey/ai-core'
 import { useEffect, useState } from 'react'
+import { isMac } from '../lib/native'
 import { CloseIcon, MicIcon, MicOffIcon, NewChatIcon, SendIcon, StopIcon } from '../notebook/icons'
 import { PTT_LABEL, VOICE_ENABLED, type Voice } from '../voice/useVoice'
 import { VoiceGuide } from '../voice/VoiceGuide'
@@ -59,6 +60,8 @@ function voiceLine(v: Voice): { label: string; hint: string } {
 }
 
 /** The one place to ask Writey: floating under the page, by voice or by typing. */
+const MOD = isMac ? '⌘' : 'Ctrl'
+
 export function AskBar(p: Props) {
   const { voice } = p
   const [guide, setGuide] = useState(false)
@@ -126,7 +129,7 @@ export function AskBar(p: Props) {
               </button>
             ) : (
               <button type="button" className="primary" onClick={p.onSettings}>
-                {voice.state.fix === 'update' ? 'Update Writey Helper' : 'Set up Writey Helper'}
+                Open voice settings
               </button>
             )}
             <button type="button" className="ghost" onClick={() => setShowError(false)}>
@@ -277,7 +280,7 @@ export function AskBar(p: Props) {
           </>
         ) : (
           <span className="faint">
-            {VOICE_ENABLED ? 'Ctrl K to type · click the mic to talk' : 'Ctrl K to type'}
+            {VOICE_ENABLED ? `${MOD} K to type · click the mic to talk` : `${MOD} K to type`}
             {p.chatgpt && (
               <>
                 {' · '}Using ChatGPT plan ·{' '}

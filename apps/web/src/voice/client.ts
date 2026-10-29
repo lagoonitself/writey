@@ -1,20 +1,22 @@
-import type { MicVAD } from '@ricky0123/vad-web'
+import type { UnlistenFn } from '@tauri-apps/api/event'
+import { NativeError } from '../lib/native'
 import {
-  HelperError,
-  helperKnown,
-  markHelperKnown,
-  synthesize,
-  transcribe,
+  onVoice,
   type VoiceStatus,
-  voiceHelperState,
   voicePrepare,
+  voicePtt,
+  voiceSay,
+  voiceStart,
   voiceStatus,
-} from '../lib/helper'
+  voiceStop,
+  voiceStopSpeaking,
+} from '../lib/voice'
 import { sentences } from './speech'
 import { type Address, addressed, type VoiceCommand, voiceCommand } from './trigger'
 
-// The browser half of voice (docs §7.1–7.2): the mic, Silero VAD, push-to-talk, the 30 s
-// transcript, the "Hey …" check and playback. The Helper only runs the models.
+// The page's half of voice (docs §7): the 30 s transcript, the "Hey …" check, the reply
+// window and commands. The desktop app's Rust side owns the mic, the voice detector, speech
+// to text and the speaker, and sends each heard line here as an event.
 
 export type VoiceState =
   | { kind: 'off' }
@@ -38,72 +40,93 @@ export type VoiceEvents = {
   command(c: VoiceCommand): void
   /** Why Writey can't talk right now (null once it can). */
   speechIssue(message: string | null): void
-  /** Writey just answered: the next sentence is a reply, no "Writey" needed. */
+  /** Writey just answered: the next sentence is a reply, no "Hey" needed. */
   followUp(open: boolean): void
 }
 
 const TRANSCRIPT_MS = 30_000
-/** Mic closes itself after this long with no speech (docs §7.3). */
+/** The mic closes itself after this long with no speech (docs §7.3). */
 const SILENCE_PAUSE_MS = 10 * 60_000
 /** After a bare "Hey", the next sentence within this window is the request. */
 const ARMED_MS = 8_000
 /** After Writey answers, how long it waits for a reply that doesn't start with "Hey". */
 const FOLLOW_UP_MS = 10_000
-const SAMPLE_RATE = 16_000
-/** How long a reply waits for the voice model (the first download is ~120 MB). */
-const VOICE_WAIT_MS = 5 * 60_000
-
-/** What the voice model is doing while speech waits for it. */
-async function voiceLoading(): Promise<{ message: string; failed?: boolean }> {
-  const tts = await voiceStatus()
-    .then((s) => s.tts)
-    .catch(() => null)
-  if (tts?.state === 'error') {
-    return { message: `Writey's voice didn't load: ${tts.error ?? 'unknown error'}`, failed: true }
-  }
-  if (tts?.state === 'downloading') {
-    return { message: `Downloading Writey's voice · ${Math.round((tts.progress ?? 0) * 100)}%` }
-  }
-  return { message: "Getting Writey's voice ready…" }
-}
 
 type Line = { who: 'you' | 'writey'; text: string; at: number }
 
+const modelsBusy = (s: VoiceStatus) =>
+  [s.engine, s.stt].some((m) => m && (m.state === 'downloading' || m.state === 'loading'))
+
 export class VoiceClient {
-  private vad: MicVAD | null = null
   private lines: Line[] = []
   private armedUntil = 0
-  private ptt: Float32Array[] | null = null
-  private skipSegment = false
-  private speechActive = false
+  private ptt = false
   private silenceTimer = 0
   private stopped = true
-  /** Speech that began while Writey was talking: an interruption meant for it. */
-  private bargedIn = false
   private followUntil = 0
   private followTimer = 0
   private followAfterSpeech = false
-  private readonly speaker: Speaker
+  private speakingNow = false
+  private status: VoiceStatus | null = null
+  private unlisten: Promise<UnlistenFn[]> | null = null
 
   constructor(
     private readonly ev: VoiceEvents,
     private readonly prefs: () => VoicePrefs,
-  ) {
-    this.speaker = new Speaker(
-      () => this.prefs().voice,
-      (on) => this.ev.speaking(on),
-      () => {
-        if (!this.followAfterSpeech) return
-        this.followAfterSpeech = false
-        this.followUp()
-      },
-      (issue) => this.ev.speechIssue(issue),
-    )
+  ) {}
+
+  /** Starts listening to the app's voice events (undone by `dispose`). */
+  attach(): void {
+    if (this.unlisten) return
+    void voiceStatus()
+      .then((s) => {
+        this.status = s
+      })
+      .catch(() => {})
+    this.unlisten = Promise.all([
+      onVoice('voice:models', (s) => {
+        this.status = s
+      }),
+      onVoice('voice:speech-start', () => {
+        if (this.stopped || this.ptt) return
+        this.resetSilence()
+        // Still inside the reply window: hold it open while you finish the sentence.
+        if (this.followUntil) {
+          this.followUntil = Math.max(this.followUntil, Date.now() + FOLLOW_UP_MS)
+          window.clearTimeout(this.followTimer)
+        }
+        this.ev.state({ kind: 'hearing' })
+      }),
+      onVoice('voice:state', (s) => {
+        if (this.stopped) return
+        if (s.kind === 'error') this.fail(s.message ?? 'The microphone stopped.', 'retry')
+        else if (!this.ptt) this.ev.state({ kind: s.kind })
+      }),
+      onVoice('voice:segment', (s) => this.line(s.text, s.ptt, s.during_speech)),
+      onVoice('voice:speaking', ({ on, finished }) => {
+        this.speakingNow = on
+        this.ev.speaking(on)
+        if (!on && finished && this.followAfterSpeech) {
+          this.followAfterSpeech = false
+          this.followUp()
+        }
+        if (!on && !finished) this.followAfterSpeech = false
+      }),
+      onVoice('voice:issue', (message) => this.ev.speechIssue(message)),
+    ])
+  }
+
+  dispose(): void {
+    this.stop()
+    void this.unlisten?.then((fns) => {
+      for (const f of fns) f()
+    })
+    this.unlisten = null
   }
 
   /** An answer finished: listen for a reply once Writey stops talking. */
   answered(): void {
-    if (this.speaker.busy) this.followAfterSpeech = true
+    if (this.speakingNow) this.followAfterSpeech = true
     else this.followUp()
   }
 
@@ -111,17 +134,15 @@ export class VoiceClient {
     return !this.stopped
   }
 
-  /**
-   * Writey talks back, typed questions included, once this browser has used the Helper
-   * (until then Writey never contacts 127.0.0.1 by itself).
-   */
+  /** Writey talks back (typed questions too) once its voice has been downloaded. */
   get speaks(): boolean {
-    return this.prefs().replies && (this.on || helperKnown())
+    const tts = this.status?.tts.state
+    return this.prefs().replies && (this.on || (tts !== undefined && tts !== 'missing'))
   }
 
-  /** Opens the reply window: the next sentence goes to Writey without its name. */
+  /** Opens the reply window: the next sentence goes to Writey without "Hey". */
   private followUp(): void {
-    if (!this.on || this.speaker.busy) return
+    if (!this.on || this.speakingNow) return
     this.followUntil = Date.now() + FOLLOW_UP_MS
     this.ev.followUp(true)
     window.clearTimeout(this.followTimer)
@@ -140,118 +161,48 @@ export class VoiceClient {
     this.stopped = false
     this.ev.state({ kind: 'starting' })
     try {
-      const helper = await voiceHelperState()
-      if (helper !== 'ok') {
-        this.fail(
-          helper === 'offline'
-            ? 'Voice needs Writey Helper running on this computer.'
-            : 'Update Writey Helper to talk to Writey.',
-          helper === 'offline' ? 'setup' : 'update',
-        )
+      let status = await voiceStatus()
+      if (!status.available) {
+        this.fail('Voice isn’t part of this build of Writey.')
         return
       }
-      markHelperKnown()
-      if (!(await this.modelsReady())) return
-      await this.openMic()
+      if (status.stt.state !== 'ready') {
+        status = await voicePrepare({ stt: true, tts: this.prefs().replies })
+      }
+      while (!this.stopped && status.stt.state !== 'ready') {
+        const failed = [status.engine, status.stt].find((m) => m?.state === 'error')
+        if (failed?.state === 'error') {
+          this.fail(`The speech model didn’t load: ${failed.error}`, 'retry')
+          return
+        }
+        if (!modelsBusy(status) && status.stt.state !== 'downloaded') {
+          status = await voicePrepare({ stt: true, tts: this.prefs().replies })
+        }
+        const dl = [status.engine, status.stt].find((m) => m?.state === 'downloading')
+        this.ev.state({
+          kind: 'models',
+          progress: dl?.state === 'downloading' ? dl.progress : null,
+        })
+        await new Promise((r) => setTimeout(r, 700))
+        status = await voiceStatus()
+      }
+      if (this.stopped) return
+      await voiceStart()
       if (this.stopped) {
-        await this.vad?.destroy()
-        this.vad = null
+        void voiceStop()
         return
       }
       this.ev.state({ kind: 'listening' })
       this.resetSilence()
     } catch (e) {
       const err = e as Error
-      const denied = err.name === 'NotAllowedError' || err.name === 'SecurityError'
       this.fail(
-        denied
-          ? 'Chrome blocked the microphone. Allow it for this site, then try again.'
-          : `Voice couldn't start: ${err.message}`,
+        err instanceof NativeError && err.code === 'mic'
+          ? err.message
+          : `Voice couldn’t start: ${err.message}`,
         'retry',
       )
     }
-  }
-
-  /** Waits for speech-to-text to be ready, downloading it the first time. */
-  private async modelsReady(): Promise<boolean> {
-    let status: VoiceStatus = await voiceStatus()
-    const want = { stt: true, tts: this.prefs().replies }
-    if (status.stt.state !== 'ready' || (want.tts && status.tts.state !== 'ready')) {
-      status = await voicePrepare(want)
-    }
-    while (!this.stopped && status.stt.state !== 'ready') {
-      if (status.stt.state === 'error') {
-        this.fail(`The speech model didn't load: ${status.stt.error ?? 'unknown error'}`, 'retry')
-        return false
-      }
-      this.ev.state({
-        kind: 'models',
-        progress: status.stt.state === 'downloading' ? (status.stt.progress ?? 0) : null,
-      })
-      await new Promise((r) => setTimeout(r, 1000))
-      status = await voiceStatus()
-    }
-    return !this.stopped
-  }
-
-  private async openMic(): Promise<void> {
-    const { MicVAD } = await import('@ricky0123/vad-web')
-    this.vad = await MicVAD.new({
-      model: 'v5',
-      // Threads need cross-origin isolation, which the site doesn't have; one is plenty.
-      ortConfig: (ort) => {
-        ort.env.wasm.numThreads = 1
-      },
-      baseAssetPath: '/vad/',
-      onnxWASMBasePath: '/vad/',
-      positiveSpeechThreshold: 0.5,
-      negativeSpeechThreshold: 0.35,
-      redemptionMs: 650,
-      preSpeechPadMs: 300,
-      minSpeechMs: 250,
-      startOnLoad: true,
-      getStream: () =>
-        navigator.mediaDevices.getUserMedia({
-          audio: {
-            channelCount: 1,
-            // Chrome's echo canceller keeps Writey from hearing itself (docs §7.1).
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        }),
-      onSpeechStart: () => {
-        this.speechActive = true
-        if (this.ptt) this.skipSegment = true
-        // Barge-in: talking over Writey stops it, and what you say is for Writey.
-        if (this.speaker.busy) this.bargedIn = true
-        this.speaker.stop()
-        // Still inside the reply window: hold it open while you finish the sentence.
-        if (this.followUntil) {
-          this.followUntil = Math.max(this.followUntil, Date.now() + FOLLOW_UP_MS)
-          window.clearTimeout(this.followTimer)
-        }
-        this.resetSilence()
-        if (!this.ptt) this.ev.state({ kind: 'hearing' })
-      },
-      onVADMisfire: () => {
-        this.speechActive = false
-        this.bargedIn = false
-        if (this.followUntil) this.followUp()
-        if (!this.ptt) this.ev.state({ kind: 'listening' })
-      },
-      onSpeechEnd: (audio) => {
-        this.speechActive = false
-        if (this.ptt || this.skipSegment) {
-          this.skipSegment = false
-          return
-        }
-        void this.segment(audio, false)
-      },
-      onFrameProcessed: (_, frame) => {
-        this.ptt?.push(frame.slice())
-      },
-    })
   }
 
   stop(): void {
@@ -259,65 +210,35 @@ export class VoiceClient {
     window.clearTimeout(this.silenceTimer)
     this.followAfterSpeech = false
     this.closeFollowUp()
-    this.ptt = null
-    this.speaker.stop()
-    void this.vad?.destroy()
-    this.vad = null
+    if (this.ptt) void voicePtt(false)
+    this.ptt = false
+    this.stopSpeaking()
+    void voiceStop().catch(() => {})
     this.ev.state({ kind: 'off' })
   }
 
-  /** Push-to-talk held: everything said is a request, no "Writey" needed. */
+  /** Push-to-talk held: everything said is a request, no "Hey" needed. */
   async pttDown(): Promise<void> {
     if (this.ptt) return
-    this.speaker.stop()
-    this.ptt = []
-    this.skipSegment = this.speechActive
-    this.ev.state({ kind: 'hearing' })
+    this.stopSpeaking()
+    this.ptt = true
     if (this.stopped) await this.start()
+    if (this.stopped || !this.ptt) return
+    this.ev.state({ kind: 'hearing' })
+    await voicePtt(true).catch(() => {})
   }
 
   pttUp(): void {
-    const frames = this.ptt
-    this.ptt = null
-    if (!frames) return
-    const length = frames.reduce((n, f) => n + f.length, 0)
-    if (length < SAMPLE_RATE * 0.3) {
-      if (this.on) this.ev.state({ kind: 'listening' })
-      return
-    }
-    const audio = new Float32Array(length)
-    let at = 0
-    for (const f of frames) {
-      audio.set(f, at)
-      at += f.length
-    }
-    void this.segment(audio, true)
+    if (!this.ptt) return
+    this.ptt = false
+    void voicePtt(false).catch(() => {})
   }
 
-  private async segment(audio: Float32Array, ptt: boolean): Promise<void> {
-    // Decided when the sentence ends, not after transcribing: a reply that took a moment counts.
-    const reply = this.bargedIn || Date.now() < this.followUntil
-    this.bargedIn = false
-    this.ev.state({ kind: 'transcribing' })
-    let text: string
-    try {
-      text = await transcribe(audio)
-    } catch (e) {
-      if (e instanceof HelperError && e.code === 'not_ready') {
-        this.stopped = true
-        void this.vad?.destroy()
-        this.vad = null
-        await this.start()
-      } else if (e instanceof HelperError && e.code === 'helper_offline') {
-        this.fail('Writey Helper stopped. Start it again to keep talking.', 'retry')
-      } else {
-        console.error('transcribe failed', e)
-        this.ev.state({ kind: 'listening' })
-      }
-      return
-    }
-    if (this.on) this.ev.state({ kind: 'listening' })
-    if (!text) return
+  private line(text: string, ptt: boolean, overWritey: boolean): void {
+    if (this.stopped || !text) return
+    // Decided when the sentence ends: talking over Writey or inside the reply window.
+    const reply = overWritey || Date.now() < this.followUntil
+    if (overWritey) this.stopSpeaking()
     this.remember('you', text)
     const address = addressed(text)
     this.ev.heard(text, address)
@@ -337,7 +258,7 @@ export class VoiceClient {
     this.armedUntil = 0
     const cmd = voiceCommand(request)
     if (cmd) {
-      if (cmd === 'stop') this.speaker.stop()
+      if (cmd === 'stop') this.stopSpeaking()
       this.ev.command(cmd)
     } else this.ev.request(request)
   }
@@ -346,11 +267,16 @@ export class VoiceClient {
   say(text: string): void {
     if (!this.speaks || !text.trim()) return
     this.remember('writey', text)
-    this.speaker.say(text)
+    const voice = this.prefs().voice
+    if (this.status && this.status.tts.state !== 'ready') {
+      void voicePrepare({ tts: true }).catch(() => {})
+    }
+    for (const s of sentences(text)) void voiceSay(s, voice).catch(() => {})
   }
 
   stopSpeaking(): void {
-    this.speaker.stop()
+    if (this.speakingNow) this.followAfterSpeech = false
+    void voiceStopSpeaking().catch(() => {})
   }
 
   /** The last 30 seconds of conversation, oldest first. */
@@ -375,119 +301,7 @@ export class VoiceClient {
 
   private fail(message: string, fix?: 'setup' | 'update' | 'retry'): void {
     this.stopped = true
-    void this.vad?.destroy()
-    this.vad = null
+    void voiceStop().catch(() => {})
     this.ev.state({ kind: 'error', message, fix })
-  }
-}
-
-/** Plays replies sentence by sentence, fetching the next while the current one plays. */
-class Speaker {
-  private queue: Promise<ArrayBuffer | null>[] = []
-  private audio: HTMLAudioElement | null = null
-  private abort: AbortController | null = null
-  private playing = false
-  /** Bumped by stop(), so a play loop that was waiting knows it's stale. */
-  private gen = 0
-
-  constructor(
-    private readonly voice: () => string,
-    private readonly onSpeaking: (on: boolean) => void,
-    /** Finished saying everything (not stopped). */
-    private readonly onDone: () => void,
-    private readonly onIssue: (message: string | null) => void,
-  ) {}
-
-  get busy(): boolean {
-    return this.playing
-  }
-
-  say(text: string): void {
-    if (!this.abort) this.abort = new AbortController()
-    const signal = this.abort.signal
-    for (const s of sentences(text)) this.queue.push(this.synth(s, signal))
-    if (!this.playing) void this.play()
-  }
-
-  /** One sentence as audio, waiting while the voice model downloads or loads. */
-  private async synth(text: string, signal: AbortSignal): Promise<ArrayBuffer | null> {
-    const until = Date.now() + VOICE_WAIT_MS
-    while (!signal.aborted) {
-      try {
-        const wav = await synthesize(text, this.voice(), signal)
-        this.onIssue(null)
-        return wav
-      } catch (e) {
-        if (signal.aborted) return null
-        const code = e instanceof HelperError ? e.code : ''
-        if (code === 'not_ready' && Date.now() < until) {
-          const wait = await voiceLoading()
-          this.onIssue(wait.message)
-          if (wait.failed) return null
-          await new Promise((r) => setTimeout(r, 1500))
-          continue
-        }
-        console.error('speech failed', e)
-        this.onIssue(
-          code === 'helper_offline'
-            ? "Writey can't talk: Writey Helper isn't running on this computer."
-            : code === 'not_ready'
-              ? "Writey's voice didn't get ready. Check Settings → Voice."
-              : `Writey couldn't speak: ${(e as Error).message}`,
-        )
-        return null
-      }
-    }
-    return null
-  }
-
-  private async play(): Promise<void> {
-    const gen = this.gen
-    this.playing = true
-    this.onSpeaking(true)
-    while (this.queue.length) {
-      const next = this.queue.shift() as Promise<ArrayBuffer | null>
-      const wav = await next
-      if (gen !== this.gen) return
-      if (!wav) continue
-      const url = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }))
-      try {
-        await new Promise<void>((resolve) => {
-          const audio = new Audio(url)
-          this.audio = audio
-          audio.onended = () => resolve()
-          audio.onerror = () => resolve()
-          audio.onpause = () => resolve()
-          audio.play().catch((e: Error) => {
-            if (e.name === 'NotAllowedError') {
-              this.onIssue(
-                "Chrome didn't let Writey speak yet. Click the page once, then ask again.",
-              )
-            }
-            resolve()
-          })
-        })
-      } finally {
-        URL.revokeObjectURL(url)
-        this.audio = null
-      }
-      if (gen !== this.gen) return
-    }
-    this.playing = false
-    this.abort = null
-    this.onSpeaking(false)
-    this.onDone()
-  }
-
-  stop(): void {
-    const was = this.playing
-    this.gen++
-    this.abort?.abort()
-    this.abort = null
-    this.queue = []
-    this.playing = false
-    this.audio?.pause()
-    this.audio = null
-    if (was) this.onSpeaking(false)
   }
 }

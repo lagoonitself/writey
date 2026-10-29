@@ -16,7 +16,7 @@ vi.mock('../lib/ai', () => ({
     return next instanceof Response ? next : sse(next)
   },
 }))
-vi.mock('../lib/helper', () => ({ chatgptResponses: vi.fn(), HelperError: class {} }))
+vi.mock('../lib/chatgpt', () => ({ chatgptResponses: vi.fn() }))
 vi.mock('../lib/assets', () => ({
   uploadAsset: async () => ({ id: 'asset-1' }),
   primeImage: () => {},

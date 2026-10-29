@@ -2,23 +2,27 @@ import { CHATGPT_USAGE_URL, type ModelInfo, PROVIDER_LABEL } from '@writey/ai-co
 import { type AiProvider, type AiSettings, DEFAULT_AI, type KeyProvider } from '@writey/shared'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  cancelOpenRouter,
+  connectOpenRouter,
   deleteCredential,
   listModels,
+  resetVault,
   saveAiSettings,
   saveCredential,
-  startOpenRouterConnect,
 } from '../lib/ai'
-import { ApiRequestError } from '../lib/api'
-import { chatgptUsed, chatgptWelcomed } from '../lib/helper'
+import { chatgptWelcomed } from '../lib/chatgpt'
+import { ask } from '../lib/dialogs'
+import { NativeError } from '../lib/native'
 import { ChevronIcon, CloseIcon } from '../notebook/icons'
 import { VOICE_ENABLED } from '../voice/useVoice'
 import { ChatgptPanel, WelcomeNotice } from './ChatgptCard'
+import { DataSection } from './DataSection'
 import { ModelPicker } from './ModelPicker'
 import { ProviderMark } from './ProviderMark'
-import { type AiState, chatgptReturn, usable } from './useAiState'
+import { type AiState, usable } from './useAiState'
 import { VoiceSection } from './VoiceSection'
 
-export type SettingsTab = 'ai' | 'voice' | 'privacy'
+export type SettingsTab = 'ai' | 'voice' | 'data' | 'privacy'
 
 type Props = {
   ai: AiState
@@ -30,6 +34,7 @@ type Props = {
 const TABS: { id: SettingsTab; label: string; sub: string }[] = [
   { id: 'ai', label: 'AI', sub: 'Account and model' },
   ...(VOICE_ENABLED ? [{ id: 'voice' as const, label: 'Voice', sub: 'Talk to Writey' }] : []),
+  { id: 'data', label: 'Notebooks', sub: 'Backup and import' },
   { id: 'privacy', label: 'Privacy', sub: VOICE_ENABLED ? 'Keys and audio' : 'Keys and images' },
 ]
 
@@ -54,10 +59,10 @@ const shortDate = (iso: string) =>
 export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: Props) {
   const ref = useRef<HTMLDialogElement>(null)
   const [tab, setTab] = useState<SettingsTab>(
-    chatgptReturn || (firstTab === 'voice' && !VOICE_ENABLED) ? 'ai' : firstTab,
+    firstTab === 'voice' && !VOICE_ENABLED ? 'ai' : firstTab,
   )
   const [open, setOpen] = useState<AiProvider | null>(() =>
-    chatgptReturn ? 'chatgpt' : usable(ai, ai.settings.provider) ? null : 'chatgpt',
+    usable(ai, ai.settings.provider) ? null : 'chatgpt',
   )
   const [saved, setSaved] = useState(false)
 
@@ -122,6 +127,7 @@ export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: 
           {tab === 'ai' && (
             <>
               <NowUsing ai={ai} onConnect={() => setOpen('chatgpt')} />
+              {ai.vaultError && <VaultProblem message={ai.vaultError} onReset={onChange} ai={ai} />}
               <section className="settings-section">
                 <div className="section-head">
                   <h3>Accounts</h3>
@@ -141,11 +147,7 @@ export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: 
                     >
                       {p === 'chatgpt' ? (
                         <>
-                          <ChatgptPanel
-                            ai={ai}
-                            onChange={onChange}
-                            onInstead={() => setOpen('openrouter')}
-                          />
+                          <ChatgptPanel ai={ai} onChange={onChange} />
                           {usable(ai, p) && ai.settings.provider !== p && (
                             <button type="button" className="primary" onClick={() => use(p)}>
                               Use ChatGPT for Writey
@@ -163,17 +165,19 @@ export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: 
             </>
           )}
           {VOICE_ENABLED && tab === 'voice' && <VoiceSection />}
+          {tab === 'data' && <DataSection />}
           {tab === 'privacy' && (
             <section className="settings-section">
               <h3 className="settings-title">Privacy</h3>
               <ul className="privacy-list">
                 <li>
-                  <strong>API keys</strong> are encrypted on Writey’s server and only ever sent to
-                  that provider. You can remove them any time under AI.
+                  <strong>Your notebooks</strong> stay on this computer. Nothing is uploaded except
+                  what you ask the AI about.
                 </li>
                 <li>
-                  <strong>Your ChatGPT sign-in</strong> never leaves this computer: Writey Helper
-                  keeps it.
+                  <strong>API keys and your ChatGPT sign-in</strong> are encrypted on this computer,
+                  with the key in your system’s keychain, and only ever sent to that provider. You
+                  can remove them any time under AI.
                 </li>
                 {VOICE_ENABLED && (
                   <li>
@@ -204,6 +208,31 @@ export function SettingsDialog({ ai, onChange, onClose, tab: firstTab = 'ai' }: 
   )
 }
 
+/** Saved keys can't be read (the keychain lost the vault key, or it was denied). */
+function VaultProblem({
+  message,
+  ai,
+  onReset,
+}: {
+  message: string
+  ai: AiState
+  onReset(next: AiState): void
+}) {
+  const reset = async () => {
+    if (!(await ask('Forget all saved API keys and the ChatGPT sign-in on this computer?'))) return
+    await resetVault()
+    onReset({ ...ai, credentials: [], chatgpt: null, vaultError: undefined })
+  }
+  return (
+    <div className="inline-error" role="alert">
+      <p>{message}</p>
+      <button type="button" onClick={reset}>
+        Reset saved keys
+      </button>
+    </div>
+  )
+}
+
 /** What Writey thinks with right now, at a glance. */
 function NowUsing({ ai, onConnect }: { ai: AiState; onConnect(): void }) {
   const { provider, model } = ai.settings
@@ -229,12 +258,8 @@ function NowUsing({ ai, onConnect }: { ai: AiState; onConnect(): void }) {
 
 function statusOf(ai: AiState, provider: AiProvider): { text: string; ok: boolean } {
   if (provider === 'chatgpt') {
-    if (ai.chatgpt?.signed_in && ai.helper === 'ok') {
+    if (ai.chatgpt?.signed_in) {
       return { text: ai.chatgpt.email ?? 'Signed in', ok: Boolean(ai.chatgpt.plan_usage) }
-    }
-    if (ai.helper === 'outdated') return { text: 'Writey Helper needs an update', ok: false }
-    if (ai.helper === 'offline' && chatgptUsed()) {
-      return { text: 'Writey Helper isn’t running', ok: false }
     }
     return { text: 'Use your Plus or Pro plan', ok: false }
   }
@@ -320,7 +345,7 @@ function KeyPanel({
       if (usable(ai, ai.settings.provider)) onChange(next)
       else onUse(provider, next)
     } catch (e) {
-      const code = e instanceof ApiRequestError ? e.message : ''
+      const code = e instanceof NativeError ? e.code : ''
       setError(
         code === 'invalid_key'
           ? `${name} says this key isn’t valid.`
@@ -334,13 +359,31 @@ function KeyPanel({
   }
 
   const remove = async () => {
-    if (!confirm(`Remove your ${name} key from Writey?`)) return
+    if (!(await ask(`Remove your ${name} key from Writey?`, { ok: 'Remove' }))) return
     setBusy(true)
     try {
       await deleteCredential(provider)
       onChange({ ...ai, credentials: ai.credentials.filter((c) => c.provider !== provider) })
     } catch (e) {
       setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const connect = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const info = await connectOpenRouter()
+      const next = {
+        ...ai,
+        credentials: [...ai.credentials.filter((c) => c.provider !== provider), info],
+      }
+      if (usable(ai, ai.settings.provider)) onChange(next)
+      else onUse(provider, next)
+    } catch (e) {
+      if (!(e instanceof NativeError && e.code === 'cancelled')) setError((e as Error).message)
     } finally {
       setBusy(false)
     }
@@ -377,14 +420,15 @@ function KeyPanel({
       )}
       {provider === 'openrouter' && (
         <div className="actions">
-          <button
-            type="button"
-            className="primary"
-            onClick={() => void startOpenRouterConnect()}
-            disabled={busy}
-          >
-            Connect OpenRouter
+          <button type="button" className="primary" onClick={connect} disabled={busy}>
+            {busy ? <span className="spinner" aria-hidden="true" /> : null}
+            {busy ? 'Finish in your browser…' : 'Connect OpenRouter'}
           </button>
+          {busy && (
+            <button type="button" className="link-btn" onClick={() => void cancelOpenRouter()}>
+              Cancel
+            </button>
+          )}
           {!pasting && (
             <button type="button" className="link-btn" onClick={() => setPasting(true)}>
               Use an API key instead

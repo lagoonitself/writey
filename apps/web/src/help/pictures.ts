@@ -1,4 +1,4 @@
-import { authedFetch } from '../lib/api'
+import { callForBytes } from '../lib/native'
 
 // Real diagrams from the web (HANDOFF D49): Writey searches Wikimedia Commons, whose
 // pictures are all free to reuse with credit, shows the model a numbered contact sheet,
@@ -111,7 +111,7 @@ export async function searchPictures(query: string, signal: AbortSignal): Promis
   return hits
 }
 
-/** The picture's bytes: straight from Commons, or through Writey's Worker if that fails. */
+/** The picture's bytes: straight from Commons, or fetched by the app if that fails. */
 export async function pictureBlob(url: string, signal: AbortSignal): Promise<Blob> {
   try {
     const res = await fetch(url, { signal, mode: 'cors' })
@@ -119,9 +119,20 @@ export async function pictureBlob(url: string, signal: AbortSignal): Promise<Blo
   } catch (e) {
     if (signal.aborted) throw e
   }
-  const res = await authedFetch(`/picture?url=${encodeURIComponent(url)}`, { signal })
-  if (!res.ok) throw new Error("couldn't download the picture")
-  return res.blob()
+  const bytes = await callForBytes('picture_fetch', { url }).catch(() => {
+    throw new Error("couldn't download the picture")
+  })
+  return new Blob([bytes as BlobPart], { type: sniffImage(bytes) })
+}
+
+/** An image's type from its first bytes (PNG, JPEG, GIF, WebP), or '' if unknown. */
+export function sniffImage(b: Uint8Array): string {
+  const at = (i: number, s: string) => [...s].every((c, k) => b[i + k] === c.charCodeAt(0))
+  if (b[0] === 0x89 && at(1, 'PNG')) return 'image/png'
+  if (b[0] === 0xff && b[1] === 0xd8) return 'image/jpeg'
+  if (at(0, 'GIF8')) return 'image/gif'
+  if (at(0, 'RIFF') && at(8, 'WEBP')) return 'image/webp'
+  return ''
 }
 
 export async function decode(blob: Blob): Promise<HTMLImageElement> {

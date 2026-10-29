@@ -18,7 +18,7 @@
   --ok: #2e7a4f;
   --ok-soft: #e7f2ea;
 
-  --ui: "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --ui: "Geist Variable", "Geist", system-ui, -apple-system, "Segoe UI", sans-serif;
   --display: "Instrument Serif", Georgia, "Times New Roman", serif;
   --mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
   --hand: "Caveat", "Segoe Print", cursive;
@@ -3214,4 +3214,66 @@ button.write-on-page:hover:not(:disabled) {
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
   }
+}
+
+/* Desktop app additions (HANDOFF D57) */
+.undo-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 12px 10px 18px;
+  border-radius: 999px;
+  background: var(--ink, #1d1c19);
+  color: #fffdf8;
+  font: 500 14px var(--ui);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 0.18);
+  z-index: 50;
+}
+.undo-toast button {
+  background: transparent;
+  color: #fffdf8;
+  border: 1px solid rgb(255 255 255 / 0.35);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+.notebook-rename {
+  display: flex;
+  align-items: flex-end;
+  padding: 12px;
+}
+.notebook-rename input {
+  width: 100%;
+}
+.dots {
+  font-size: 20px;
+  line-height: 1;
+}
+.download-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0 6px;
+}
+.first-open {
+  margin-top: 14px;
+  font: 400 14px / 1.5 var(--ui);
+  color: var(--ink-soft);
+}
+.first-open summary {
+  cursor: pointer;
+}
+.export-old {
+  margin-top: 28px;
+  padding-top: 18px;
+  border-top: 1px solid rgb(0 0 0 / 0.08);
+}
+.export-old h2 {
+  font: 400 24px var(--display);
+  margin: 0 0 6px;
 }
