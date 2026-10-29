@@ -55,7 +55,7 @@ jobs:
       - name: Re-fetch sherpa-onnx if the cache dropped its download
         shell: bash
         working-directory: apps/desktop
-        run: '[ -d target/sherpa-onnx-prebuilt ] || cargo clean -p sherpa-onnx-sys'
+        run: "[ -d target/sherpa-onnx-prebuilt ] || cargo clean -p sherpa-onnx-sys"
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test

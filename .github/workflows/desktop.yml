@@ -47,7 +47,7 @@ jobs:
       - name: Re-fetch sherpa-onnx if the cache dropped its download
         shell: bash
         working-directory: apps/desktop
-        run: '[ -d target/sherpa-onnx-prebuilt ] || cargo clean --release -p sherpa-onnx-sys'
+        run: "[ -d target/sherpa-onnx-prebuilt ] || cargo clean --release -p sherpa-onnx-sys"
       - name: Unit tests
         working-directory: apps/desktop
         run: cargo test --release --lib
@@ -122,7 +122,7 @@ jobs:
       - name: Re-fetch sherpa-onnx if the cache dropped its download
         shell: bash
         working-directory: apps/desktop
-        run: '[ -d target/sherpa-onnx-prebuilt ] || cargo clean --release -p sherpa-onnx-sys'
+        run: "[ -d target/sherpa-onnx-prebuilt ] || cargo clean --release -p sherpa-onnx-sys"
       - name: Download addresses are live
         if: runner.os == 'Linux'
         working-directory: apps/desktop
