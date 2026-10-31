@@ -107,6 +107,11 @@ impl EchoGuard {
         self.output_live || self.quiet_since.is_some_and(|t| t.elapsed() < TAIL)
     }
 
+    /// Writey spoke just now, so a heard line may still carry its voice.
+    pub fn recently_live(&self, within: Duration) -> bool {
+        self.output_live || self.quiet_since.is_some_and(|t| t.elapsed() < within)
+    }
+
     /// Speaker still playing or within the post-playback tail.
     pub fn playback_live(&self) -> bool {
         self.mic_gated()
@@ -204,5 +209,16 @@ mod tests {
             normalize_tokens("old line"),
         ));
         assert!(!g.is_echo("old line"));
+    }
+
+    #[test]
+    fn echo_suspect_only_right_after_speaking() {
+        let mut g = EchoGuard::default();
+        assert!(!g.recently_live(Duration::from_secs(3)));
+        g.sync_output_buffer(true);
+        assert!(g.recently_live(Duration::from_secs(3)));
+        g.quiet_since = Some(Instant::now() - Duration::from_secs(4));
+        g.output_live = false;
+        assert!(!g.recently_live(Duration::from_secs(3)));
     }
 }

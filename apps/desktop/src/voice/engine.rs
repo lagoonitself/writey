@@ -555,6 +555,9 @@ fn listen(
     barge.clear();
 }
 
+/// How long after Writey stops speaking a heard line is checked for echo.
+const ECHO_SUSPECT: Duration = Duration::from_secs(3);
+
 fn transcriber(
     rx: Receiver<Segment>,
     stt: Arc<Mutex<Option<Arc<Stt>>>>,
@@ -575,7 +578,10 @@ fn transcriber(
         );
         emit_state(&app, "listening", None);
         let echo = lock(&echo);
-        if text.is_empty() || echo.is_echo(&text) {
+        // Only lines heard over Writey's voice or just after it can be its echo; a later
+        // reply that repeats Writey's words ("yes, integrate by parts") is the student's.
+        let suspect = !seg.ptt && (seg.during_speech || echo.recently_live(ECHO_SUSPECT));
+        if text.is_empty() || (suspect && echo.is_echo(&text)) {
             continue;
         }
         if seg.during_speech && !seg.ptt && !EchoGuard::is_barge_in(&text) {
