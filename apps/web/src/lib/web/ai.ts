@@ -36,7 +36,7 @@ export async function deleteCredential(provider: KeyProvider): Promise<void> {
 export async function loadAiSettings(): Promise<AiSettings> {
   const { data } = await supabase.from('profiles').select('settings').maybeSingle()
   const ai = (data?.settings as { ai?: Partial<AiSettings> } | undefined)?.ai
-  if (ai?.provider && isAiProvider(ai.provider) && typeof ai.model === 'string' && ai.model) {
+  if (ai?.provider && isAiProvider(ai.provider) && typeof ai.model === 'string') {
     return { provider: ai.provider, model: ai.model }
   }
   return DEFAULT_AI
@@ -47,7 +47,7 @@ export async function saveAiSettings(ai: AiSettings): Promise<void> {
   if (!user.user) throw new Error('Not signed in')
   const { data } = await supabase.from('profiles').select('settings').maybeSingle()
   const settings = { ...((data?.settings as object | undefined) ?? {}), ai }
-  const { error } = await supabase.from('profiles').update({ settings }).eq('id', user.user.id)
+  const { error } = await supabase.from('profiles').upsert({ id: user.user.id, settings })
   if (error) throw new Error(error.message)
 }
 

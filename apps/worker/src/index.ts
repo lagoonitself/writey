@@ -89,7 +89,11 @@ app.get('/pages/:id/content', async (c) => {
   const obj = head.content_key ? await c.env.FILES.get(head.content_key) : null
   if (!obj) return new Response(null, { status: 204, headers })
   return new Response(obj.body, {
-    headers: { ...headers, 'Content-Type': 'application/octet-stream' },
+    headers: {
+      ...headers,
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': String(obj.size),
+    },
   })
 })
 
@@ -146,7 +150,8 @@ const ASSET_COLUMNS = 'id,kind,bytes,sha256,page_count,created_at'
 app.post('/assets', async (c) => {
   const kind = c.req.query('kind') as AssetKind
   if (kind !== 'pdf' && kind !== 'image') return c.json<ApiError>({ error: 'bad_kind' }, 400)
-  const type = (c.req.header('Content-Type') ?? '').split(';')[0]?.trim() ?? ''
+  let type = (c.req.header('Content-Type') ?? '').split(';')[0]?.trim() ?? ''
+  if (type === 'image/jpg') type = 'image/jpeg'
   if (!ASSET_MIME[kind].includes(type)) return c.json<ApiError>({ error: 'bad_type' }, 415)
   const length = Number(c.req.header('Content-Length'))
   if (!length) return c.json<ApiError>({ error: 'length_required' }, 411)
@@ -164,8 +169,8 @@ app.post('/assets', async (c) => {
   if (!body) return c.json<ApiError>({ error: 'empty_body' }, 400)
 
   // The desktop app syncs files under the ids its pages already use (HANDOFF D57).
-  const given = c.req.header('X-Asset-Id')
-  if (given !== undefined && !isUuid(given)) return c.json<ApiError>({ error: 'bad_id' }, 400)
+  const given = c.req.header('X-Asset-Id') || undefined
+  if (given && !isUuid(given)) return c.json<ApiError>({ error: 'bad_id' }, 400)
   if (given) {
     const [have] = await select<AssetRow>(
       c.env,
@@ -194,16 +199,18 @@ app.post('/assets', async (c) => {
 app.get('/assets/:id', async (c) => {
   const id = c.req.param('id')
   if (!isUuid(id)) return c.json<ApiError>({ error: 'not_found' }, 404)
-  const [row] = await select<{ r2_key: string }>(
+  const [row] = await select<{ r2_key: string; kind: AssetKind }>(
     c.env,
     c.get('token'),
-    `assets?id=eq.${id}&select=r2_key`,
+    `assets?id=eq.${id}&select=r2_key,kind`,
   )
   const obj = row ? await c.env.FILES.get(row.r2_key) : null
   if (!obj) return c.json<ApiError>({ error: 'not_found' }, 404)
+  const defaultType = row?.kind === 'pdf' ? 'application/pdf' : 'image/png'
   return new Response(obj.body, {
     headers: {
-      'Content-Type': obj.httpMetadata?.contentType ?? 'application/octet-stream',
+      'Content-Type': obj.httpMetadata?.contentType ?? defaultType,
+      'Content-Length': String(obj.size),
       // Asset bytes never change for a given id.
       'Cache-Control': 'private, max-age=31536000, immutable',
       ETag: obj.httpEtag,

@@ -2,6 +2,7 @@ import { decodePage, emptyPage, encodePage, gunzip, gzip, type PageDoc } from '@
 import { PAGE_VERSION_HEADER, type VersionConflict } from '@writey/shared'
 import { del, get, set } from 'idb-keyval'
 import { authedFetch, errorFrom } from './api'
+import { broadcastMessage } from './broadcast'
 
 // Page ink is saved through the Worker to R2. A copy of unsaved work is kept in
 // IndexedDB so a crash or closed tab doesn't lose it (docs §4.5).
@@ -26,7 +27,11 @@ export async function loadPage(pageId: string): Promise<LoadedPage> {
     )
     await del(backupKey(pageId)).catch(() => {})
   }
-  const doc = res.status === 204 ? emptyPage() : decodePage(await gunzip(await res.arrayBuffer()))
+  if (res.status === 204) {
+    return { doc: emptyPage(), version, restored: false }
+  }
+  const buf = await res.arrayBuffer()
+  const doc = buf.byteLength === 0 ? emptyPage() : decodePage(await gunzip(buf))
   return { doc, version, restored: false }
 }
 
@@ -53,7 +58,9 @@ export async function savePage(
     return { ok: false, conflictVersion: conflict.version }
   }
   if (!res.ok) throw await errorFrom(res)
-  return { ok: true, version: ((await res.json()) as { version: number }).version }
+  const version = ((await res.json()) as { version: number }).version
+  broadcastMessage({ type: 'page_saved', notebookId: '', pageId })
+  return { ok: true, version }
 }
 
 export function backupPage(pageId: string, doc: PageDoc, baseVersion: number): Promise<void> {

@@ -27,6 +27,7 @@ import { ask, notify } from '../lib/dialogs'
 import { isDesktop } from '../lib/native'
 import { pdfPageSizes } from '../lib/pdf'
 import { navigate } from '../lib/router'
+import { onBroadcastMessage } from '../lib/web/broadcast'
 import { useRemoteRefresh } from '../lib/web/remoteRefresh'
 import { SettingsDialog, type SettingsTab } from '../settings/SettingsDialog'
 import { useAiState } from '../settings/useAiState'
@@ -176,9 +177,20 @@ export function NotebookView({ id }: { id: string }) {
 
   useRemoteRefresh(refreshFromAccount)
 
-  // ---- sync (desktop): pages and ink changed on another computer or the website ----
+  // ---- sync: pages and ink changed on another computer, the website or another tab ----
   useEffect(() => {
-    if (!isDesktop()) return
+    if (!isDesktop()) {
+      const offBroadcast = onBroadcastMessage((msg) => {
+        if (msg.type === 'pages_changed' && msg.notebookId === id) {
+          listPages(id)
+            .then(setPages)
+            .catch(() => {})
+        } else if (msg.type === 'page_saved') {
+          void handles.get(msg.pageId)?.reloadIfClean()
+        }
+      })
+      return offBroadcast
+    }
     const off = onSynced((r) => {
       for (const pageId of r.pages) void handles.get(pageId)?.reloadIfClean()
       if (r.lists_changed) {

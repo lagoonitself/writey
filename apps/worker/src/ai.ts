@@ -147,9 +147,13 @@ ai.get('/ai/:provider/models', async (c) => {
 ai.post('/ai/:provider/chat', async (c) => {
   const provider = c.req.param('provider')
   if (!isKeyProvider(provider)) return c.json<ApiError>({ error: 'bad_provider' }, 404)
-  const length = Number(c.req.header('Content-Length'))
-  if (!length) return c.json<ApiError>({ error: 'length_required' }, 411)
-  if (length > AI_BODY_MAX_BYTES) return c.json<ApiError>({ error: 'too_large' }, 413)
+  const lengthHeader = c.req.header('Content-Length')
+  if (lengthHeader && Number(lengthHeader) > AI_BODY_MAX_BYTES) {
+    return c.json<ApiError>({ error: 'too_large' }, 413)
+  }
+  const body = await c.req.arrayBuffer()
+  if (body.byteLength === 0) return c.json<ApiError>({ error: 'empty_body' }, 400)
+  if (body.byteLength > AI_BODY_MAX_BYTES) return c.json<ApiError>({ error: 'too_large' }, 413)
 
   const key = await providerKey(c.env, c.get('token'), c.get('user').userId, provider)
   if (key === 'no_key' || key === 'key_unreadable') return c.json<ApiError>({ error: key }, 400)
@@ -167,7 +171,7 @@ ai.post('/ai/:provider/chat', async (c) => {
   const upstream = await fetch(UPSTREAM[provider].chat, {
     method: 'POST',
     headers,
-    body: await c.req.arrayBuffer(),
+    body,
     signal: c.req.raw.signal,
   })
   return new Response(upstream.body, {

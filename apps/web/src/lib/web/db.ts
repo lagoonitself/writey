@@ -1,5 +1,6 @@
 import type { NotebookRow, PageBackground, PageRow } from '@writey/shared'
 import { generateKeyBetween, generateNKeysBetween } from 'fractional-indexing'
+import { broadcastMessage } from './broadcast'
 import { supabase } from './supabase'
 
 // Notebook and page metadata go straight to Supabase; RLS limits rows to the owner.
@@ -46,17 +47,27 @@ export async function createNotebook(firstKey: string | null): Promise<NotebookR
       .single(),
   )
   await addPages(notebook.id, null, null, [{ ...A4, background: { kind: 'blank' } }])
+  broadcastMessage({ type: 'notebooks_changed' })
   return notebook
 }
 
 export async function renameNotebook(id: string, title: string): Promise<void> {
   check(await supabase.from('notebooks').update({ title }).eq('id', id))
+  broadcastMessage({ type: 'notebooks_changed' })
 }
 
 export async function trashNotebook(id: string): Promise<void> {
   check(
     await supabase.from('notebooks').update({ deleted_at: new Date().toISOString() }).eq('id', id),
   )
+  broadcastMessage({ type: 'notebooks_changed' })
+}
+
+export async function restoreNotebook(id: string): Promise<boolean> {
+  const { error } = await supabase.from('notebooks').update({ deleted_at: null }).eq('id', id)
+  if (error) return false
+  broadcastMessage({ type: 'notebooks_changed' })
+  return true
 }
 
 export async function listPages(notebookId: string): Promise<PageRow[]> {
@@ -86,6 +97,7 @@ export async function addPages(
       .insert(pages.map((p, i) => ({ ...p, notebook_id: notebookId, sort_key: keys[i] })))
       .select(PAGE_COLUMNS),
   )
+  broadcastMessage({ type: 'pages_changed', notebookId })
   return rows.sort((a, b) => (a.sort_key < b.sort_key ? -1 : 1))
 }
 

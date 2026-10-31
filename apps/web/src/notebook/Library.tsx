@@ -13,6 +13,7 @@ import {
 } from '../lib/db'
 import { call, isDesktop } from '../lib/native'
 import { navigate } from '../lib/router'
+import { onBroadcastMessage } from '../lib/web/broadcast'
 import { useRemoteRefresh } from '../lib/web/remoteRefresh'
 import { supabase } from '../lib/web/supabase'
 import { SettingsDialog } from '../settings/SettingsDialog'
@@ -60,7 +61,11 @@ export function Library({ session }: { session?: Session }) {
 
   useEffect(() => {
     void load()
-    if (!isDesktop()) return
+    if (!isDesktop()) {
+      return onBroadcastMessage((msg) => {
+        if (msg.type === 'notebooks_changed') void load()
+      })
+    }
     call<AppInfo>('app_info')
       .then(setInfo)
       .catch(() => {})
@@ -102,7 +107,7 @@ export function Library({ session }: { session?: Session }) {
     try {
       await trashNotebook(nb.id)
       setNotebooks((prev) => prev?.filter((n) => n.id !== nb.id) ?? null)
-      if (isDesktop()) setUndo(nb)
+      setUndo(nb)
       window.clearTimeout(undoTimer.current)
       undoTimer.current = window.setTimeout(() => setUndo(null), 8000)
     } catch (e) {
@@ -374,7 +379,17 @@ function LibraryMenu({
             </a>
           )}
           {session && (
-            <button type="button" role="menuitem" onClick={() => supabase.auth.signOut()}>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false)
+                supabase.auth
+                  .signOut()
+                  .then(() => navigate('/'))
+                  .catch((e: Error) => console.error('Sign out failed:', e))
+              }}
+            >
               <SignOutIcon size={17} />
               Sign out
             </button>

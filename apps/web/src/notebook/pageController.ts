@@ -24,6 +24,7 @@ import { ask } from '../lib/dialogs'
 import { NativeError } from '../lib/native'
 import { backupPage, clearBackup, loadPage, savePage } from '../lib/pageStore'
 import { renderPdfPage } from '../lib/pdf'
+import { ApiRequestError } from '../lib/web/api'
 import {
   clipboard,
   type GhostActions,
@@ -466,6 +467,9 @@ export class PageController {
     this.version = loaded.version
     this.savedRevision = loaded.restored ? -1 : this.editor.revision
     this.loaded = true
+    this.redrawInk()
+    this.requestWet()
+    this.cb.onHistory()
     if (loaded.restored) {
       this.cb.onSaveState('dirty')
       this.scheduleSave(0)
@@ -515,12 +519,18 @@ export class PageController {
         this.version = result.conflictVersion
         this.scheduleSave(0)
       } else {
+        await clearBackup(this.page.id).catch(() => {})
         await this.load()
         this.cb.onSaveState('saved')
       }
     } catch (err) {
       // A deleted page has nothing left to save to.
-      if (err instanceof NativeError && err.code === 'not_found') {
+      const isNotFound =
+        (err instanceof NativeError && err.code === 'not_found') ||
+        (err instanceof ApiRequestError && (err.status === 404 || err.message === 'not_found')) ||
+        (err as { status?: number })?.status === 404 ||
+        (err as Error)?.message === 'not_found'
+      if (isNotFound) {
         void clearBackup(this.page.id).catch(() => {})
         this.savedRevision = revision
         return
