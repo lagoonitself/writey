@@ -52,6 +52,7 @@ export type VoiceEvents = {
   'voice:speech-start': null
   'voice:segment': { text: string; ptt: boolean; during_speech: boolean }
   'voice:speaking': { on: boolean; finished: boolean }
+  'voice:playback': { live: boolean }
   'voice:issue': string
 }
 

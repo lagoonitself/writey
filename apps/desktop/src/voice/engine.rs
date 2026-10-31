@@ -57,6 +57,12 @@ struct SpeakingEvent {
     finished: bool,
 }
 
+#[derive(Serialize, Clone)]
+struct PlaybackEvent {
+    /// Speaker playing or within the post-playback tail; mic is half-duplex gated.
+    live: bool,
+}
+
 struct Stt {
     rec: OfflineRecognizer,
 }
@@ -291,16 +297,13 @@ fn emit_state(app: &AppHandle, kind: &'static str, message: Option<String>) {
 
 // ---------------------------------------------------------------------- mic thread
 
-fn vad(model: &Path) -> Result<VoiceActivityDetector, String> {
-    if !model.is_file() {
-        return Err("the voice detector is missing from the app".into());
-    }
-    let cfg = VadModelConfig {
+fn vad_cfg(model: &Path, threshold: f32, min_speech: f32) -> VadModelConfig {
+    VadModelConfig {
         silero_vad: SileroVadModelConfig {
             model: Some(model.to_string_lossy().into_owned()),
-            threshold: 0.5,
+            threshold,
             min_silence_duration: 0.65,
-            min_speech_duration: 0.25,
+            min_speech_duration: min_speech,
             window_size: WINDOW as i32,
             max_speech_duration: 25.0,
         },
@@ -308,10 +311,31 @@ fn vad(model: &Path) -> Result<VoiceActivityDetector, String> {
         num_threads: 1,
         provider: Some("cpu".into()),
         ..Default::default()
-    };
-    VoiceActivityDetector::create(&cfg, 60.0)
+    }
+}
+
+fn vad(model: &Path) -> Result<VoiceActivityDetector, String> {
+    if !model.is_file() {
+        return Err("the voice detector is missing from the app".into());
+    }
+    VoiceActivityDetector::create(&vad_cfg(model, 0.5, 0.25), 60.0)
         .ok_or_else(|| "the voice detector didn't start".into())
 }
+
+/// Stricter detector for talking over Writey's voice (barge-in only).
+fn barge_vad(model: &Path) -> Result<VoiceActivityDetector, String> {
+    VoiceActivityDetector::create(&vad_cfg(model, 0.72, 0.18), 8.0)
+        .ok_or_else(|| "the voice detector didn't start".into())
+}
+
+fn segment_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
+const BARGE_RMS: f32 = 0.018;
 
 fn open_input(tx: SyncSender<Vec<f32>>) -> Result<(cpal::Stream, u32), String> {
     let host = cpal::default_host();
@@ -396,13 +420,20 @@ fn listen(
         }
     };
     let _ = ready.send(Ok(()));
+    let barge = match barge_vad(&vad_model) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = ready.send(Err(e));
+            return;
+        }
+    };
     let mut rs = Resampler::new(rate, RATE);
     let mut pending: Vec<f32> = Vec::with_capacity(WINDOW * 4);
     let mut was_speech = false;
-    let mut started_over_writey = false;
-    // A segment that began before push-to-talk was pressed is dropped (its words go to PTT).
+    let mut was_barge = false;
     let mut skip_segment = false;
     let mut last_audio = Instant::now();
+    let mut playback_live = false;
     // No sound at all at first can be macOS asking for mic permission; give it time.
     let mut heard_any = false;
     while !stop.load(Ordering::SeqCst) {
@@ -455,35 +486,73 @@ fn listen(
             }
         }
         pending.extend_from_slice(&audio);
+        let gated = lock(&echo).mic_gated();
+        if gated != playback_live {
+            playback_live = gated;
+            let _ = app.emit(
+                "voice:playback",
+                PlaybackEvent {
+                    live: playback_live,
+                },
+            );
+        }
         let mut fed = 0;
         while pending.len() - fed >= WINDOW {
-            vad.accept_waveform(&pending[fed..fed + WINDOW]);
+            let window = &pending[fed..fed + WINDOW];
             fed += WINDOW;
-            let speech = vad.detected();
-            if speech && !was_speech {
-                started_over_writey = lock(&echo).live();
-                if !ptt_on && !started_over_writey {
+            if ptt_on {
+                vad.accept_waveform(window);
+                let speech = vad.detected();
+                if speech && !was_speech {
                     let _ = app.emit("voice:speech-start", ());
                 }
-            }
-            was_speech = speech;
-            while let Some(seg) = vad.front() {
-                let samples = seg.samples().to_vec();
-                vad.pop();
-                if ptt_on || skip_segment {
-                    skip_segment = false;
-                    continue;
+                was_speech = speech;
+                while vad.front().is_some() {
+                    vad.pop();
                 }
-                let _ = seg_tx.send(Segment {
-                    samples,
-                    ptt: false,
-                    during_speech: started_over_writey,
-                });
+            } else if gated {
+                barge.accept_waveform(window);
+                let speech = barge.detected();
+                let _ = was_barge;
+                was_barge = speech;
+                while let Some(seg) = barge.front() {
+                    let samples = seg.samples().to_vec();
+                    barge.pop();
+                    if segment_rms(&samples) < BARGE_RMS {
+                        continue;
+                    }
+                    let _ = seg_tx.send(Segment {
+                        samples,
+                        ptt: false,
+                        during_speech: true,
+                    });
+                }
+            } else {
+                vad.accept_waveform(window);
+                let speech = vad.detected();
+                if speech && !was_speech {
+                    let _ = app.emit("voice:speech-start", ());
+                }
+                was_speech = speech;
+                while let Some(seg) = vad.front() {
+                    let samples = seg.samples().to_vec();
+                    vad.pop();
+                    if skip_segment {
+                        skip_segment = false;
+                        continue;
+                    }
+                    let _ = seg_tx.send(Segment {
+                        samples,
+                        ptt: false,
+                        during_speech: false,
+                    });
+                }
             }
         }
         pending.drain(..fed);
     }
     vad.clear();
+    barge.clear();
 }
 
 fn transcriber(
@@ -505,9 +574,14 @@ fn transcriber(
             started.elapsed()
         );
         emit_state(&app, "listening", None);
-        if text.is_empty() || (!seg.ptt && lock(&echo).is_echo(&text, seg.during_speech)) {
+        let echo = lock(&echo);
+        if text.is_empty() || echo.is_echo(&text) {
             continue;
         }
+        if seg.during_speech && !seg.ptt && !EchoGuard::is_barge_in(&text) {
+            continue;
+        }
+        drop(echo);
         let _ = app.emit(
             "voice:segment",
             SegmentEvent {
@@ -611,16 +685,20 @@ fn speaker(
                 }
             }
         }
-        if stopped && speaking {
-            speaking = false;
-            lock(&echo).set_playing(false);
-            let _ = app.emit(
-                "voice:speaking",
-                SpeakingEvent {
-                    on: false,
-                    finished: false,
-                },
-            );
+        if stopped {
+            lock(&echo).flush_output();
+            if speaking {
+                speaking = false;
+                let _ = app.emit(
+                    "voice:speaking",
+                    SpeakingEvent {
+                        on: false,
+                        finished: false,
+                    },
+                );
+            }
+            let live = lock(&echo).playback_live();
+            let _ = app.emit("voice:playback", PlaybackEvent { live });
         }
 
         if let Some((text, sid, queued)) = queue.front().cloned() {
@@ -649,17 +727,6 @@ fn speaker(
                             }
                         }
                     }
-                    if !speaking {
-                        speaking = true;
-                        lock(&echo).set_playing(true);
-                        let _ = app.emit(
-                            "voice:speaking",
-                            SpeakingEvent {
-                                on: true,
-                                finished: false,
-                            },
-                        );
-                    }
                     let my_gen = gen.load(Ordering::SeqCst);
                     let audio = synthesize(&model, &text, sid);
                     // A stop that arrived while synthesizing wins.
@@ -678,6 +745,19 @@ fn speaker(
                                 *s *= i as f32 / fade as f32;
                             }
                             lock(&o.buf).extend(pcm);
+                            lock(&echo).sync_output_buffer(true);
+                            if !speaking {
+                                speaking = true;
+                                let _ = app.emit(
+                                    "voice:speaking",
+                                    SpeakingEvent {
+                                        on: true,
+                                        finished: false,
+                                    },
+                                );
+                            }
+                            let live = lock(&echo).playback_live();
+                            let _ = app.emit("voice:playback", PlaybackEvent { live });
                         } else {
                             lock(&o.buf).clear();
                         }
@@ -686,18 +766,22 @@ fn speaker(
             }
         }
 
-        let playing = out.as_ref().is_some_and(|o| !lock(&o.buf).is_empty());
-        if speaking && queue.is_empty() && !playing {
-            speaking = false;
-            lock(&echo).set_playing(false);
-            idle_since = Instant::now();
-            let _ = app.emit(
-                "voice:speaking",
-                SpeakingEvent {
-                    on: false,
-                    finished: true,
-                },
-            );
+        let has_buf = out.as_ref().is_some_and(|o| !lock(&o.buf).is_empty());
+        lock(&echo).sync_output_buffer(has_buf);
+        if !has_buf && queue.is_empty() && speaking {
+            let live = lock(&echo).playback_live();
+            if !live {
+                speaking = false;
+                idle_since = Instant::now();
+                let _ = app.emit(
+                    "voice:speaking",
+                    SpeakingEvent {
+                        on: false,
+                        finished: true,
+                    },
+                );
+                let _ = app.emit("voice:playback", PlaybackEvent { live: false });
+            }
         }
         // Let go of the speaker when quiet, so a new default device is picked up next time.
         if !speaking && out.is_some() && idle_since.elapsed() > Duration::from_secs(5) {

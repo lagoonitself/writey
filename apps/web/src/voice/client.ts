@@ -11,12 +11,18 @@ import {
   voiceStop,
   voiceStopSpeaking,
 } from '../lib/voice'
+import {
+  applyAnswered,
+  applyArm,
+  applyRequest,
+  closeFollowUp,
+  type FlowState,
+  freshFlow,
+  segmentAction,
+  tryOpenFollowUp,
+} from './flow'
 import { sentences } from './speech'
-import { type Address, addressed, type VoiceCommand, voiceCommand } from './trigger'
-
-// The page's half of voice (docs §7): the 30 s transcript, the "Hey …" check, the reply
-// window and commands. The desktop app's Rust side owns the mic, the voice detector, speech
-// to text and the speaker, and sends each heard line here as an event.
+import { type Address, addressed, type VoiceCommand } from './trigger'
 
 export type VoiceState =
   | { kind: 'off' }
@@ -25,6 +31,7 @@ export type VoiceState =
   | { kind: 'listening' }
   | { kind: 'hearing' }
   | { kind: 'transcribing' }
+  | { kind: 'thinking' }
   | { kind: 'paused' }
   | { kind: 'error'; message: string; fix?: 'setup' | 'update' | 'retry' }
 
@@ -33,23 +40,16 @@ export type VoicePrefs = { replies: boolean; voice: string }
 export type VoiceEvents = {
   state(s: VoiceState): void
   speaking(on: boolean): void
-  /** Every line heard, for the "Heard: …" hint. */
   heard(text: string, address: Address): void
-  /** Writey was addressed (or push-to-talk): ask this. */
   request(text: string): void
   command(c: VoiceCommand): void
-  /** Why Writey can't talk right now (null once it can). */
   speechIssue(message: string | null): void
-  /** Writey just answered: the next sentence is a reply, no "Hey" needed. */
   followUp(open: boolean): void
 }
 
 const TRANSCRIPT_MS = 30_000
-/** The mic closes itself after this long with no speech (docs §7.3). */
 const SILENCE_PAUSE_MS = 10 * 60_000
-/** After a bare "Hey", the next sentence within this window is the request. */
 const ARMED_MS = 8_000
-/** After Writey answers, how long it waits for a reply that doesn't start with "Hey". */
 const FOLLOW_UP_MS = 10_000
 
 type Line = { who: 'you' | 'writey'; text: string; at: number }
@@ -59,23 +59,20 @@ const modelsBusy = (s: VoiceStatus) =>
 
 export class VoiceClient {
   private lines: Line[] = []
-  private armedUntil = 0
+  private flow: FlowState = freshFlow()
   private ptt = false
   private silenceTimer = 0
   private stopped = true
-  private followUntil = 0
   private followTimer = 0
-  private followAfterSpeech = false
-  private speakingNow = false
   private status: VoiceStatus | null = null
   private unlisten: Promise<UnlistenFn[]> | null = null
+  private rustKind: VoiceState['kind'] = 'off'
 
   constructor(
     private readonly ev: VoiceEvents,
     private readonly prefs: () => VoicePrefs,
   ) {}
 
-  /** Starts listening to the app's voice events (undone by `dispose`). */
   attach(): void {
     if (this.unlisten) return
     void voiceStatus()
@@ -90,9 +87,8 @@ export class VoiceClient {
       onVoice('voice:speech-start', () => {
         if (this.stopped || this.ptt) return
         this.resetSilence()
-        // Still inside the reply window: hold it open while you finish the sentence.
-        if (this.followUntil) {
-          this.followUntil = Math.max(this.followUntil, Date.now() + FOLLOW_UP_MS)
+        if (this.flow.followUntil) {
+          this.flow.followUntil = Math.max(this.flow.followUntil, Date.now() + FOLLOW_UP_MS)
           window.clearTimeout(this.followTimer)
         }
         this.ev.state({ kind: 'hearing' })
@@ -100,17 +96,27 @@ export class VoiceClient {
       onVoice('voice:state', (s) => {
         if (this.stopped) return
         if (s.kind === 'error') this.fail(s.message ?? 'The microphone stopped.', 'retry')
-        else if (!this.ptt) this.ev.state({ kind: s.kind })
+        else if (!this.ptt) this.setRustState(s.kind)
       }),
       onVoice('voice:segment', (s) => this.line(s.text, s.ptt, s.during_speech)),
       onVoice('voice:speaking', ({ on, finished }) => {
-        this.speakingNow = on
+        this.flow.speaking = on
         this.ev.speaking(on)
-        if (!on && finished && this.followAfterSpeech) {
-          this.followAfterSpeech = false
-          this.followUp()
+        if (on) {
+          this.flow = closeFollowUp(this.flow)
+          this.ev.followUp(false)
+        } else if (finished) this.maybeFollowUp()
+        this.syncUiState()
+      }),
+      onVoice('voice:playback', ({ live }) => {
+        this.flow.playbackLive = live
+        if (live) {
+          this.flow = closeFollowUp(this.flow)
+          this.ev.followUp(false)
+        } else {
+          this.maybeFollowUp()
         }
-        if (!on && !finished) this.followAfterSpeech = false
+        this.syncUiState()
       }),
       onVoice('voice:issue', (message) => this.ev.speechIssue(message)),
     ])
@@ -124,41 +130,41 @@ export class VoiceClient {
     this.unlisten = null
   }
 
-  /** An answer finished: listen for a reply once Writey stops talking. */
   answered(): void {
-    if (this.speakingNow) this.followAfterSpeech = true
-    else this.followUp()
+    this.flow = applyAnswered(this.flow)
+    this.maybeFollowUp()
+    this.syncUiState()
   }
 
   get on(): boolean {
     return !this.stopped
   }
 
-  /** Writey talks back (typed questions too) once its voice has been downloaded. */
   get speaks(): boolean {
     const tts = this.status?.tts.state
     return this.prefs().replies && (this.on || (tts !== undefined && tts !== 'missing'))
   }
 
-  /** Opens the reply window: the next sentence goes to Writey without "Hey". */
-  private followUp(): void {
-    if (!this.on || this.speakingNow) return
-    this.followUntil = Date.now() + FOLLOW_UP_MS
+  private maybeFollowUp(): void {
+    const opened = tryOpenFollowUp(this.flow, Date.now(), FOLLOW_UP_MS)
+    if (!opened) return
+    this.flow = opened
     this.ev.followUp(true)
     window.clearTimeout(this.followTimer)
-    this.followTimer = window.setTimeout(() => this.closeFollowUp(), FOLLOW_UP_MS)
+    this.followTimer = window.setTimeout(() => this.endFollowUp(), FOLLOW_UP_MS)
   }
 
-  private closeFollowUp(): void {
+  private endFollowUp(): void {
     window.clearTimeout(this.followTimer)
-    if (!this.followUntil) return
-    this.followUntil = 0
+    this.flow = closeFollowUp(this.flow)
     this.ev.followUp(false)
+    this.syncUiState()
   }
 
   async start(): Promise<void> {
     if (!this.stopped) return
     this.stopped = false
+    this.flow = freshFlow()
     this.ev.state({ kind: 'starting' })
     try {
       let status = await voiceStatus()
@@ -192,7 +198,7 @@ export class VoiceClient {
         void voiceStop()
         return
       }
-      this.ev.state({ kind: 'listening' })
+      this.setRustState('listening')
       this.resetSilence()
     } catch (e) {
       const err = e as Error
@@ -208,8 +214,8 @@ export class VoiceClient {
   stop(): void {
     this.stopped = true
     window.clearTimeout(this.silenceTimer)
-    this.followAfterSpeech = false
-    this.closeFollowUp()
+    this.flow = freshFlow()
+    this.endFollowUp()
     if (this.ptt) void voicePtt(false)
     this.ptt = false
     this.stopSpeaking()
@@ -217,7 +223,6 @@ export class VoiceClient {
     this.ev.state({ kind: 'off' })
   }
 
-  /** Push-to-talk held: everything said is a request, no "Hey" needed. */
   async pttDown(): Promise<void> {
     if (this.ptt) return
     this.stopSpeaking()
@@ -236,34 +241,34 @@ export class VoiceClient {
 
   private line(text: string, ptt: boolean, overWritey: boolean): void {
     if (this.stopped || !text) return
-    // Decided when the sentence ends: talking over Writey or inside the reply window.
-    const reply = overWritey || Date.now() < this.followUntil
     if (overWritey) this.stopSpeaking()
     this.remember('you', text)
     const address = addressed(text)
     this.ev.heard(text, address)
 
-    let request: string | null = null
-    if (ptt || reply) {
-      request = address?.request || text
-      this.closeFollowUp()
-    } else if (address) {
-      if (!address.request) {
-        this.armedUntil = Date.now() + ARMED_MS
-        return
-      }
-      request = address.request
-    } else if (Date.now() < this.armedUntil) request = text
-    if (!request) return
-    this.armedUntil = 0
-    const cmd = voiceCommand(request)
-    if (cmd) {
-      if (cmd === 'stop') this.stopSpeaking()
-      this.ev.command(cmd)
-    } else this.ev.request(request)
+    const now = Date.now()
+    const action = segmentAction(this.flow, text, ptt, overWritey, now)
+    if (action.type === 'arm') {
+      this.flow = applyArm(this.flow, now, ARMED_MS)
+      return
+    }
+    if (action.type === 'none') return
+
+    this.flow = closeFollowUp(this.flow)
+    this.ev.followUp(false)
+    window.clearTimeout(this.followTimer)
+
+    if (action.type === 'command') {
+      if (action.cmd === 'stop') this.stopSpeaking()
+      this.ev.command(action.cmd)
+      return
+    }
+
+    this.flow = applyRequest(this.flow, action.text, now)
+    this.syncUiState()
+    this.ev.request(action.text)
   }
 
-  /** Says something (when spoken replies are on). Its text joins the transcript, not the mic. */
   say(text: string): void {
     if (!this.speaks || !text.trim()) return
     this.remember('writey', text)
@@ -275,11 +280,10 @@ export class VoiceClient {
   }
 
   stopSpeaking(): void {
-    if (this.speakingNow) this.followAfterSpeech = false
+    if (this.flow.speaking) this.flow = applyAnswered(this.flow)
     void voiceStopSpeaking().catch(() => {})
   }
 
-  /** The last 30 seconds of conversation, oldest first. */
   transcript(): string {
     const since = Date.now() - TRANSCRIPT_MS
     this.lines = this.lines.filter((l) => l.at >= since)
@@ -288,6 +292,25 @@ export class VoiceClient {
 
   private remember(who: Line['who'], text: string): void {
     this.lines.push({ who, text, at: Date.now() })
+  }
+
+  private setRustState(kind: 'listening' | 'transcribing'): void {
+    this.rustKind = kind
+    this.syncUiState()
+  }
+
+  private syncUiState(): void {
+    if (this.stopped) return
+    if (this.flow.answering && !this.flow.speaking && !this.flow.playbackLive) {
+      this.ev.state({ kind: 'thinking' })
+      return
+    }
+    if (this.flow.followUntil > Date.now()) {
+      this.ev.state({ kind: 'listening' })
+      return
+    }
+    if (this.rustKind === 'transcribing') this.ev.state({ kind: 'transcribing' })
+    else this.ev.state({ kind: 'listening' })
   }
 
   private resetSilence(): void {

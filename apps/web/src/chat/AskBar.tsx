@@ -48,6 +48,8 @@ function voiceLine(v: Voice): { label: string; hint: string } {
       return { label: 'Hearing you…', hint: '' }
     case 'transcribing':
       return { label: 'Got it…', hint: '' }
+    case 'thinking':
+      return { label: 'Thinking…', hint: '' }
     case 'listening':
       return v.replying
         ? { label: 'Your turn', hint: 'Just reply, no need to say “Hey”' }
@@ -66,7 +68,8 @@ export function AskBar(p: Props) {
   const { voice } = p
   const [guide, setGuide] = useState(false)
   const [showError, setShowError] = useState(true)
-  const listening = !['off', 'paused', 'error'].includes(voice.state.kind)
+  const listening =
+    !['off', 'paused', 'error'].includes(voice.state.kind) && voice.state.kind !== 'thinking'
   const line = voiceLine(voice)
 
   // The first time the mic turns on, show what to say.
