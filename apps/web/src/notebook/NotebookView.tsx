@@ -27,6 +27,7 @@ import { ask, notify } from '../lib/dialogs'
 import { isDesktop } from '../lib/native'
 import { pdfPageSizes } from '../lib/pdf'
 import { navigate } from '../lib/router'
+import { useRemoteRefresh } from '../lib/web/remoteRefresh'
 import { SettingsDialog, type SettingsTab } from '../settings/SettingsDialog'
 import { useAiState } from '../settings/useAiState'
 import type { VoiceCommand } from '../voice/trigger'
@@ -149,6 +150,31 @@ export function NotebookView({ id }: { id: string }) {
       live = false
     }
   }, [id])
+
+  // Website: pick up changes synced from the desktop app (focus + interval).
+  const refreshFromAccount = useCallback(() => {
+    if (isDesktop()) return
+    getNotebook(id)
+      .then((nb) => {
+        if (!nb) {
+          setError('Notebook not found.')
+          return
+        }
+        setNotebook(nb)
+        setTitle(nb.title)
+      })
+      .catch(() => {})
+    listPages(id)
+      .then((rows) => {
+        setPages(rows)
+        for (const row of rows) {
+          void handles.get(row.id)?.reloadIfServerVersion(row.version)
+        }
+      })
+      .catch(() => {})
+  }, [id, handles])
+
+  useRemoteRefresh(refreshFromAccount)
 
   // ---- sync (desktop): pages and ink changed on another computer or the website ----
   useEffect(() => {

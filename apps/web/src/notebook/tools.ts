@@ -65,6 +65,8 @@ export type PageHandle = {
   isDirty(): boolean
   /** Shows ink that changed elsewhere (sync), unless there are unsaved edits here. */
   reloadIfClean(): Promise<void>
+  /** Reload when the account has a newer ink version (website polling). */
+  reloadIfServerVersion(version: number): Promise<void>
   /** True once the page's ink has loaded and it can take new ink. */
   isLoaded(): boolean
   /** What the help engine needs to see this page; `withGhost` includes the AI preview. */

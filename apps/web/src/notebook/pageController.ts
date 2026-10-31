@@ -147,6 +147,11 @@ export class PageController {
       reloadIfClean: async () => {
         if (this.loaded && !this.isDirty() && !this.saving) await this.load()
       },
+      reloadIfServerVersion: async (serverVersion: number) => {
+        if (this.loaded && !this.isDirty() && !this.saving && serverVersion > this.version) {
+          await this.load()
+        }
+      },
       isLoaded: () => this.loaded,
       snapshot: (withGhost) => this.snapshot(withGhost),
       ghostStart: (actions) => this.ghostStart(actions),

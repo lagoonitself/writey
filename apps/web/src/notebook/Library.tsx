@@ -13,6 +13,7 @@ import {
 } from '../lib/db'
 import { call, isDesktop } from '../lib/native'
 import { navigate } from '../lib/router'
+import { useRemoteRefresh } from '../lib/web/remoteRefresh'
 import { supabase } from '../lib/web/supabase'
 import { SettingsDialog } from '../settings/SettingsDialog'
 import { takeOpenSettingsFlag, useAiState } from '../settings/useAiState'
@@ -54,6 +55,8 @@ export function Library({ session }: { session?: Session }) {
         .catch((e: Error) => setError(e.message)),
     [],
   )
+
+  useRemoteRefresh(load)
 
   useEffect(() => {
     void load()

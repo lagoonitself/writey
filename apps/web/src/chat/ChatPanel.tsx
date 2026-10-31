@@ -14,6 +14,8 @@ import {
   turnsOf,
 } from '../lib/ai'
 import { ask as confirmAsk, notify } from '../lib/dialogs'
+import { isDesktop } from '../lib/native'
+import { useRemoteRefresh } from '../lib/web/remoteRefresh'
 import { CloseIcon, HistoryIcon, NewChatIcon, TrashIcon } from '../notebook/icons'
 import type { PageHandle } from '../notebook/tools'
 import { type AiState, usable } from '../settings/useAiState'
@@ -117,6 +119,19 @@ export default function ChatPanel(p: Props) {
       current = false
     }
   }, [notebookId])
+
+  const refreshFromAccount = useCallback(() => {
+    if (isDesktop()) return
+    listThreads(notebookId)
+      .then((list) => setThreads(list))
+      .catch((e: Error) => console.error('conversations refresh failed', e))
+    if (!threadId || madeHere.current === threadId) return
+    loadMessages(threadId)
+      .then((m) => setMessages(m))
+      .catch((e: Error) => console.error('conversation refresh failed', e))
+  }, [notebookId, threadId])
+
+  useRemoteRefresh(refreshFromAccount)
 
   useEffect(() => {
     if (!threadId) {
