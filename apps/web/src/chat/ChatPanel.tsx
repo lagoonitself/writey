@@ -121,7 +121,7 @@ export default function ChatPanel(p: Props) {
   }, [notebookId])
 
   const refreshFromAccount = useCallback(() => {
-    if (isDesktop()) return
+    if (isDesktop() || busy) return
     listThreads(notebookId)
       .then((list) => setThreads(list))
       .catch((e: Error) => console.error('conversations refresh failed', e))
@@ -129,7 +129,7 @@ export default function ChatPanel(p: Props) {
     loadMessages(threadId)
       .then((m) => setMessages(m))
       .catch((e: Error) => console.error('conversation refresh failed', e))
-  }, [notebookId, threadId])
+  }, [notebookId, threadId, busy])
 
   useRemoteRefresh(refreshFromAccount)
 

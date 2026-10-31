@@ -384,8 +384,8 @@ impl Store {
                 PageApplied::Meta
             });
         };
-        // Trash/restore from the account always wins over unsynced edits here.
-        if deleted != r.deleted_at {
+        // Trash from the account wins over unsynced edits here; an unsynced local trash is kept.
+        if r.deleted_at.is_some() && deleted != r.deleted_at {
             db.execute(
                 "update pages set deleted_at = ?2, dirty = 0, on_server = 1 where id = ?1",
                 params![r.id, r.deleted_at],
