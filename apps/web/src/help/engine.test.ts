@@ -368,4 +368,39 @@ describe('askWritey', () => {
     await ask()
     expect(toolResults(1)[0]).toBe('Error: call find_picture first.')
   })
+
+  it('sends each request as the one before plus what is new, across questions too', async () => {
+    sent.length = 0
+    const { askWritey } = await import('./engine')
+    const page = { id: 'p1', width: 595, height: 842 } as PageRow
+    const snapshot = {} as PageSnapshot
+    const question = (utterance: string, history?: ChatMessage[]) =>
+      askWritey({
+        utterance,
+        page,
+        snapshot,
+        settings: { provider: 'openrouter', model: 'm' } as never,
+        turns: [],
+        history,
+        signal: new AbortController().signal,
+        onUpdate: () => {},
+        nextPage: async () => null,
+        pageNumber: () => 1,
+        lookAgain: () => snapshot,
+      })
+    replies.push(
+      [call(0, 'a', 'write_math', { latex: 'x = 2' }), call(1, 'b', 'look_at_page', {})],
+      [text('Divide both sides by two.')],
+      [call(0, 'c', 'write_math', { latex: 'y = 3' })],
+      [text('Same idea for y.')],
+    )
+    const first = await question('solve for x')
+    expect(first.messages?.at(-1)).toMatchObject({ role: 'assistant' })
+    await question('and y?', first.messages)
+    expect(sent).toHaveLength(4)
+    for (let i = 1; i < sent.length; i++) {
+      const before = sent[i - 1] as ChatMessage[]
+      expect((sent[i] as ChatMessage[]).slice(0, before.length)).toEqual(before)
+    }
+  })
 })

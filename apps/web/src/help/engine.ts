@@ -4,6 +4,7 @@ import {
   type ChatMessage,
   chatBody,
   chatEvents,
+  compactImages,
   decide,
   describeChatgptError,
   describeError,
@@ -12,6 +13,7 @@ import {
   type Mode,
   type Plan,
   pageLook,
+  questionMessage,
   responsesBody,
   responsesEvents,
   routeIntent,
@@ -21,7 +23,6 @@ import {
   type Turn,
   type Usage,
   WRITEY_TOOLS,
-  withoutImages,
 } from '@writey/ai-core'
 import {
   diagramIssues,
@@ -84,6 +85,11 @@ export type HelpResult = {
   ink?: Written[]
   /** What Writey said out loud, if anything. */
   said?: string
+  /**
+   * Everything sent and received in this conversation, exactly, for the next question to
+   * carry on from, so the provider's prompt cache covers all of it. Absent after a failure.
+   */
+  messages?: ChatMessage[]
 }
 
 export class HelpFailure extends Error {
@@ -105,11 +111,6 @@ const MAX_STEPS = 16
 const MAX_RETRIES = 2
 /** From this many steps left, each result reminds the model to wrap up. */
 const WRAP_UP = 3
-/**
- * Pictures of the page (and close-ups) kept in the history. Older ones are replaced by a
- * note, which changes the prefix once instead of on every look.
- */
-const KEEP_IMAGES = 3
 /** Failed tool calls in a row before Writey suggests looking again or finishing. */
 const FAIL_STREAK = 4
 /**
@@ -236,6 +237,11 @@ export async function askWritey(opts: {
   snapshot: PageSnapshot
   settings: AiSettings
   turns: readonly Turn[]
+  /**
+   * The conversation as last sent (HelpResult.messages), same provider and model. The new
+   * question is appended to it; without it the conversation is rebuilt from `turns`.
+   */
+  history?: readonly ChatMessage[]
   signal: AbortSignal
   /** The student is talking to Writey: it may speak while it works. */
   spoken?: boolean
@@ -264,9 +270,12 @@ export async function askWritey(opts: {
   // Medium for every answer (owner, 2026-10-26).
   const effort: Effort = 'medium'
 
+  const spoken = Boolean(opts.spoken)
   const agent = new Agent(transport, capture, opts)
   const out = await agent.run(
-    agentMessages(utterance, capture.ctx, route, opts.turns, Boolean(opts.spoken)),
+    opts.history?.length
+      ? compactImages([...opts.history, questionMessage(utterance, capture.ctx, route, spoken)])
+      : agentMessages(utterance, capture.ctx, route, opts.turns, spoken),
     effort,
   )
   const mode: Mode = !out.written.length
@@ -282,6 +291,7 @@ export async function askWritey(opts: {
     usage: out.usage ?? {},
     ink: out.written.length ? out.written : undefined,
     said: out.said,
+    messages: out.messages,
   }
 }
 
@@ -418,6 +428,7 @@ type AgentResult = {
   marked: boolean
   usage?: Usage
   said?: string
+  messages?: ChatMessage[]
 }
 
 /** A block Writey wrote in this answer, by the id the model knows it by (W1, W2…). */
@@ -447,6 +458,8 @@ class Agent {
   private readonly said: string[] = []
   private usage: Usage | undefined
   private thinking = false
+  /** The whole conversation once the answer ended cleanly, for the next question. */
+  private history: ChatMessage[] | undefined
   /** What the last find_picture showed, by its number on the contact sheet. */
   private found: PictureHit[] = []
   /** Pictures pasted in this answer, by page, so label_parts finds them after a new look. */
@@ -521,6 +534,7 @@ class Agent {
       const ask = final ? [...messages, { role: 'user' as const, content: OUT_OF_STEPS }] : messages
       const s = await this.step(ask, effort, final)
       if (this.o.signal.aborted) break
+      if (final) messages = ask
       if (s.text.trim()) this.margin.push(s.text.trim())
       if (s.failure) {
         const nothing = !s.text && !s.calls.length
@@ -535,15 +549,27 @@ class Agent {
         // Tools that already ran stay done: the model carries on from their results.
         if (!s.failure.retry || !s.calls.length) return this.finish(s.failure)
       }
-      if (!s.calls.length) break
+      const reply: ChatMessage = {
+        role: 'assistant',
+        content: s.text,
+        toolCalls: s.calls,
+        reasoning: s.thoughts,
+      }
+      if (!s.calls.length) {
+        // The reply that ends the turn stays in the history for the next question.
+        if (!s.failure && (s.text || s.thoughts.length)) this.history = [...messages, reply]
+        break
+      }
       // Pen calls and the explanation in one response, all done: the answer is finished.
       if (
         !s.failure &&
         !s.trouble &&
         s.text.trim().length >= FINAL_TEXT &&
         s.calls.every((c) => !OBSERVE.has(c.name))
-      )
+      ) {
+        this.history = [...messages, reply, ...s.results]
         break
+      }
       retries = 0
       const left = MAX_STEPS - 2 - step
       const notes = [
@@ -560,11 +586,10 @@ class Agent {
           : r,
       )
       // Append-only, like a coding agent's history, so every request starts with the last
-      // one and the provider's prompt cache covers it. Only images beyond the newest few
-      // are swapped for a note.
-      messages = this.trimImages([
+      // one and the provider's prompt cache covers it. Old pictures go in batches.
+      messages = compactImages([
         ...messages,
-        { role: 'assistant', content: s.text, toolCalls: s.calls, reasoning: s.thoughts },
+        reply,
         ...results,
         ...(s.look ? [s.look] : []),
         ...s.zooms,
@@ -572,27 +597,6 @@ class Agent {
       this.o.onUpdate({ type: 'status', text: 'Thinking…' })
     }
     return this.finish()
-  }
-
-  /** Keeps the newest KEEP_IMAGES pictures of the page and close-ups; older ones become text. */
-  private trimImages(messages: ChatMessage[]): ChatMessage[] {
-    const seen = { page: 0, zoom: 0 }
-    return messages
-      .slice()
-      .reverse()
-      .map((m) => {
-        if (typeof m.content === 'string' || !m.content.some((p) => p.type === 'image_url')) {
-          return m
-        }
-        const kind = this.isZoom(m) ? 'zoom' : 'page'
-        return ++seen[kind] > KEEP_IMAGES ? (withoutImages([m])[0] as ChatMessage) : m
-      })
-      .reverse()
-  }
-
-  private readonly zoomMessages = new WeakSet<ChatMessage>()
-  private isZoom(m: ChatMessage): boolean {
-    return this.zoomMessages.has(m)
   }
 
   /** One model request, with its tool calls run on the page as they arrive. */
@@ -614,10 +618,7 @@ class Agent {
           if (failed || out.trouble) s.trouble = true
           s.results.push({ role: 'tool', toolCallId: ev.call.id, content: out.result })
           if (out.look) s.look = out.look
-          if (out.zoom) {
-            this.zoomMessages.add(out.zoom)
-            s.zooms.push(out.zoom)
-          }
+          if (out.zoom) s.zooms.push(out.zoom)
         } else if (ev.type === 'thought') s.thoughts.push(ev.item)
         else if (ev.type === 'reasoning' && !this.thinking) {
           this.thinking = true
@@ -1056,6 +1057,7 @@ class Agent {
       marked: entries.some((e) => e.mark),
       usage: this.usage,
       said: spoken || undefined,
+      messages: failure ? undefined : this.history,
     }
   }
 }

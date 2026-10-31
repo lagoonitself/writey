@@ -5,10 +5,12 @@ import {
   type ChatMessage,
   chatBody,
   chatEvents,
+  compactImages,
   decide,
   describeError,
   focusRegion,
   groupLines,
+  history,
   messageText,
   type PageContext,
   pageLook,
@@ -17,6 +19,7 @@ import {
   routeIntent,
   type StreamEvent,
   sseData,
+  type Turn,
   WRITEY_TOOLS,
   withoutImages,
 } from '../src'
@@ -329,14 +332,14 @@ describe('prompts', () => {
     expect(JSON.stringify(parts)).toContain('Find the derivative')
   })
 
-  it('keeps only the last 10 turns of history', () => {
-    const turns = Array.from({ length: 14 }, (_, i) => ({
+  it('keeps the history between 10 and 20 turns', () => {
+    const turns = Array.from({ length: 24 }, (_, i) => ({
       role: i % 2 ? ('assistant' as const) : ('user' as const),
       text: `t${i}`,
     }))
     const msgs = agentMessages('hint?', ctx, { mode: null, scope: 'hint' }, turns)
-    expect(msgs).toHaveLength(1 + 10 + 1)
-    expect(msgs[1]?.content).toBe('t4')
+    expect(msgs).toHaveLength(1 + 14 + 1)
+    expect(msgs[1]?.content).toBe('t10')
     expect(JSON.stringify(msgs.at(-1)?.content)).toContain('hint only')
   })
 
@@ -453,5 +456,64 @@ describe('parseModels', () => {
     expect(byId['deepseek-v4.1-flash']).toMatchObject({ supported: true, vision: true })
     expect(byId['gpt-6-sol']?.supported).toBe(false)
     expect(byId['glm-5.3-flash-free']?.supported).toBe(false)
+  })
+})
+
+describe('prompt cache', () => {
+  const turns = (n: number): Turn[] =>
+    Array.from({ length: n }, (_, i) => ({
+      role: i % 2 ? 'assistant' : 'user',
+      text: `turn ${i}`,
+    }))
+
+  it('cuts the history in steps, so most questions keep the same start', () => {
+    expect(history(turns(20))).toHaveLength(20)
+    expect(history(turns(21))[0]?.content).toBe('turn 10')
+    expect(history(turns(30))[0]?.content).toBe('turn 10')
+    expect(history(turns(31))[0]?.content).toBe('turn 20')
+  })
+
+  it('drops old pictures in one batch', () => {
+    const pic = (n: number): ChatMessage => ({
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: `data:${n}` } },
+        { type: 'text', text: `q${n}` },
+      ],
+    })
+    const six = [1, 2, 3, 4, 5, 6].map(pic)
+    expect(compactImages(six)).toEqual(six)
+    const seven = compactImages([...six, pic(7)])
+    const withPics = seven.filter(
+      (m) => typeof m.content !== 'string' && m.content.some((p) => p.type === 'image_url'),
+    )
+    expect(withPics).toHaveLength(2)
+    expect(seven[0]?.content).toEqual([
+      { type: 'text', text: '(Earlier screenshots of the page, now out of date.)' },
+      { type: 'text', text: 'q1' },
+    ])
+  })
+
+  it('marks cache points for Claude on OpenRouter only', () => {
+    const messages: ChatMessage[] = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'hi' },
+    ]
+    const body = (provider: 'openrouter' | 'opencode-zen', model: string) =>
+      JSON.parse(chatBody(provider, { model, messages, maxTokens: 10, stream: true })).messages
+    expect(body('openrouter', 'anthropic/claude-x')).toEqual([
+      {
+        role: 'system',
+        content: [{ type: 'text', text: 'sys', cache_control: { type: 'ephemeral' } }],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'hi', cache_control: { type: 'ephemeral' } }],
+      },
+    ])
+    expect(body('openrouter', 'deepseek/deepseek-v4.1-flash')[0]).toEqual({
+      role: 'system',
+      content: 'sys',
+    })
   })
 })

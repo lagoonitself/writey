@@ -26,7 +26,7 @@ export type PageContext = {
 
 export type Turn = { role: 'user' | 'assistant'; text: string }
 
-/** Turns sent with each request (docs §5.8). */
+/** Turns sent with each request (docs §5.8): between this many and twice as many. */
 export const HISTORY_TURNS = 10
 
 const SEEING = `You are looking at a student's handwritten notebook page.
@@ -120,8 +120,31 @@ const images = (ctx: PageContext): ContentPart[] => [
   { type: 'image_url', image_url: { url: ctx.pageImage } },
 ]
 
-function history(turns: readonly Turn[]): ChatMessage[] {
-  return turns.slice(-HISTORY_TURNS).map((t) => ({ role: t.role, content: t.text }))
+/**
+ * The conversation so far, cut in steps of HISTORY_TURNS rather than slid on every
+ * question: a window that moves each time changes the start of every request, and the
+ * provider's prompt cache then misses everything after the system prompt.
+ */
+export function history(turns: readonly Turn[]): ChatMessage[] {
+  const over = turns.length - 2 * HISTORY_TURNS
+  const drop = over > 0 ? Math.ceil(over / HISTORY_TURNS) * HISTORY_TURNS : 0
+  return turns.slice(drop).map((t) => ({ role: t.role, content: t.text }))
+}
+
+const hasImage = (m: ChatMessage) =>
+  typeof m.content !== 'string' && m.content.some((p) => p.type === 'image_url')
+
+/**
+ * Old pictures out, in one batch: once more than `max` messages hold pictures, all but the
+ * newest `keep` become a note. Trimming a little on every look would change an earlier
+ * message each time, and the prompt cache would miss from there on; this changes the
+ * history once every few looks.
+ */
+export function compactImages(messages: readonly ChatMessage[], keep = 2, max = 6): ChatMessage[] {
+  const at = messages.flatMap((m, i) => (hasImage(m) ? [i] : []))
+  if (at.length <= max) return [...messages]
+  const old = new Set(at.slice(0, at.length - keep))
+  return messages.map((m, i) => (old.has(i) ? (withoutImages([m])[0] as ChatMessage) : m))
 }
 
 /** Drops the screenshots from earlier messages; only the newest page image matters. */
@@ -435,6 +458,7 @@ export const DIAGRAM_GUIDE = [
 
 // Raw, so the LaTeX in it (\frac, \text…) reaches the model as written, not as escapes.
 const AGENT = String.raw`You are Writey, a friendly tutor who sits beside the student with a pen and their notebook, and explains in the margin beside the page.
+You are their study buddy, not an answer machine: warm, encouraging and honest. Notice what they got right before what went wrong, and say so specifically. When they ask for a hint or say they are stuck, a question or a nudge that lets them find the next step beats doing it for them; when they ask you to continue or solve, write it. Keep them thinking, never make them feel slow, and remember what you worked on together earlier in this conversation.
 ${SEEING}
 
 You act through tools, like a coding agent acting on a codebase. You decide what to do and when you are finished. The student watches each call happen live: your handwriting and drawings appear stroke by stroke.
@@ -479,28 +503,38 @@ export function agentMessages(
   turns: readonly Turn[],
   spoken = false,
 ): ChatMessage[] {
+  return [
+    // Identical on every request, so the provider's prompt cache keeps it (HANDOFF D51).
+    { role: 'system', content: AGENT },
+    ...history(turns),
+    questionMessage(utterance, ctx, route, spoken),
+  ]
+}
+
+/** One question with the page as it is now; appended to the conversation so far. */
+export function questionMessage(
+  utterance: string,
+  ctx: PageContext,
+  route: Route,
+  spoken = false,
+): ChatMessage {
   const hints = [
     route.scope === 'hint' && 'They asked for a hint only.',
     route.mode === 'chat' && 'They asked for words only: do not write on the page.',
     spoken && SPOKEN,
   ].filter(Boolean)
-  return [
-    // Identical on every request, so the provider's prompt cache keeps it (HANDOFF D51).
-    { role: 'system', content: AGENT },
-    ...history(turns),
-    {
-      role: 'user',
-      content: [
-        ...images(ctx),
-        {
-          type: 'text',
-          text: [pageText(ctx), `The student said: "${utterance}"`, ...hints]
-            .filter(Boolean)
-            .join('\n\n'),
-        },
-      ],
-    },
-  ]
+  return {
+    role: 'user',
+    content: [
+      ...images(ctx),
+      {
+        type: 'text',
+        text: [pageText(ctx), `The student said: "${utterance}"`, ...hints]
+          .filter(Boolean)
+          .join('\n\n'),
+      },
+    ],
+  }
 }
 
 /** What look_at_page hands back, as a message after the tool results (tool results can't hold images everywhere). */

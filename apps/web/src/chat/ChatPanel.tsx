@@ -1,4 +1,4 @@
-import { CHATGPT_USAGE_URL, PROVIDER_LABEL, type Usage } from '@writey/ai-core'
+import { CHATGPT_USAGE_URL, type ChatMessage, PROVIDER_LABEL, type Usage } from '@writey/ai-core'
 import type { PageRow } from '@writey/shared'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -95,6 +95,11 @@ export default function ChatPanel(p: Props) {
   const pinned = useRef(true)
   /** A thread made by sending in this panel already has its messages on screen. */
   const madeHere = useRef<string | null>(null)
+  /**
+   * The conversation exactly as last sent to the model, so the next question is appended
+   * to it and the provider's prompt cache covers everything before (HANDOFF D59).
+   */
+  const sent = useRef<{ thread: string | null; key: string; messages: ChatMessage[] } | null>(null)
   const creating = useRef<Promise<string> | null>(null)
   /** Pages showing the last answer's preview, which a new question keeps (accepts). */
   const lastGhosts = useRef<PageHandle[]>([])
@@ -181,6 +186,11 @@ export default function ChatPanel(p: Props) {
       if (typed) p.onOpen(true)
       const user: Shown = { id: tmp(), role: 'user', text: utterance }
       const turns = turnsOf(messages)
+      const key = `${ai.settings.provider} ${ai.settings.model}`
+      const last = sent.current
+      const history =
+        last && last.thread === threadId && last.key === key ? last.messages : undefined
+      sent.current = null
       setInput('')
       setHistoryOpen(false)
       pinned.current = true
@@ -219,6 +229,7 @@ export default function ChatPanel(p: Props) {
             },
           )
           id = await creating.current
+          if (sent.current && sent.current.thread === null) sent.current.thread = id
         } else {
           const at = new Date().toISOString()
           setThreads((t) => {
@@ -235,6 +246,7 @@ export default function ChatPanel(p: Props) {
           snapshot: { ...handle.snapshot(), transcript: p.voice.transcript() || undefined },
           settings: ai.settings,
           turns,
+          history,
           signal: controller.signal,
           spoken: p.voice.speaks(),
           nextPage: (after) => p.addPageAfter(after.id),
@@ -275,6 +287,7 @@ export default function ChatPanel(p: Props) {
             setLive(state)
           },
         })
+        if (result.messages) sent.current = { thread: threadId, key, messages: result.messages }
         const reply: Omit<StoredMessage, 'id'> = {
           role: 'assistant',
           text: result.text,

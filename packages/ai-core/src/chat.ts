@@ -85,10 +85,36 @@ function wireMessages(messages: readonly ChatMessage[]): unknown[] {
   })
 }
 
+const EPHEMERAL = { type: 'ephemeral' }
+
+/**
+ * Claude caches only up to marked points (other models cache any repeated prefix by
+ * themselves): mark the system prompt and the newest question, so each request reuses
+ * the one before it.
+ */
+function cacheMarks(wire: unknown[]): unknown[] {
+  const lastUser = wire.findLastIndex((m) => (m as { role: string }).role === 'user')
+  return wire.map((raw, i) => {
+    const m = raw as { role: string; content: unknown }
+    if (!(m.role === 'system' || i === lastUser)) return m
+    const parts =
+      typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : (m.content as object[])
+    if (!parts.length) return m
+    return {
+      ...m,
+      content: parts.map((p, j) =>
+        j === parts.length - 1 ? { ...p, cache_control: EPHEMERAL } : p,
+      ),
+    }
+  })
+}
+
 export function chatBody(provider: KeyProvider, req: ChatRequest): string {
+  const wire = wireMessages(req.messages)
   const body: Record<string, unknown> = {
     model: req.model,
-    messages: wireMessages(req.messages),
+    messages:
+      provider === 'openrouter' && req.model.startsWith('anthropic/') ? cacheMarks(wire) : wire,
     max_tokens: req.maxTokens,
     stream: req.stream,
   }
