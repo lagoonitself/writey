@@ -535,7 +535,11 @@ async fn sync_loop(app: tauri::AppHandle) {
         match result {
             Ok(report) => {
                 set("idle", None, true);
-                if report.lists_changed || !report.pages.is_empty() || report.pulled > 0 {
+                if report.lists_changed
+                    || !report.pages.is_empty()
+                    || report.pulled > 0
+                    || !report.conflicts.is_empty()
+                {
                     let _ = app.emit("sync:changed", &report);
                 }
             }

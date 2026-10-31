@@ -35,8 +35,18 @@ impl Server {
     }
 }
 
-fn after(ts: &str, since: &str) -> bool {
-    since.is_empty() || ts > since
+fn after(ts: &str, id: &str, since: &str) -> bool {
+    if since.is_empty() {
+        return true;
+    }
+    let (since_at, since_id) = match since.split_once('\x1f') {
+        Some((a, i)) => (a, i),
+        None => (since, ""),
+    };
+    if ts > since_at {
+        return true;
+    }
+    ts == since_at && id > since_id
 }
 
 impl Remote for Fake {
@@ -45,10 +55,10 @@ impl Remote for Fake {
         let mut v: Vec<_> = s
             .notebooks
             .values()
-            .filter(|n| after(&n.updated_at, since))
+            .filter(|n| after(&n.updated_at, &n.id, since))
             .cloned()
             .collect();
-        v.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+        v.sort_by(|a, b| a.updated_at.cmp(&b.updated_at).then(a.id.cmp(&b.id)));
         Ok(v)
     }
     async fn pages(&self, since: &str) -> AppResult<Vec<RPage>> {
@@ -56,17 +66,17 @@ impl Remote for Fake {
         let mut v: Vec<_> = s
             .pages
             .values()
-            .filter(|p| after(&p.updated_at, since))
+            .filter(|p| after(&p.updated_at, &p.id, since))
             .cloned()
             .collect();
-        v.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+        v.sort_by(|a, b| a.updated_at.cmp(&b.updated_at).then(a.id.cmp(&b.id)));
         Ok(v)
     }
     async fn threads(&self, since: &str) -> AppResult<Vec<RThread>> {
         let s = self.0.lock().unwrap();
         Ok(s.threads
             .values()
-            .filter(|t| after(&t.updated_at, since))
+            .filter(|t| after(&t.updated_at, &t.id, since))
             .cloned()
             .collect())
     }
@@ -390,4 +400,46 @@ fn conversations_sync_and_web_deletes_reach_the_app() {
     b.delete_thread(&t3.id).unwrap();
     block(sync_once(&b, &server)).unwrap();
     assert!(!server.0.lock().unwrap().threads.contains_key(&t3.id));
+}
+
+#[test]
+fn cursor_tiebreaker_fetches_every_page_with_the_same_updated_at() {
+    use crate::store::NewPage;
+
+    let server = Fake::default();
+    let (a, _da) = computer();
+    let nb = a.create_notebook("a0", "a0", None).unwrap();
+    let page_a = a.list_pages(&nb.id).unwrap()[0].id.clone();
+    a.add_pages(
+        &nb.id,
+        &[NewPage {
+            sort_key: "a1".into(),
+            width: 595.0,
+            height: 842.0,
+            background: serde_json::json!({ "kind": "blank" }),
+        }],
+    )
+    .unwrap();
+    let page_b = a.list_pages(&nb.id).unwrap()[1].id.clone();
+    block(sync_once(&a, &server)).unwrap();
+
+    let ts = "2030-06-01T12:00:00+00:00";
+    {
+        let mut s = server.0.lock().unwrap();
+        for (id, key) in [(&page_a, "b0"), (&page_b, "b1")] {
+            let p = s.pages.get_mut(id).unwrap();
+            p.updated_at = ts.into();
+            p.sort_key = key.into();
+        }
+    }
+
+    let (b, _db) = computer();
+    block(sync_once(&b, &server)).unwrap();
+    let keys: Vec<_> = b
+        .list_pages(&nb.id)
+        .unwrap()
+        .into_iter()
+        .map(|p| p.sort_key)
+        .collect();
+    assert_eq!(keys, vec!["b0", "b1"]);
 }

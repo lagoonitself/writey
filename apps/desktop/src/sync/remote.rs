@@ -141,46 +141,59 @@ async fn check(res: reqwest::Response) -> AppResult<reqwest::Response> {
     })
 }
 
-fn since_filter(since: &str) -> String {
-    if since.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "&updated_at=gt.{}",
-            url::form_urlencoded::byte_serialize(since.as_bytes()).collect::<String>()
-        )
+/// PostgREST filter: rows after `(at, id)` in `(updated_at asc, id asc)` order. Plain `gt` on
+/// `updated_at` alone skips rows that share the same timestamp as the cursor.
+fn since_filter(at: &str, id: &str) -> String {
+    if at.is_empty() {
+        return String::new();
+    }
+    let enc_at = url::form_urlencoded::byte_serialize(at.as_bytes()).collect::<String>();
+    if id.is_empty() {
+        return format!("&updated_at=gt.{enc_at}");
+    }
+    let enc_id = url::form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>();
+    format!("&or=(updated_at.gt.{enc_at},and(updated_at.eq.{enc_at},id.gt.{enc_id}))")
+}
+
+fn parse_since(since: &str) -> (&str, &str) {
+    match since.split_once('\x1f') {
+        Some((at, id)) => (at, id),
+        None => (since, ""),
     }
 }
 
 impl Remote for Http {
     async fn notebooks(&self, since: &str) -> AppResult<Vec<RNotebook>> {
+        let (at, id) = parse_since(since);
         self.select(
             "notebooks",
             &format!(
                 "select=id,title,sort_key,created_at,updated_at,deleted_at&order=updated_at,id{}",
-                since_filter(since)
+                since_filter(at, id)
             ),
         )
         .await
     }
 
     async fn pages(&self, since: &str) -> AppResult<Vec<RPage>> {
+        let (at, id) = parse_since(since);
         self.select(
             "pages",
             &format!(
                 "select=id,notebook_id,sort_key,width,height,background,version,updated_at,deleted_at&order=updated_at,id{}",
-                since_filter(since)
+                since_filter(at, id)
             ),
         )
         .await
     }
 
     async fn threads(&self, since: &str) -> AppResult<Vec<RThread>> {
+        let (at, id) = parse_since(since);
         self.select(
             "ai_threads",
             &format!(
                 "select=id,notebook_id,title,created_at,updated_at&order=updated_at,id{}",
-                since_filter(since)
+                since_filter(at, id)
             ),
         )
         .await
@@ -330,5 +343,22 @@ impl Remote for Http {
         }
         check(req.send().await?).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::since_filter;
+
+    #[test]
+    fn since_filter_uses_id_tiebreaker() {
+        assert!(since_filter("", "").is_empty());
+        assert_eq!(
+            since_filter("2026-01-01T00:00:00+00:00", ""),
+            "&updated_at=gt.2026-01-01T00%3A00%3A00%2B00%3A00"
+        );
+        let q = since_filter("2026-01-01T00:00:00+00:00", "bbbb");
+        assert!(q.contains("updated_at.gt."));
+        assert!(q.contains("id.gt."));
     }
 }

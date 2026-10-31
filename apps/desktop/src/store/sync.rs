@@ -384,6 +384,14 @@ impl Store {
                 PageApplied::Meta
             });
         };
+        // Trash/restore from the account always wins over unsynced edits here.
+        if deleted != r.deleted_at {
+            db.execute(
+                "update pages set deleted_at = ?2, dirty = 0, on_server = 1 where id = ?1",
+                params![r.id, r.deleted_at],
+            )?;
+            return Ok(PageApplied::Meta);
+        }
         let mut result = PageApplied::Same;
         let meta_changed = key != r.sort_key
             || deleted != r.deleted_at
@@ -743,5 +751,26 @@ mod tests {
             deleted_at: None,
         };
         assert_eq!(s.apply_page(&p).unwrap(), PageApplied::Same);
+    }
+
+    #[test]
+    fn server_page_trash_reaches_a_dirty_local_page() {
+        let (s, _d) = store();
+        let nb = s.create_notebook("a0", "a0", None).unwrap();
+        let page = s.list_pages(&nb.id).unwrap()[0].id.clone();
+        s.move_page(&page, "a1").unwrap();
+        let remote = RPage {
+            id: page.clone(),
+            notebook_id: nb.id.clone(),
+            sort_key: "a0".into(),
+            width: 595.0,
+            height: 842.0,
+            background: serde_json::json!({ "kind": "blank" }),
+            version: 0,
+            updated_at: now(),
+            deleted_at: Some(now()),
+        };
+        assert_eq!(s.apply_page(&remote).unwrap(), PageApplied::Meta);
+        assert!(s.list_pages(&nb.id).unwrap().is_empty());
     }
 }

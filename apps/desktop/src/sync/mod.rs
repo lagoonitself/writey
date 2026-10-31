@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::error::AppResult;
 use crate::store::sync::PageApplied;
@@ -36,38 +36,45 @@ pub struct Report {
 
 const CURSOR: &str = "sync_cursor";
 
-fn max_ts(a: &mut String, b: &str) {
-    let later = match (
-        chrono::DateTime::parse_from_rfc3339(a),
-        chrono::DateTime::parse_from_rfc3339(b),
-    ) {
-        (Ok(x), Ok(y)) => y > x,
-        _ => a.is_empty() || b > a.as_str(),
-    };
-    if later {
-        *a = b.to_string();
+/// Cursor position for incremental pulls: RFC3339 `updated_at` plus row `id` tie-breaker.
+fn read_cursor(cursor: &Value, key: &str) -> String {
+    match &cursor[key] {
+        Value::Object(o) => {
+            let at = o.get("at").and_then(|v| v.as_str()).unwrap_or("");
+            let id = o.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if at.is_empty() {
+                String::new()
+            } else if id.is_empty() {
+                at.to_string()
+            } else {
+                format!("{at}\x1f{id}")
+            }
+        }
+        // Older cursors stored only a timestamp; treat as (at, "").
+        Value::String(s) => s.clone(),
+        _ => String::new(),
     }
 }
 
-/// One full round: down, then up.
-pub async fn sync_once<R: Remote>(store: &Store, remote: &R) -> AppResult<Report> {
-    let mut report = Report::default();
-    pull(store, remote, &mut report).await?;
-    push(store, remote, &mut report).await?;
-    Ok(report)
+fn write_cursor(cursor: &mut Value, key: &str, at: &str, id: &str) {
+    cursor[key] = json!({ "at": at, "id": id });
 }
 
 async fn pull<R: Remote>(store: &Store, remote: &R, report: &mut Report) -> AppResult<()> {
     let cursor = store.setting(CURSOR)?.unwrap_or_else(|| json!({}));
-    let since = |k: &str| cursor[k].as_str().unwrap_or("").to_string();
-    let (mut c_nb, mut c_pg, mut c_th) = (since("notebooks"), since("pages"), since("threads"));
+    let mut cursor = cursor;
+    let since = |k: &str| read_cursor(&cursor, k);
+    let (c_nb, c_pg, c_th) = (since("notebooks"), since("pages"), since("threads"));
 
-    for n in remote.notebooks(&c_nb).await? {
-        if store.apply_notebook(&n)? {
+    let notebooks = remote.notebooks(&c_nb).await?;
+    for n in &notebooks {
+        if store.apply_notebook(n)? {
             report.pulled += 1;
             report.lists_changed = true;
         }
-        max_ts(&mut c_nb, &n.updated_at);
+    }
+    if let Some(last) = notebooks.last() {
+        write_cursor(&mut cursor, "notebooks", &last.updated_at, &last.id);
     }
 
     let pages = remote.pages(&c_pg).await?;
@@ -101,8 +108,8 @@ async fn pull<R: Remote>(store: &Store, remote: &R, report: &mut Report) -> AppR
     if !pages.iter().any(|p| {
         store.get_notebook(&p.notebook_id).ok().flatten().is_none() && p.deleted_at.is_none()
     }) {
-        for p in &pages {
-            max_ts(&mut c_pg, &p.updated_at);
+        if let Some(last) = pages.last() {
+            write_cursor(&mut cursor, "pages", &last.updated_at, &last.id);
         }
     }
 
@@ -112,7 +119,9 @@ async fn pull<R: Remote>(store: &Store, remote: &R, report: &mut Report) -> AppR
         if store.apply_thread(t)? {
             changed.insert(t.id.clone());
         }
-        max_ts(&mut c_th, &t.updated_at);
+    }
+    if let Some(last) = threads.last() {
+        write_cursor(&mut cursor, "threads", &last.updated_at, &last.id);
     }
     if !changed.is_empty() {
         let ids: Vec<String> = changed.into_iter().collect();
@@ -122,11 +131,16 @@ async fn pull<R: Remote>(store: &Store, remote: &R, report: &mut Report) -> AppR
     let on_server = remote.thread_ids().await?;
     report.pulled += store.drop_threads_not_on_server(&on_server)?;
 
-    store.set_setting(
-        CURSOR,
-        &json!({ "notebooks": c_nb, "pages": c_pg, "threads": c_th }),
-    )?;
+    store.set_setting(CURSOR, &cursor)?;
     Ok(())
+}
+
+/// One full round: down, then up.
+pub async fn sync_once<R: Remote>(store: &Store, remote: &R) -> AppResult<Report> {
+    let mut report = Report::default();
+    pull(store, remote, &mut report).await?;
+    push(store, remote, &mut report).await?;
+    Ok(report)
 }
 
 async fn push<R: Remote>(store: &Store, remote: &R, report: &mut Report) -> AppResult<()> {
