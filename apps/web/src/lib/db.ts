@@ -20,11 +20,10 @@ export const addPages: typeof web.addPages = (...a) => impl.addPages(...a)
 export const movePage: typeof web.movePage = (id, key) => impl.movePage(id, key)
 export const trashPage: typeof web.trashPage = (id) => impl.trashPage(id)
 
-/** Brings a trashed notebook back (desktop; the website deletes for good). */
+/** Brings a trashed notebook back. */
 export async function restoreNotebook(id: string): Promise<boolean> {
-  if (!isDesktop()) return false
-  await desktop.restoreNotebook(id)
-  return true
+  const res = await impl.restoreNotebook(id)
+  return res !== false
 }
 
 /** Sort keys for `n` notebooks placed before the current first one. */

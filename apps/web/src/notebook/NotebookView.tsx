@@ -27,6 +27,7 @@ import { ask, notify } from '../lib/dialogs'
 import { isDesktop } from '../lib/native'
 import { pdfPageSizes } from '../lib/pdf'
 import { navigate } from '../lib/router'
+import { onBroadcastMessage } from '../lib/web/broadcast'
 import { SettingsDialog, type SettingsTab } from '../settings/SettingsDialog'
 import { useAiState } from '../settings/useAiState'
 import type { VoiceCommand } from '../voice/trigger'
@@ -129,7 +130,7 @@ export function NotebookView({ id }: { id: string }) {
   useEffect(() => {
     let live = true
     Promise.all([getNotebook(id), listPages(id)])
-      .then(([nb, rows]) => {
+      .then(async ([nb, rows]) => {
         if (!live) return
         if (!nb) {
           setError('Notebook not found.')
@@ -137,6 +138,12 @@ export function NotebookView({ id }: { id: string }) {
         }
         setNotebook(nb)
         setTitle(nb.title)
+        if (rows.length === 0) {
+          try {
+            rows = await addPages(id, null, null, [{ ...A4, background: { kind: 'blank' } }])
+          } catch {}
+        }
+        if (!live) return
         setPages(rows)
         setActiveId(rows[0]?.id ?? null)
         // Fit the widest page to the window on open, up to 100%.
@@ -150,9 +157,36 @@ export function NotebookView({ id }: { id: string }) {
     }
   }, [id])
 
-  // ---- sync (desktop): pages and ink changed on another computer or the website ----
+  // ---- sync: pages and ink changed on another computer or another tab ----
   useEffect(() => {
-    if (!isDesktop()) return
+    if (!isDesktop()) {
+      const onVisible = () => {
+        if (document.visibilityState === 'visible') {
+          listPages(id)
+            .then((rows) => {
+              setPages(rows)
+              for (const row of rows) void handles.get(row.id)?.reloadIfClean()
+            })
+            .catch(() => {})
+        }
+      }
+      window.addEventListener('focus', onVisible)
+      document.addEventListener('visibilitychange', onVisible)
+      const offBroadcast = onBroadcastMessage((msg) => {
+        if (msg.type === 'pages_changed' && msg.notebookId === id) {
+          listPages(id)
+            .then(setPages)
+            .catch(() => {})
+        } else if (msg.type === 'page_saved') {
+          void handles.get(msg.pageId)?.reloadIfClean()
+        }
+      })
+      return () => {
+        window.removeEventListener('focus', onVisible)
+        document.removeEventListener('visibilitychange', onVisible)
+        offBroadcast()
+      }
+    }
     const off = onSynced((r) => {
       for (const pageId of r.pages) void handles.get(pageId)?.reloadIfClean()
       if (r.lists_changed) {

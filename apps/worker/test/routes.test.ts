@@ -17,11 +17,15 @@ function fakeR2() {
     store,
     async put(
       key: string,
-      body: ReadableStream | Uint8Array,
+      body: ReadableStream | Uint8Array | ArrayBuffer,
       opts?: { httpMetadata?: { contentType?: string } },
     ) {
       const bytes =
-        body instanceof Uint8Array ? body : new Uint8Array(await new Response(body).arrayBuffer())
+        body instanceof Uint8Array
+          ? body
+          : body instanceof ArrayBuffer
+            ? new Uint8Array(body)
+            : new Uint8Array(await new Response(body).arrayBuffer())
       store.set(key, { bytes, contentType: opts?.httpMetadata?.contentType })
     },
     async get(key: string) {
@@ -29,6 +33,7 @@ function fakeR2() {
       if (!o) return null
       return {
         body: new Blob([o.bytes]).stream(),
+        size: o.bytes.byteLength,
         httpMetadata: { contentType: o.contentType },
         httpEtag: '"e"',
       }
@@ -172,6 +177,18 @@ describe('page content', () => {
     })
     expect(res.status).toBe(413)
   })
+
+  it('PUT succeeds without a Content-Length header (e.g. from web fetch)', async () => {
+    restHandler = (c) =>
+      c.method === 'PATCH' ? json([{ version: 1 }]) : json([{ version: 0, content_key: null }])
+    const res = await call(`/api/pages/${PAGE}/content`, {
+      method: 'PUT',
+      body: new Uint8Array([1, 2, 3]),
+      headers: { 'X-Page-Version': '0' },
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ version: 1 })
+  })
 })
 
 describe('assets', () => {
@@ -200,6 +217,24 @@ describe('assets', () => {
     expect(r2.store.get(`u/user-1/assets/${row.id}`)?.contentType).toBe('image/png')
   })
 
+  it('succeeds without a Content-Length header (e.g. from web fetch)', async () => {
+    restHandler = (c) => json([{ ...(c.body as object), created_at: 'now' }], 201)
+    const res = await call(`/api/assets?kind=image`, {
+      method: 'POST',
+      body: new Uint8Array([1, 2]),
+      headers: { 'Content-Type': 'image/png', 'X-Content-Sha256': sha },
+    })
+    expect(res.status).toBe(201)
+  })
+
+  it('accepts image/jpg and maps it to image/jpeg', async () => {
+    restHandler = (c) => json([{ ...(c.body as object), created_at: 'now' }], 201)
+    const res = await upload('image', 'image/jpg')
+    expect(res.status).toBe(201)
+    const row = (await res.json()) as { id: string; bytes: number }
+    expect(r2.store.get(`u/user-1/assets/${row.id}`)?.contentType).toBe('image/jpeg')
+  })
+
   it('keeps an id the desktop app chose', async () => {
     const id = '22222222-2222-4222-8222-222222222222'
     restHandler = (c) =>
@@ -208,6 +243,14 @@ describe('assets', () => {
     expect(res.status).toBe(201)
     expect(((await res.json()) as { id: string }).id).toBe(id)
     expect(r2.store.has(`u/user-1/assets/${id}`)).toBe(true)
+  })
+
+  it('generates a new UUID if X-Asset-Id is empty string', async () => {
+    restHandler = (c) => json([{ ...(c.body as object), created_at: 'now' }], 201)
+    const res = await upload('image', 'image/png', { 'X-Asset-Id': '' })
+    expect(res.status).toBe(201)
+    const row = (await res.json()) as { id: string }
+    expect(row.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
   })
 
   it('returns the existing row for an id already uploaded', async () => {
@@ -227,6 +270,18 @@ describe('assets', () => {
     const res = await upload('image', 'image/png')
     expect(res.status).toBe(500)
     expect(r2.store.size).toBe(0)
+  })
+
+  it('GET /assets/:id returns Content-Length and content type', async () => {
+    const id = '33333333-3333-4333-8333-333333333333'
+    await r2.put(`u/user-1/assets/${id}`, new Uint8Array([5, 6, 7]), {
+      httpMetadata: { contentType: 'image/png' },
+    })
+    restHandler = () => json([{ r2_key: `u/user-1/assets/${id}`, kind: 'image' }])
+    const res = await call(`/api/assets/${id}`)
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Length')).toBe('3')
+    expect(res.headers.get('Content-Type')).toBe('image/png')
   })
 })
 
