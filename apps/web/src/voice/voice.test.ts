@@ -1,6 +1,36 @@
 import { describe, expect, it } from 'vitest'
+import { blockedQuestion, freshFlow, segmentAction, tryOpenFollowUp } from './flow'
 import { sayMath, sentences, speakable } from './speech'
 import { addressed, voiceCommand } from './trigger'
+
+describe('voice flow', () => {
+  it('blocks duplicate submits within three seconds', () => {
+    const t0 = 1_000_000
+    const s = freshFlow()
+    s.lastSubmit = { text: 'what is x', at: t0 }
+    expect(segmentAction(s, 'what is x', false, false, t0 + 500).type).toBe('none')
+  })
+
+  it('blocks questions while Writey is answering', () => {
+    const s = { ...freshFlow(), answering: true }
+    expect(blockedQuestion(s)).toBe(true)
+    expect(segmentAction(s, 'explain more', false, false, Date.now()).type).toBe('none')
+  })
+
+  it('allows barge-in stop over playback', () => {
+    const s = { ...freshFlow(), speaking: true, playbackLive: true }
+    expect(segmentAction(s, 'stop', false, true, Date.now())).toEqual({
+      type: 'command',
+      cmd: 'stop',
+    })
+  })
+
+  it('opens reply path after playback ends', () => {
+    const s = { ...freshFlow(), pendingFollowUp: true }
+    const opened = tryOpenFollowUp(s, 100, 10_000)
+    expect(opened?.followUntil).toBe(10_100)
+  })
+})
 
 describe('addressed', () => {
   it('wakes on "Hey" at the start', () => {
